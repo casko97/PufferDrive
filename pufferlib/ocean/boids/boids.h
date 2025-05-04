@@ -1,6 +1,10 @@
 #include <stdlib.h>
 #include <stdbool.h>
 #include <stdio.h>
+#include <math.h>
+#include <string.h>
+#include <limits.h>
+
 #include "raylib.h"
 
 #define TOP_MARGIN 50
@@ -8,21 +12,30 @@
 #define LEFT_MARGIN 50
 #define RIGHT_MARGIN 50
 #define VELOCITY_CAP 3
-#define MARGIN_TURN_FACTOR 0.2
+#define MARGIN_TURN_FACTOR 0.2f
 #define VISUAL_RANGE 20
-#define VISUAL_RANGE_SQUARED VISUAL_RANGE * VISUAL_RANGE
+#define VISUAL_RANGE_SQUARED (VISUAL_RANGE * VISUAL_RANGE)
 #define PROTECTED_RANGE 2
-#define PROTECTED_RANGE_SQUARED PROTECTED_RANGE * PROTECTED_RANGE
-#define CENTERING_FACTOR 0.0005
-#define AVOID_FACTOR 0.05
-#define MATCHING_FACTOR 0.05
-#define MAX_AVOID_DISTANCE_SQAURED PROTECTED_RANGE_SQUARED * AVOID_FACTOR
-#define MAX_AVG_POSITION_SQAURED VISUAL_RANGE_SQUARED * CENTERING_FACTOR
-#define MAX_AVG_VELOCITY_SQUARED VELOCITY_CAP * 4 * MATCHING_FACTOR
+#define PROTECTED_RANGE_SQUARED (PROTECTED_RANGE * PROTECTED_RANGE)
+#define CENTERING_FACTOR 0.0005f
+#define AVOID_FACTOR 0.05f
+#define MATCHING_FACTOR 0.05f
+#define MAX_AVOID_DISTANCE_SQUARED (PROTECTED_RANGE_SQUARED * AVOID_FACTOR)
+#define MAX_AVG_POSITION_SQUARED  (VISUAL_RANGE_SQUARED * CENTERING_FACTOR)
+#define MAX_AVG_VELOCITY_SQUARED  (VELOCITY_CAP * 4 * MATCHING_FACTOR)
 #define WIDTH 800
 #define HEIGHT 600
 #define BOID_WIDTH 32
 #define BOID_HEIGHT 32
+#define BOID_TEXTURE_PATH "./resources/puffers_128.png"
+
+typedef struct {
+    float perf;
+    float score;
+    float episode_return;
+    float episode_length;
+    int n;
+} Log;
 
 typedef struct {
     float x;
@@ -35,6 +48,7 @@ typedef struct {
     Velocity velocity;
 } Boid;
 
+typedef struct Client Client;
 typedef struct {
     // an array of shape (num_boids, 4) with the 4 values correspoinding to (x, y, velocity x, velocity y)
     float* observations;
@@ -43,202 +57,262 @@ typedef struct {
     // an array of shape (num_boids, 1) with the reward for each boid
     float* rewards;
     unsigned char* terminals;
+    unsigned char* truncations;
     Boid* boids;
     unsigned int num_boids;
     int max_reward;
     int min_reward;
+    int max_steps;
+    int tick;
+    Log log;
+    Log* boid_logs;
+    Client* client;
 } Boids;
 
-typedef struct {
-    float boid_width;
-    float boid_height;
-    Texture2D boid_texture;
-} Client;
+static void add_log(Boids *env, unsigned int i) {
+    env->log.perf           += env->boid_logs[i].perf;
+    env->log.score          += env->boid_logs[i].score;
+    env->log.episode_return += env->boid_logs[i].episode_return;
+    env->log.n              += 1.0f;
 
-float flmax(float num1, float num2) {
-    return (num1 > num2) ? num1 : num2;
+    /* clear per-boid log for next episode */
+    env->boid_logs[i] = (Log){0};
 }
 
-float flmin(float num1, float num2) {
-    return (num1 > num2) ? num2 : num1;
+static inline float flmax(float a, float b) { return a > b ? a : b; }
+static inline float flmin(float a, float b) { return a > b ? b : a; }
+static inline float flclip(float x,float lo,float hi) {return flmin(hi,flmax(lo,x));}
+static inline float rndf(float lo,float hi) {return lo + (float)rand()/(float)RAND_MAX*(hi-lo);}
+
+static void respawn_boid(Boids *env, unsigned int i) {
+    env->boids[i].x = rndf(LEFT_MARGIN,  WIDTH  - RIGHT_MARGIN);
+    env->boids[i].y = rndf(BOTTOM_MARGIN,HEIGHT - TOP_MARGIN);
+    env->boids[i].velocity.x = 0;
+    env->boids[i].velocity.y = 0;
+    env->boid_logs[i]       = (Log){0};
 }
 
-float flclip(float num, float min, float max) {
-    return flmin(max, flmax(min, num));
-}
+void init(Boids *env) {
+    /* dynamic allocs - ONLY allocate C-specific data */
+    env->boids        = calloc(env->num_boids,     sizeof(Boid));
+    env->boid_logs    = calloc(env->num_boids,     sizeof(Log));
+    env->log          = (Log){0};
+    env->tick         = 0;
+    env->max_steps    = 1000;
 
-float random_float(float min, float max) {
-    return min + (float)(rand() % (int)(max - min + 1));
-}
-
-void c_init(Boids* env) {
-    // Dynamic allocs
-    env->observations = (float*)calloc(env->num_boids * env->num_boids, sizeof(float));
-    env->actions = (float*)calloc(2, sizeof(float));
-    env->rewards = (float*)calloc(env->num_boids, sizeof(float));
-    env->terminals = (unsigned char*)calloc(env->num_boids, sizeof(unsigned char));
-    env->boids = (Boid*)calloc(env->num_boids, sizeof(Boid));
-
-    // Initialization
-    for (unsigned int indx = 0; indx < env->num_boids; indx++) {
-        env->boids[indx].x = random_float(LEFT_MARGIN, WIDTH - RIGHT_MARGIN);
-        env->boids[indx].y = random_float(BOTTOM_MARGIN, HEIGHT - TOP_MARGIN);
-        env->boids[indx].velocity.x = 0;
-        env->boids[indx].velocity.y = 0;
+    /* positions & velocities */
+    for (unsigned i = 0; i < env->num_boids; ++i) {
+        env->boids[i].x = rndf(LEFT_MARGIN,  WIDTH  - RIGHT_MARGIN);
+        env->boids[i].y = rndf(BOTTOM_MARGIN,HEIGHT - TOP_MARGIN);
+        env->boids[i].velocity.x = 0;
+        env->boids[i].velocity.y = 0;
     }
 
-    // Claculate max and min rewards
+    /* reward bounds for min-max normalisation */
     env->max_reward = 0;
-    env->min_reward = -1
-        * flmax(MAX_AVOID_DISTANCE_SQAURED * env->num_boids, MAX_AVG_POSITION_SQAURED)
-        - 2*MARGIN_TURN_FACTOR;
+    env->min_reward = -flmax(MAX_AVOID_DISTANCE_SQUARED * env->num_boids,
+                             MAX_AVG_POSITION_SQUARED) - 2*MARGIN_TURN_FACTOR;
 }
 
-void c_free(Boids* env) {
-    free(env->observations);
-    free(env->actions);
-    free(env->rewards);
-    free(env->terminals);
+void c_free_env_specific(Boids* env) {
     free(env->boids);
+    free(env->boid_logs);
 }
 
-void c_compute_observations(Boids* env) {
-    unsigned int current_start_indx = 0;
-    for (unsigned int current_boid_indx = 0; current_boid_indx < env->num_boids; current_boid_indx++) {
-        current_start_indx = current_boid_indx * env->num_boids;
-        for (unsigned int observed_indx = 0; observed_indx < env->num_boids; observed_indx++) {
-            env->observations[current_start_indx + observed_indx] = env->boids[observed_indx].x;
-            env->observations[current_start_indx + observed_indx + 1] = env->boids[observed_indx].y;
-            env->observations[current_start_indx + observed_indx + 2] = env->boids[observed_indx].velocity.x;
-            env->observations[current_start_indx + observed_indx + 3] = env->boids[observed_indx].velocity.y;
-        }
+static void compute_observations(Boids *env) {
+    // Observation buffer shape is (num_boids, 4)
+    for (unsigned i = 0; i < env->num_boids; ++i) {
+        unsigned base_index = i * 4; // Boid 'i' data starts here
+        env->observations[base_index + 0] = env->boids[i].x;
+        env->observations[base_index + 1] = env->boids[i].y;
+        env->observations[base_index + 2] = env->boids[i].velocity.x;
+        env->observations[base_index + 3] = env->boids[i].velocity.y;
     }
 }
 
-void c_reset(Boids* env) {
-    c_compute_observations(env);
+void c_reset(Boids *env) {
+    env->log = (Log){0};
+    env->tick = 0;
+    env->terminals[0] = 0;
+    env->truncations[0] = 0;
+    for (unsigned i = 0; i < env->num_boids; ++i)
+        respawn_boid(env, i);
+    compute_observations(env);
 }
 
-void c_step(Boids* env) {
+void c_step(Boids *env) {
     Boid* current_boid;
     Boid observed_boid;
-    float diff_x;
-    float diff_y;
-    float distance_squared;
-    float reward;
-    unsigned int visual_boids_num;
-    Boid visual_avg_boid;
+    float vx_sum, vy_sum, x_sum, y_sum, reward, action_vx, action_vy;
+    float diff_x, diff_y, dist2, x_avg, y_avg, vx_avg, vy_avg;
+    unsigned visual_count;
+    float current_boid_reward;
+    float total_reward = 0.0f;
+    bool terminated = false;
 
-    printf("actions: %p\n", env->actions);
-    printf("action: %f, %f\n", env->actions[0], env->actions[1]);
-    return;
-    // for (unsigned int indx = 0; indx < env->num_boids; indx++) {
-    //     // Apply action
-    //     current_boid = &env->boids[indx];
-    //     current_boid->velocity.x += flclip(action->x, -VELOCITY_CAP, VELOCITY_CAP);
-    //     current_boid->velocity.y += flclip(action->y, -VELOCITY_CAP, VELOCITY_CAP);
-    //     current_boid->x = flclip(current_boid->x + current_boid->velocity.x, 0, WIDTH - BOID_WIDTH);
-    //     current_boid->y = flclip(current_boid->y + current_boid->velocity.y, 0, HEIGHT - BOID_HEIGHT);
-    //
-    //     // Calculate rewards
-    //     reward = 0, visual_boids_num = 0;
-    //     visual_avg_boid.x = 0, visual_avg_boid.y = 0;
-    //     visual_avg_boid.velocity.x = 0, visual_avg_boid.velocity.y = 0;
-    //     for (unsigned int observed_indx = 0; observed_indx < env->num_boids; observed_indx++) {
-    //         observed_boid = env->observations[observed_indx];
-    //         diff_x = current_boid->x - observed_boid.x;
-    //         diff_y = current_boid->y - observed_boid.y;
-    //         distance_squared = diff_x*diff_x + diff_y*diff_y;
-    //         if (distance_squared < PROTECTED_RANGE_SQUARED) {
-    //             // seperation/avoidance reward
-    //             reward -= (PROTECTED_RANGE_SQUARED - distance_squared) * AVOID_FACTOR;
-    //         } else if (distance_squared < VISUAL_RANGE_SQUARED) {
-    //             visual_avg_boid.x += observed_boid.x;
-    //             visual_avg_boid.y += observed_boid.y;
-    //             visual_avg_boid.velocity.x += observed_boid.velocity.x;
-    //             visual_avg_boid.velocity.y += observed_boid.velocity.y;
-    //             visual_boids_num++;
-    //         }
-    //     }
-    //
-    //     if (visual_boids_num > 0) {
-    //         visual_avg_boid.x /= visual_boids_num;
-    //         visual_avg_boid.y /= visual_boids_num;
-    //         visual_avg_boid.velocity.x /= visual_boids_num;
-    //         visual_avg_boid.velocity.y /= visual_boids_num;
-    //
-    //         // alignement and cohesion rewards
-    //         reward -= (visual_avg_boid.velocity.x - current_boid->velocity.x)*MATCHING_FACTOR;
-    //         reward -= (visual_avg_boid.velocity.y - current_boid->velocity.y)*MATCHING_FACTOR;
-    //         reward -= (visual_avg_boid.x - current_boid->x)*CENTERING_FACTOR;
-    //         reward -= (visual_avg_boid.y - current_boid->y)*CENTERING_FACTOR;
-    //     }
-    //
-    //     // Margin rewards
-    //     if (current_boid->y < TOP_MARGIN) {
-    //         reward -= MARGIN_TURN_FACTOR;
-    //     } else if (current_boid->y > HEIGHT - BOTTOM_MARGIN) {
-    //         reward -= MARGIN_TURN_FACTOR;
-    //     }
-    //
-    //     if (current_boid->x < LEFT_MARGIN) {
-    //         reward -= MARGIN_TURN_FACTOR;
-    //     } else if (current_boid->x > WIDTH - RIGHT_MARGIN) {
-    //         reward -= MARGIN_TURN_FACTOR;
-    //     }
-    //
-    //     // min-max normalizing reward
-    //     env->rewards[indx] = 2
-    //         * ((reward-env->min_reward) / (env->max_reward - env->min_reward))
-    //         - 1;
-    // }
+    env->tick++;
+    env->terminals[0] = 0;
+    env->truncations[0] = 0;
+
+    for (unsigned current_indx = 0; current_indx < env->num_boids; ++current_indx) {
+        // apply action
+        current_boid = &env->boids[current_indx];
+        action_vx = env->actions[current_indx * 2 + 0];
+        action_vy = env->actions[current_indx * 2 + 1];
+
+        current_boid->velocity.x += flclip(action_vx, -VELOCITY_CAP, VELOCITY_CAP);
+        current_boid->velocity.y += flclip(action_vy, -VELOCITY_CAP, VELOCITY_CAP);
+
+        current_boid->x = flclip(current_boid->x + current_boid->velocity.x, 0, WIDTH  - BOID_WIDTH);
+        current_boid->y = flclip(current_boid->y + current_boid->velocity.y, 0, HEIGHT - BOID_HEIGHT);
+
+        // reward calculation
+        reward = 0.0f;
+        visual_count = 0;
+        vx_sum = 0, vy_sum = 0, x_sum = 0, y_sum = 0;
+
+        for (unsigned observed_indx = 0; observed_indx < env->num_boids; ++observed_indx) {
+            if (current_indx == observed_indx) continue;
+            observed_boid = env->boids[observed_indx];
+            diff_x = current_boid->x - observed_boid.x;
+            diff_y = current_boid->y - observed_boid.y;
+            dist2 = diff_x*diff_x + diff_y*diff_y;
+
+            if (dist2 < PROTECTED_RANGE_SQUARED) {
+                reward -= (PROTECTED_RANGE_SQUARED - dist2) * AVOID_FACTOR;
+            } else if (dist2 < VISUAL_RANGE_SQUARED) {
+                x_sum += observed_boid.x; y_sum += observed_boid.y;
+                vx_sum += observed_boid.velocity.x; vy_sum += observed_boid.velocity.y;
+                ++visual_count;
+            }
+        }
+
+        if (visual_count) {
+            x_avg  = x_sum  / visual_count;
+            y_avg  = y_sum  / visual_count;
+            vx_avg = vx_sum / visual_count;
+            vy_avg = vy_sum / visual_count;
+
+            reward -= fabsf(vx_avg - current_boid->velocity.x) * MATCHING_FACTOR;
+            reward -= fabsf(vy_avg - current_boid->velocity.y) * MATCHING_FACTOR;
+            reward -= fabsf(x_avg  - current_boid->x) * CENTERING_FACTOR;
+            reward -= fabsf(y_avg  - current_boid->y) * CENTERING_FACTOR;
+        }
+
+        if (current_boid->y < TOP_MARGIN || current_boid->y > HEIGHT - BOTTOM_MARGIN) reward -= MARGIN_TURN_FACTOR;
+        if (current_boid->x < LEFT_MARGIN || current_boid->x > WIDTH  - RIGHT_MARGIN) reward -= MARGIN_TURN_FACTOR;
+
+        current_boid_reward = 2.0f * (reward - env->min_reward) / (env->max_reward - env->min_reward) - 1.0f;
+        total_reward += current_boid_reward;
+
+        // per-boid log update
+        env->boid_logs[current_indx].episode_return += current_boid_reward;
+        env->boid_logs[current_indx].episode_length += 1.0f;
+
+        // termination check
+        if (current_boid_reward <= -0.99f) {
+            terminated = true;
+            env->boid_logs[current_indx].score = env->boid_logs[current_indx].episode_return;
+            env->boid_logs[current_indx].perf  = (env->boid_logs[current_indx].score/env->boid_logs[current_indx].episode_length + 1.0f)*0.5f;
+            add_log(env, current_indx);
+            respawn_boid(env, current_indx);
+        }
+    }
+
+    // environment level updates
+    env->rewards[0] = (env->num_boids > 0) ? total_reward / env->num_boids : 0.0f;
+
+    if (terminated || env->tick >= env->max_steps) {
+        env->terminals[0] = 1;
+        if (!terminated && env->tick >= env->max_steps) {
+            env->truncations[0] = 1;
+            env->terminals[0] = 0;
+        }
+    } else if (env->tick >= env->max_steps) {
+        env->truncations[0] = 1;
+    }
+
+    compute_observations(env);
 }
 
-Client* c_make_client(Boids* env) {
-    Client* client = (Client*)calloc(1, sizeof(Client));
-
-    InitWindow(WIDTH, HEIGHT, "PufferLib Boids");
-    SetTargetFPS(60);
-    client->boid_texture = LoadTexture("resources/puffers_128.png");
-    client->boid_width = BOID_WIDTH;
-    client->boid_height = BOID_HEIGHT;
-
-    return client;
-}
+typedef struct Client Client;
+struct Client {
+    float width;
+    float height;
+    Texture2D boid_texture;
+};
 
 void c_close_client(Client* client) {
+    UnloadTexture(client->boid_texture);
     CloseWindow();
     free(client);
 }
 
-void c_render(Client* client, Boids* env) {
-    if (IsKeyDown(KEY_ESCAPE)) {
-        exit(0);
+Client* make_client(Boids* env) {
+    Client* client = (Client*)calloc(1, sizeof(Client));
+    
+    client->width = WIDTH;
+    client->height = HEIGHT;
+    
+    InitWindow(WIDTH, HEIGHT, "PufferLib Boids");
+    SetTargetFPS(60);
+    
+    if (!IsWindowReady()) {
+        TraceLog(LOG_ERROR, "Window failed to initialize\n");
+        free(client);
+        return NULL;
     }
+    
+    client->boid_texture = LoadTexture(BOID_TEXTURE_PATH);
+    if (client->boid_texture.id == 0) {
+        TraceLog(LOG_ERROR, "Failed to load texture: %s", BOID_TEXTURE_PATH);
+        c_close_client(client);
+        return NULL;
+    }
+    
+    return client;
+}
 
-    BeginDrawing();
-    ClearBackground((Color){6, 24, 24, 255});
+void c_render(Boids* env) {
+    if (env->client == NULL) {
+        env->client = make_client(env);
+        if (env->client == NULL) {
+            TraceLog(LOG_ERROR, "Failed to initialize client for rendering\n");
+            return;
+        }
+    }
+    
+    if (!WindowShouldClose() && IsWindowReady()) {
+        if (IsKeyDown(KEY_ESCAPE)) {
+            exit(0);
+        }
 
-    for (unsigned int indx = 0; indx < env->num_boids; indx++) {
-        DrawTexturePro(
-            client->boid_texture,
-            (Rectangle){
-                (env->boids[indx].velocity.x > 0) ? 0 : 128,
+        BeginDrawing();
+        ClearBackground((Color){6, 24, 24, 255});
+
+        for (unsigned int indx = 0; indx < env->num_boids; indx++) {
+            DrawTexturePro(
+                env->client->boid_texture,
+                (Rectangle){
+                    (env->boids[indx].velocity.x > 0) ? 0 : 128,
+                    0,
+                    128,
+                    128,
+                },
+                (Rectangle){
+                    env->boids[indx].x,
+                    env->boids[indx].y,
+                    BOID_WIDTH,
+                    BOID_HEIGHT
+                },
+                (Vector2){0, 0},
                 0,
-                128,
-                128,
-            },
-            (Rectangle){
-                env->boids[indx].x,
-                env->boids[indx].y,
-                client->boid_width,
-                client->boid_height
-            },
-            (Vector2){0, 0},
-            0,
-            WHITE
-        );
-    }
+                WHITE
+            );
+        }
 
-    EndDrawing();
+        EndDrawing();
+    } else {
+        TraceLog(LOG_WARNING, "Window is not ready or should close");
+    }
 }
