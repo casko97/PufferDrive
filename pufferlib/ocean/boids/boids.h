@@ -34,7 +34,7 @@ typedef struct {
     float score;
     float episode_return;
     float episode_length;
-    int n;
+    float n;
 } Log;
 
 typedef struct {
