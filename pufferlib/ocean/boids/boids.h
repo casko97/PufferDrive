@@ -112,7 +112,7 @@ void init(Boids *env) {
                              MAX_AVG_POSITION_SQUARED) - 2*MARGIN_TURN_FACTOR;
 }
 
-void c_free_env_specific(Boids* env) {
+void free_allocated(Boids* env) {
     free(env->boids);
     free(env->boid_logs);
 }
