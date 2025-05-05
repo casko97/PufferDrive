@@ -57,7 +57,6 @@ typedef struct {
     // an array of shape (num_boids, 1) with the reward for each boid
     float* rewards;
     unsigned char* terminals;
-    unsigned char* truncations;
     Boid* boids;
     unsigned int num_boids;
     int max_reward;
@@ -134,7 +133,6 @@ void c_reset(Boids *env) {
     env->log = (Log){0};
     env->tick = 0;
     env->terminals[0] = 0;
-    env->truncations[0] = 0;
     for (unsigned i = 0; i < env->num_boids; ++i)
         respawn_boid(env, i);
     compute_observations(env);
@@ -152,7 +150,6 @@ void c_step(Boids *env) {
 
     env->tick++;
     env->terminals[0] = 0;
-    env->truncations[0] = 0;
 
     for (unsigned current_indx = 0; current_indx < env->num_boids; ++current_indx) {
         // apply action
@@ -225,11 +222,9 @@ void c_step(Boids *env) {
     if (terminated || env->tick >= env->max_steps) {
         env->terminals[0] = 1;
         if (!terminated && env->tick >= env->max_steps) {
-            env->truncations[0] = 1;
             env->terminals[0] = 0;
         }
     } else if (env->tick >= env->max_steps) {
-        env->truncations[0] = 1;
     }
 
     compute_observations(env);
