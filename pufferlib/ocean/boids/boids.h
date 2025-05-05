@@ -92,9 +92,8 @@ static void respawn_boid(Boids *env, unsigned int i) {
 }
 
 void init(Boids *env) {
-    /* dynamic allocs - ONLY allocate C-specific data */
-    env->boids        = calloc(env->num_boids,     sizeof(Boid));
-    env->boid_logs    = calloc(env->num_boids,     sizeof(Log));
+    env->boids = (Boid*)calloc(env->num_boids, sizeof(Boid));
+    env->boid_logs = (Log*)calloc(env->num_boids, sizeof(Log));
     env->log          = (Log){0};
     env->tick         = 0;
     env->max_steps    = 1000;
