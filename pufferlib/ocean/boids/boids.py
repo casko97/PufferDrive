@@ -21,7 +21,7 @@ class Boids(pufferlib.PufferEnv):
         report_interval=1,
         seed=0
     ):
-        self.num_agents = num_envs
+        self.num_agents = num_envs * num_boids
         self.num_boids = num_boids
         self.max_steps = max_steps
 
@@ -42,7 +42,7 @@ class Boids(pufferlib.PufferEnv):
 
         # Create C binding with flattened action buffer
         # We need to manually create a flattened action buffer to pass to C
-        self.flat_actions = np.zeros((self.num_agents * self.num_boids * 2), dtype=np.float32)
+        self.flat_actions = np.zeros((self.num_agents * 2), dtype=np.float32)
         
         self.c_envs = binding.vec_init(
             self.observations,
