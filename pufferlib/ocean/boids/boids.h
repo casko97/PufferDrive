@@ -28,6 +28,7 @@
 #define BOID_WIDTH 32
 #define BOID_HEIGHT 32
 #define BOID_TEXTURE_PATH "./resources/puffers_128.png"
+#define LOG_INTERVAL 128
 
 typedef struct {
     float perf;
@@ -56,7 +57,6 @@ typedef struct {
     float* actions;
     // an array of shape (num_boids, 1) with the reward for each boid
     float* rewards;
-    unsigned char* terminals;
     Boid* boids;
     unsigned int num_boids;
     int max_reward;
@@ -131,7 +131,6 @@ static void compute_observations(Boids *env) {
 void c_reset(Boids *env) {
     env->log = (Log){0};
     env->tick = 0;
-    env->terminals[0] = 0;
     for (unsigned i = 0; i < env->num_boids; ++i)
         respawn_boid(env, i);
     compute_observations(env);
@@ -145,10 +144,8 @@ void c_step(Boids *env) {
     unsigned visual_count;
     float current_boid_reward;
     float total_reward = 0.0f;
-    bool terminated = false;
 
     env->tick++;
-    env->terminals[0] = 0;
 
     for (unsigned current_indx = 0; current_indx < env->num_boids; ++current_indx) {
         // apply action
@@ -205,13 +202,11 @@ void c_step(Boids *env) {
         env->boid_logs[current_indx].episode_return += current_boid_reward;
         env->boid_logs[current_indx].episode_length += 1.0f;
 
-        // termination check
-        if (current_boid_reward <= -0.99f) {
-            terminated = true;
+        if (env->tick % LOG_INTERVAL == 0) {
             env->boid_logs[current_indx].score = env->boid_logs[current_indx].episode_return;
             env->boid_logs[current_indx].perf  = (env->boid_logs[current_indx].score/env->boid_logs[current_indx].episode_length + 1.0f)*0.5f;
             add_log(env, current_indx);
-            respawn_boid(env, current_indx);
+            env->tick = 0;
         }
     }
 
