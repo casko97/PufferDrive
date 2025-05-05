@@ -42,12 +42,11 @@ void demo() {
     env.actions = (float*)calloc(act_size, sizeof(float));
     env.rewards = (float*)calloc(1, sizeof(float)); // Env-level reward
     env.terminals = (unsigned char*)calloc(1, sizeof(unsigned char)); // Env-level terminal
-    env.truncations = (unsigned char*)calloc(1, sizeof(unsigned char)); // Env-level truncation
     
-    if (!env.observations || !env.actions || !env.rewards || !env.terminals || !env.truncations) {
+    if (!env.observations || !env.actions || !env.rewards || !env.terminals) {
         fprintf(stderr, "Failed to allocate memory for demo buffers.\n");
         // Free any successfully allocated buffers before exiting
-        free(env.observations); free(env.actions); free(env.rewards); free(env.terminals); free(env.truncations);
+        free(env.observations); free(env.actions); free(env.rewards); free(env.terminals);
         return;
     }
     // -----------------------------------------------------------
@@ -60,8 +59,8 @@ void demo() {
     if (client == NULL) {
         fprintf(stderr, "ERROR: Failed to create rendering client during initial setup.\n");
         // Need to free manually allocated buffers and env-specific data before returning
-        c_free_env_specific(&env);
-        free(env.observations); free(env.actions); free(env.rewards); free(env.terminals); free(env.truncations);
+        free_allocated(&env);
+        free(env.observations); free(env.actions); free(env.rewards); free(env.terminals);
         return; // Exit demo function
     }
     env.client = client; // Assign the created client to the env struct
@@ -90,7 +89,7 @@ void demo() {
         c_render(&env);
 
         // Check for termination or truncation
-        if (env.terminals[0] || env.truncations[0]) {
+        if (env.terminals[0]) {
             printf("Episode finished. Steps: %d, Return: %.2f (%s)\n", 
                    env.tick, total_return, env.terminals[0] ? "Terminated" : "Truncated");
             total_steps = 0;
@@ -108,14 +107,13 @@ void demo() {
     }
     // env.client = NULL; // No longer necessary as client is local scope to demo
     
-    c_free_env_specific(&env); // Free Boids-specific C memory (boids array, logs)
+    free_allocated(&env); // Free Boids-specific C memory (boids array, logs)
     
     // --- Free Manually Allocated Buffers ---
     free(env.observations);
     free(env.actions);
     free(env.rewards);
     free(env.terminals);
-    free(env.truncations);
     // ----------------------------------------
 }
 
