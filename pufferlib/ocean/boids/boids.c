@@ -41,12 +41,11 @@ void demo() {
     env.observations = (float*)calloc(obs_size, sizeof(float));
     env.actions = (float*)calloc(act_size, sizeof(float));
     env.rewards = (float*)calloc(1, sizeof(float)); // Env-level reward
-    env.terminals = (unsigned char*)calloc(1, sizeof(unsigned char)); // Env-level terminal
     
-    if (!env.observations || !env.actions || !env.rewards || !env.terminals) {
+    if (!env.observations || !env.actions || !env.rewards) {
         fprintf(stderr, "Failed to allocate memory for demo buffers.\n");
         // Free any successfully allocated buffers before exiting
-        free(env.observations); free(env.actions); free(env.rewards); free(env.terminals);
+        free(env.observations); free(env.actions); free(env.rewards);
         return;
     }
     // -----------------------------------------------------------
@@ -60,7 +59,7 @@ void demo() {
         fprintf(stderr, "ERROR: Failed to create rendering client during initial setup.\n");
         // Need to free manually allocated buffers and env-specific data before returning
         free_allocated(&env);
-        free(env.observations); free(env.actions); free(env.rewards); free(env.terminals);
+        free(env.observations); free(env.actions); free(env.rewards);
         return; // Exit demo function
     }
     env.client = client; // Assign the created client to the env struct
@@ -75,29 +74,15 @@ void demo() {
     printf("Starting Boids demo with %d boids. Press ESC to exit.\n", env.num_boids);
 
     while (!WindowShouldClose()) { // Raylib function to check if ESC is pressed or window closed
-        
-        // Generate dummy actions
         generate_dummy_actions(&env);
 
-        // Step the environment
         c_step(&env);
-        
         total_return += env.rewards[0]; // Accumulate env-level reward
         total_steps++;
-
-        // Render the current state
         c_render(&env);
-
-        // Check for termination or truncation
-        if (env.terminals[0]) {
-            printf("Episode finished. Steps: %d, Return: %.2f (%s)\n", 
-                   env.tick, total_return, env.terminals[0] ? "Terminated" : "Truncated");
-            total_steps = 0;
-            total_return = 0.0f;
-            
-            // Reset the environment for the next episode
-            c_reset(&env);
-        }
+        total_steps = 0;
+        total_return = 0.0f;
+        c_reset(&env);
     }
 
     // Cleanup
@@ -113,7 +98,6 @@ void demo() {
     free(env.observations);
     free(env.actions);
     free(env.rewards);
-    free(env.terminals);
     // ----------------------------------------
 }
 
