@@ -51,7 +51,8 @@ class Boids(pufferlib.PufferEnv):
             self.terminals,
             self.truncations,
             num_envs,
-            num_boids,
+            seed,
+            num_boids=num_boids,
             max_steps=max_steps
         )
 
