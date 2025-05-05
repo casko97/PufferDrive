@@ -217,15 +217,6 @@ void c_step(Boids *env) {
 
     // environment level updates
     env->rewards[0] = (env->num_boids > 0) ? total_reward / env->num_boids : 0.0f;
-
-    if (terminated || env->tick >= env->max_steps) {
-        env->terminals[0] = 1;
-        if (!terminated && env->tick >= env->max_steps) {
-            env->terminals[0] = 0;
-        }
-    } else if (env->tick >= env->max_steps) {
-    }
-
     compute_observations(env);
 }
 
