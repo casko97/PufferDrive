@@ -2,11 +2,7 @@
 // Compile using: ./scripts/build_ocean.sh boids [local|fast]
 // Run with: ./boids
 
-#include <math.h>
-#include <stdlib.h>
-#include <stdio.h>
 #include <time.h>
-#include <string.h>
 #include "boids.h"
 
 // --- Demo Configuration ---
