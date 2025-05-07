@@ -23,6 +23,7 @@
 #define MAX_AVOID_DISTANCE_SQUARED (PROTECTED_RANGE_SQUARED * AVOID_FACTOR)
 #define MAX_AVG_POSITION_SQUARED  (VISUAL_RANGE_SQUARED * CENTERING_FACTOR)
 #define MAX_AVG_VELOCITY_SQUARED  (VELOCITY_CAP * 4 * MATCHING_FACTOR)
+#define MAX_MARGIN_TURN_FACTOR 2 * MARGIN_TURN_FACTOR
 #define WIDTH 800
 #define HEIGHT 600
 #define BOID_WIDTH 32
@@ -109,7 +110,7 @@ void init(Boids *env) {
     /* reward bounds for min-max normalisation */
     env->max_reward = 0;
     env->min_reward = -flmax(MAX_AVOID_DISTANCE_SQUARED * env->num_boids,
-                             MAX_AVG_POSITION_SQUARED) - 2*MARGIN_TURN_FACTOR;
+                             MAX_AVG_POSITION_SQUARED) - MAX_MARGIN_TURN_FACTOR;
 }
 
 void free_allocated(Boids* env) {
