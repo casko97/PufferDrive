@@ -69,14 +69,14 @@ typedef struct {
     Client* client;
 } Boids;
 
-static void add_log(Boids *env, unsigned int i) {
-    env->log.perf           += env->boid_logs[i].perf;
-    env->log.score          += env->boid_logs[i].score;
-    env->log.episode_return += env->boid_logs[i].episode_return;
+static void add_log(Boids *env, unsigned boid_indx) {
+    env->log.perf           += env->boid_logs[boid_indx].perf;
+    env->log.score          += env->boid_logs[boid_indx].score;
+    env->log.episode_return += env->boid_logs[boid_indx].episode_return;
     env->log.n              += 1.0f;
 
     /* clear per-boid log for next episode */
-    env->boid_logs[i] = (Log){0};
+    env->boid_logs[boid_indx] = (Log){0};
 }
 
 static inline float flmax(float a, float b) { return a > b ? a : b; }
@@ -119,21 +119,22 @@ void free_allocated(Boids* env) {
 }
 
 static void compute_observations(Boids *env) {
-    // Observation buffer shape is (num_boids, 4)
-    for (unsigned i = 0; i < env->num_boids; i++) {
-        unsigned base_index = i * 4; // Boid 'i' data starts here
-        env->observations[base_index + 0] = env->boids[i].x;
-        env->observations[base_index + 1] = env->boids[i].y;
-        env->observations[base_index + 2] = env->boids[i].velocity.x;
-        env->observations[base_index + 3] = env->boids[i].velocity.y;
+    unsigned base_indx;
+
+    for (unsigned boids_indx = 0; boids_indx < env->num_boids; boids_indx++) {
+        base_indx = boids_indx * 4;
+        env->observations[base_indx + 0] = env->boids[boids_indx].x;
+        env->observations[base_indx + 1] = env->boids[boids_indx].y;
+        env->observations[base_indx + 2] = env->boids[boids_indx].velocity.x;
+        env->observations[base_indx + 3] = env->boids[boids_indx].velocity.y;
     }
 }
 
 void c_reset(Boids *env) {
     env->log = (Log){0};
     env->tick = 0;
-    for (unsigned i = 0; i < env->num_boids; i++) {
-        respawn_boid(env, i);
+    for (unsigned boid_indx = 0; boid_indx < env->num_boids; boid_indx++) {
+        respawn_boid(env, boid_indx);
     }
     compute_observations(env);
 }
@@ -270,18 +271,18 @@ void c_render(Boids* env) {
         BeginDrawing();
         ClearBackground((Color){6, 24, 24, 255});
 
-        for (unsigned int indx = 0; indx < env->num_boids; indx++) {
+        for (unsigned boid_indx = 0; boid_indx < env->num_boids; boid_indx++) {
             DrawTexturePro(
                 env->client->boid_texture,
                 (Rectangle){
-                    (env->boids[indx].velocity.x > 0) ? 0 : 128,
+                    (env->boids[boid_indx].velocity.x > 0) ? 0 : 128,
                     0,
                     128,
                     128,
                 },
                 (Rectangle){
-                    env->boids[indx].x,
-                    env->boids[indx].y,
+                    env->boids[boid_indx].x,
+                    env->boids[boid_indx].y,
                     BOID_WIDTH,
                     BOID_HEIGHT
                 },
