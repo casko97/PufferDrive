@@ -6,8 +6,8 @@
 #include "boids.h"
 
 // --- Demo Configuration ---
-#define NUM_BOIDS_DEMO 50   // Number of boids for the standalone demo
-#define MAX_STEPS_DEMO 2000 // Max steps per episode in the demo
+#define NUM_BOIDS_DEMO 20   // Number of boids for the standalone demo
+#define MAX_STEPS_DEMO 500 // Max steps per episode in the demo
 #define ACTION_SCALE 3.0f   // Corresponds to action space [-3.0, 3.0]
 
 // Dummy action generation: random velocity changes for each boid
