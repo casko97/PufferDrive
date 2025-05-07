@@ -100,7 +100,7 @@ void init(Boids *env) {
     env->max_steps = 1000;
 
     /* positions & velocities */
-    for (unsigned i = 0; i < env->num_boids; ++i) {
+    for (unsigned i = 0; i < env->num_boids; i++) {
         env->boids[i].x = rndf(LEFT_MARGIN, WIDTH  - RIGHT_MARGIN);
         env->boids[i].y = rndf(BOTTOM_MARGIN, HEIGHT - TOP_MARGIN);
         env->boids[i].velocity.x = 0;
@@ -120,7 +120,7 @@ void free_allocated(Boids* env) {
 
 static void compute_observations(Boids *env) {
     // Observation buffer shape is (num_boids, 4)
-    for (unsigned i = 0; i < env->num_boids; ++i) {
+    for (unsigned i = 0; i < env->num_boids; i++) {
         unsigned base_index = i * 4; // Boid 'i' data starts here
         env->observations[base_index + 0] = env->boids[i].x;
         env->observations[base_index + 1] = env->boids[i].y;
@@ -132,7 +132,7 @@ static void compute_observations(Boids *env) {
 void c_reset(Boids *env) {
     env->log = (Log){0};
     env->tick = 0;
-    for (unsigned i = 0; i < env->num_boids; ++i) {
+    for (unsigned i = 0; i < env->num_boids; i++) {
         respawn_boid(env, i);
     }
     compute_observations(env);
@@ -149,7 +149,7 @@ void c_step(Boids *env) {
 
     env->tick++;
 
-    for (unsigned current_indx = 0; current_indx < env->num_boids; ++current_indx) {
+    for (unsigned current_indx = 0; current_indx < env->num_boids; current_indx++) {
         // apply action
         current_boid = &env->boids[current_indx];
 
@@ -162,7 +162,7 @@ void c_step(Boids *env) {
         // reward calculation
         reward = 0, visual_count = 0, vx_sum = 0, vy_sum = 0, x_sum = 0, y_sum = 0;
 
-        for (unsigned observed_indx = 0; observed_indx < env->num_boids; ++observed_indx) {
+        for (unsigned observed_indx = 0; observed_indx < env->num_boids; observed_indx++) {
             if (current_indx == observed_indx) continue;
             observed_boid = env->boids[observed_indx];
             diff_x = current_boid->x - observed_boid.x;
@@ -176,7 +176,7 @@ void c_step(Boids *env) {
                 y_sum += observed_boid.y;
                 vx_sum += observed_boid.velocity.x;
                 vy_sum += observed_boid.velocity.y;
-                ++visual_count;
+                visual_count++;
             }
         }
 
