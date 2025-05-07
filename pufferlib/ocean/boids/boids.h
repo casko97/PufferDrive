@@ -85,8 +85,8 @@ static inline float flclip(float x,float lo,float hi) {return flmin(hi,flmax(lo,
 static inline float rndf(float lo,float hi) {return lo + (float)rand()/(float)RAND_MAX*(hi-lo);}
 
 static void respawn_boid(Boids *env, unsigned int i) {
-    env->boids[i].x = rndf(LEFT_MARGIN,  WIDTH  - RIGHT_MARGIN);
-    env->boids[i].y = rndf(BOTTOM_MARGIN,HEIGHT - TOP_MARGIN);
+    env->boids[i].x = rndf(LEFT_MARGIN, WIDTH  - RIGHT_MARGIN);
+    env->boids[i].y = rndf(BOTTOM_MARGIN, HEIGHT - TOP_MARGIN);
     env->boids[i].velocity.x = 0;
     env->boids[i].velocity.y = 0;
     env->boid_logs[i]       = (Log){0};
@@ -95,14 +95,14 @@ static void respawn_boid(Boids *env, unsigned int i) {
 void init(Boids *env) {
     env->boids = (Boid*)calloc(env->num_boids, sizeof(Boid));
     env->boid_logs = (Log*)calloc(env->num_boids, sizeof(Log));
-    env->log          = (Log){0};
-    env->tick         = 0;
-    env->max_steps    = 1000;
+    env->log = (Log){0};
+    env->tick = 0;
+    env->max_steps = 1000;
 
     /* positions & velocities */
     for (unsigned i = 0; i < env->num_boids; ++i) {
-        env->boids[i].x = rndf(LEFT_MARGIN,  WIDTH  - RIGHT_MARGIN);
-        env->boids[i].y = rndf(BOTTOM_MARGIN,HEIGHT - TOP_MARGIN);
+        env->boids[i].x = rndf(LEFT_MARGIN, WIDTH  - RIGHT_MARGIN);
+        env->boids[i].y = rndf(BOTTOM_MARGIN, HEIGHT - TOP_MARGIN);
         env->boids[i].velocity.x = 0;
         env->boids[i].velocity.y = 0;
     }
