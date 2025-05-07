@@ -132,15 +132,16 @@ static void compute_observations(Boids *env) {
 void c_reset(Boids *env) {
     env->log = (Log){0};
     env->tick = 0;
-    for (unsigned i = 0; i < env->num_boids; ++i)
+    for (unsigned i = 0; i < env->num_boids; ++i) {
         respawn_boid(env, i);
+    }
     compute_observations(env);
 }
 
 void c_step(Boids *env) {
     Boid* current_boid;
     Boid observed_boid;
-    float vx_sum, vy_sum, x_sum, y_sum, reward, action_vx, action_vy;
+    float vx_sum, vy_sum, x_sum, y_sum, reward;
     float diff_x, diff_y, dist2, x_avg, y_avg, vx_avg, vy_avg;
     unsigned visual_count;
     float current_boid_reward;
@@ -151,19 +152,15 @@ void c_step(Boids *env) {
     for (unsigned current_indx = 0; current_indx < env->num_boids; ++current_indx) {
         // apply action
         current_boid = &env->boids[current_indx];
-        action_vx = env->actions[current_indx * 2 + 0];
-        action_vy = env->actions[current_indx * 2 + 1];
 
-        current_boid->velocity.x += flclip(action_vx, -VELOCITY_CAP, VELOCITY_CAP);
-        current_boid->velocity.y += flclip(action_vy, -VELOCITY_CAP, VELOCITY_CAP);
+        current_boid->velocity.x += flclip(env->actions[current_indx * 2 + 0], -VELOCITY_CAP, VELOCITY_CAP);
+        current_boid->velocity.y += flclip(env->actions[current_indx * 2 + 1], -VELOCITY_CAP, VELOCITY_CAP);
 
         current_boid->x = flclip(current_boid->x + current_boid->velocity.x, 0, WIDTH  - BOID_WIDTH);
         current_boid->y = flclip(current_boid->y + current_boid->velocity.y, 0, HEIGHT - BOID_HEIGHT);
 
         // reward calculation
-        reward = 0.0f;
-        visual_count = 0;
-        vx_sum = 0, vy_sum = 0, x_sum = 0, y_sum = 0;
+        reward = 0, visual_count = 0, vx_sum = 0, vy_sum = 0, x_sum = 0, y_sum = 0;
 
         for (unsigned observed_indx = 0; observed_indx < env->num_boids; ++observed_indx) {
             if (current_indx == observed_indx) continue;
@@ -175,8 +172,10 @@ void c_step(Boids *env) {
             if (dist2 < PROTECTED_RANGE_SQUARED) {
                 reward -= (PROTECTED_RANGE_SQUARED - dist2) * AVOID_FACTOR;
             } else if (dist2 < VISUAL_RANGE_SQUARED) {
-                x_sum += observed_boid.x; y_sum += observed_boid.y;
-                vx_sum += observed_boid.velocity.x; vy_sum += observed_boid.velocity.y;
+                x_sum += observed_boid.x;
+                y_sum += observed_boid.y;
+                vx_sum += observed_boid.velocity.x;
+                vy_sum += observed_boid.velocity.y;
                 ++visual_count;
             }
         }
