@@ -29,7 +29,6 @@ void demo() {
     env.num_boids = NUM_BOIDS_DEMO;
     env.max_steps = MAX_STEPS_DEMO;
     
-    // --- Manual Buffer Allocation (for standalone demo only) ---
     // In the Python binding, these pointers are assigned from NumPy arrays.
     // Here, we need to allocate them explicitly.
     size_t obs_size = env.num_boids * 4; // num_boids * (x, y, vx, vy)
@@ -40,57 +39,38 @@ void demo() {
     
     if (!env.observations || !env.actions || !env.rewards) {
         fprintf(stderr, "Failed to allocate memory for demo buffers.\n");
-        // Free any successfully allocated buffers before exiting
         free(env.observations); free(env.actions); free(env.rewards);
         return;
     }
-    // -----------------------------------------------------------
 
-    // Initialize Boids C-specific data (boids array, logs)
     init(&env); 
-    
-    // Initialize rendering client EXPLICITLY before the loop, like Cartpole/Pong
     Client* client = make_client(&env);
+
     if (client == NULL) {
         fprintf(stderr, "ERROR: Failed to create rendering client during initial setup.\n");
-        // Need to free manually allocated buffers and env-specific data before returning
         free_allocated(&env);
         free(env.observations); free(env.actions); free(env.rewards);
-        return; // Exit demo function
+        return;
     }
-    env.client = client; // Assign the created client to the env struct
+    env.client = client;
     
     // Initial reset
     c_reset(&env);
-
-    SetTargetFPS(60);
     int total_steps = 0;
-    float total_return = 0.0f;
 
     printf("Starting Boids demo with %d boids. Press ESC to exit.\n", env.num_boids);
 
-    while (!WindowShouldClose()) { // Raylib function to check if ESC is pressed or window closed
+    while (!WindowShouldClose() && total_steps < MAX_STEPS_DEMO) { // Raylib function to check if ESC is pressed or window closed
         generate_dummy_actions(&env);
-
         c_step(&env);
-        total_return += env.rewards[0]; // Accumulate env-level reward
-        total_steps++;
         c_render(&env);
-        total_steps = 0;
-        total_return = 0.0f;
-        c_reset(&env);
+        total_steps++;
     }
 
-    // Cleanup
-    // Use the 'client' variable created before the loop
-    if (client) { // Check the local variable, not env.client which might be modified
+    if (client) {
         c_close_client(client);
     }
-    // env.client = NULL; // No longer necessary as client is local scope to demo
-    
-    free_allocated(&env); // Free Boids-specific C memory (boids array, logs)
-    
-    // --- Free Manually Allocated Buffers ---
+    free_allocated(&env);
     free(env.observations);
     free(env.actions);
     free(env.rewards);
