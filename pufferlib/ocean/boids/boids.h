@@ -56,7 +56,7 @@ typedef struct {
     float* observations;
     // an array of shape (num_boids, 2) with the 2 values correspoinding to (velocity x, velocity y)
     float* actions;
-    // an array of shape (num_boids, 1) with the reward for each boid
+    // an array of shape (1) with the summed up reward for all boids
     float* rewards;
     unsigned char* terminals; // Not being used but is required by env_binding.h
     Boid* boids;
@@ -144,13 +144,13 @@ void c_reset(Boids *env) {
 void c_step(Boids *env) {
     Boid* current_boid;
     Boid observed_boid;
-    float vx_sum, vy_sum, x_sum, y_sum, reward;
+    float vx_sum, vy_sum, x_sum, y_sum;
     float diff_x, diff_y, dist2, x_avg, y_avg, vx_avg, vy_avg;
     unsigned visual_count;
     float current_boid_reward;
-    float total_reward = 0.0f;
 
     env->tick++;
+    env->rewards[0] = 0;
     for (unsigned current_indx = 0; current_indx < env->num_boids; current_indx++) {
         // apply action
         current_boid = &env->boids[current_indx];
@@ -162,7 +162,7 @@ void c_step(Boids *env) {
         current_boid->y = flclip(current_boid->y + current_boid->velocity.y, 0, HEIGHT - BOID_HEIGHT);
 
         // reward calculation
-        reward = 0, visual_count = 0, vx_sum = 0, vy_sum = 0, x_sum = 0, y_sum = 0;
+        current_boid_reward = 0, visual_count = 0, vx_sum = 0, vy_sum = 0, x_sum = 0, y_sum = 0;
 
         for (unsigned observed_indx = 0; observed_indx < env->num_boids; observed_indx++) {
             if (current_indx == observed_indx) continue;
@@ -172,7 +172,7 @@ void c_step(Boids *env) {
             dist2 = diff_x*diff_x + diff_y*diff_y;
 
             if (dist2 < PROTECTED_RANGE_SQUARED) {
-                reward -= (PROTECTED_RANGE_SQUARED - dist2) * AVOID_FACTOR;
+                current_boid_reward -= (PROTECTED_RANGE_SQUARED - dist2) * AVOID_FACTOR;
             } else if (dist2 < VISUAL_RANGE_SQUARED) {
                 x_sum += observed_boid.x;
                 y_sum += observed_boid.y;
@@ -188,17 +188,18 @@ void c_step(Boids *env) {
             vx_avg = vx_sum / visual_count;
             vy_avg = vy_sum / visual_count;
 
-            reward -= fabsf(vx_avg - current_boid->velocity.x) * MATCHING_FACTOR;
-            reward -= fabsf(vy_avg - current_boid->velocity.y) * MATCHING_FACTOR;
-            reward -= fabsf(x_avg  - current_boid->x) * CENTERING_FACTOR;
-            reward -= fabsf(y_avg  - current_boid->y) * CENTERING_FACTOR;
+            current_boid_reward -= fabsf(vx_avg - current_boid->velocity.x) * MATCHING_FACTOR;
+            current_boid_reward -= fabsf(vy_avg - current_boid->velocity.y) * MATCHING_FACTOR;
+            current_boid_reward -= fabsf(x_avg  - current_boid->x) * CENTERING_FACTOR;
+            current_boid_reward -= fabsf(y_avg  - current_boid->y) * CENTERING_FACTOR;
         }
 
-        if (current_boid->y < TOP_MARGIN || current_boid->y > HEIGHT - BOTTOM_MARGIN) reward -= MARGIN_TURN_FACTOR;
-        if (current_boid->x < LEFT_MARGIN || current_boid->x > WIDTH  - RIGHT_MARGIN) reward -= MARGIN_TURN_FACTOR;
+        if (current_boid->y < TOP_MARGIN || current_boid->y > HEIGHT - BOTTOM_MARGIN) current_boid_reward -= MARGIN_TURN_FACTOR;
+        if (current_boid->x < LEFT_MARGIN || current_boid->x > WIDTH  - RIGHT_MARGIN) current_boid_reward -= MARGIN_TURN_FACTOR;
 
-        current_boid_reward = 2.0f * (reward - env->min_reward) / (env->max_reward - env->min_reward) - 1.0f;
-        total_reward += current_boid_reward;
+        current_boid_reward = 2.0f * (current_boid_reward - env->min_reward) / (env->max_reward - env->min_reward) - 1.0f;
+
+        env->rewards[0] += current_boid_reward;
 
         // per-boid log update
         env->boid_logs[current_indx].episode_return += current_boid_reward;
@@ -213,7 +214,6 @@ void c_step(Boids *env) {
     }
 
     // environment level updates
-    env->rewards[0] = (env->num_boids > 0) ? total_reward / env->num_boids : 0.0f;
     compute_observations(env);
 }
 
