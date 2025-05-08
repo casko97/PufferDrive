@@ -81,8 +81,8 @@ static void add_log(Boids *env, unsigned boid_indx) {
 
 static inline float flmax(float a, float b) { return a > b ? a : b; }
 static inline float flmin(float a, float b) { return a > b ? b : a; }
-static inline float flclip(float x,float lo,float hi) {return flmin(hi,flmax(lo,x));}
-static inline float rndf(float lo,float hi) {return lo + (float)rand()/(float)RAND_MAX*(hi-lo);}
+static inline float flclip(float x,float lo,float hi) { return flmin(hi,flmax(lo,x)); }
+static inline float rndf(float lo,float hi) { return lo + (float)rand()/(float)RAND_MAX*(hi-lo); }
 
 static void respawn_boid(Boids *env, unsigned int i) {
     env->boids[i].x = rndf(LEFT_MARGIN, WIDTH  - RIGHT_MARGIN);
