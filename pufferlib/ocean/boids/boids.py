@@ -56,7 +56,7 @@ class Boids(pufferlib.PufferEnv):
             max_steps=max_steps
         )
 
-    def reset(self, seed=None):
+    def reset(self, seed=0):
         self.tick = 0
         binding.vec_reset(self.c_envs, seed)
         return self.observations, []
