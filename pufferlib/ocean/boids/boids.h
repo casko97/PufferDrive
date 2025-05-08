@@ -107,7 +107,7 @@ void init(Boids *env) {
         env->boids[current_indx].velocity.y = 0;
     }
 
-    /* reward bounds for min-max normalisation */
+    // reward bounds for min-max normalisation
     env->max_reward = 0;
     env->min_reward = -flmax(
         MAX_AVOID_DISTANCE_SQUARED * env->num_boids,
@@ -151,7 +151,6 @@ void c_step(Boids *env) {
     float total_reward = 0.0f;
 
     env->tick++;
-
     for (unsigned current_indx = 0; current_indx < env->num_boids; current_indx++) {
         // apply action
         current_boid = &env->boids[current_indx];
