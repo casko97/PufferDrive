@@ -58,6 +58,7 @@ typedef struct {
     float* actions;
     // an array of shape (num_boids, 1) with the reward for each boid
     float* rewards;
+    unsigned char* terminals; // Not being used but is required by env_binding.h
     Boid* boids;
     unsigned int num_boids;
     int max_reward;
