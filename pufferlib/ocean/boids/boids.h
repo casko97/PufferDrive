@@ -144,10 +144,9 @@ void c_reset(Boids *env) {
 void c_step(Boids *env) {
     Boid* current_boid;
     Boid observed_boid;
-    float vx_sum, vy_sum, x_sum, y_sum;
+    float vx_sum, vy_sum, x_sum, y_sum, current_boid_reward;
     float diff_x, diff_y, dist2, x_avg, y_avg, vx_avg, vy_avg;
     unsigned visual_count;
-    float current_boid_reward;
 
     env->tick++;
     env->rewards[0] = 0;
