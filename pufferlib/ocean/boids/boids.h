@@ -100,12 +100,11 @@ void init(Boids *env) {
     env->tick = 0;
     env->max_steps = 1000;
 
-    /* positions & velocities */
-    for (unsigned i = 0; i < env->num_boids; i++) {
-        env->boids[i].x = rndf(LEFT_MARGIN, WIDTH  - RIGHT_MARGIN);
-        env->boids[i].y = rndf(BOTTOM_MARGIN, HEIGHT - TOP_MARGIN);
-        env->boids[i].velocity.x = 0;
-        env->boids[i].velocity.y = 0;
+    for (unsigned current_indx = 0; current_indx < env->num_boids; current_indx++) {
+        env->boids[current_indx].x = rndf(LEFT_MARGIN, WIDTH  - RIGHT_MARGIN);
+        env->boids[current_indx].y = rndf(BOTTOM_MARGIN, HEIGHT - TOP_MARGIN);
+        env->boids[current_indx].velocity.x = 0;
+        env->boids[current_indx].velocity.y = 0;
     }
 
     /* reward bounds for min-max normalisation */
