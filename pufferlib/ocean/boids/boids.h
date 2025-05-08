@@ -61,8 +61,8 @@ typedef struct {
     unsigned char* terminals; // Not being used but is required by env_binding.h
     Boid* boids;
     unsigned int num_boids;
-    int max_reward;
-    int min_reward;
+    float max_reward;
+    float min_reward;
     int max_steps;
     int tick;
     Log log;
