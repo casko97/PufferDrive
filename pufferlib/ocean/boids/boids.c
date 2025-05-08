@@ -38,7 +38,7 @@ void demo() {
     env.rewards = (float*)calloc(1, sizeof(float)); // Env-level reward
     
     if (!env.observations || !env.actions || !env.rewards) {
-        fprintf(stderr, "Failed to allocate memory for demo buffers.\n");
+        fprintf(stderr, "ERROR: Failed to allocate memory for demo buffers.\n");
         free(env.observations); free(env.actions); free(env.rewards);
         return;
     }
