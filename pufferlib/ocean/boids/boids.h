@@ -193,18 +193,17 @@ void c_step(Boids *env) {
             current_boid_reward -= fabsf(x_avg  - current_boid->x) * CENTERING_FACTOR;
             current_boid_reward -= fabsf(y_avg  - current_boid->y) * CENTERING_FACTOR;
         }
-
-        if (current_boid->y < TOP_MARGIN || current_boid->y > HEIGHT - BOTTOM_MARGIN) current_boid_reward -= MARGIN_TURN_FACTOR;
-        if (current_boid->x < LEFT_MARGIN || current_boid->x > WIDTH  - RIGHT_MARGIN) current_boid_reward -= MARGIN_TURN_FACTOR;
-
-        current_boid_reward = 2.0f * (current_boid_reward - env->min_reward) / (env->max_reward - env->min_reward) - 1.0f;
-
+        if (current_boid->y < TOP_MARGIN || current_boid->y > HEIGHT - BOTTOM_MARGIN) {
+            current_boid_reward -= MARGIN_TURN_FACTOR;
+        }
+        if (current_boid->x < LEFT_MARGIN || current_boid->x > WIDTH  - RIGHT_MARGIN) {
+            current_boid_reward -= MARGIN_TURN_FACTOR;
+        }
         env->rewards[0] += current_boid_reward;
 
         // per-boid log update
         env->boid_logs[current_indx].episode_return += current_boid_reward;
         env->boid_logs[current_indx].episode_length += 1.0f;
-
         if (env->tick % LOG_INTERVAL == 0) {
             env->boid_logs[current_indx].score = env->boid_logs[current_indx].episode_return;
             env->boid_logs[current_indx].perf  = (env->boid_logs[current_indx].score/env->boid_logs[current_indx].episode_length + 1.0f)*0.5f;
