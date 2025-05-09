@@ -163,8 +163,7 @@ void c_step(Boids *env) {
         current_boid->y = flclip(current_boid->y + current_boid->velocity.y, 0, HEIGHT - BOID_HEIGHT);
 
         // reward calculation
-        current_boid_reward = 0, visual_count = 0, vx_sum = 0, vy_sum = 0, x_sum = 0, y_sum = 0;
-
+        current_boid_reward = 0.0f, visual_count = 0.0f, vx_sum = 0.0f, vy_sum = 0.0f, x_sum = 0.0f, y_sum = 0.0f;
         for (unsigned observed_indx = 0; observed_indx < env->num_boids; observed_indx++) {
             if (current_indx == observed_indx) continue;
             observed_boid = env->boids[observed_indx];
