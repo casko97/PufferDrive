@@ -109,10 +109,12 @@ void init(Boids *env) {
 
     // reward bounds for min-max normalisation
     env->max_reward = 0;
-    env->min_reward = -flmax(
-        MAX_AVOID_DISTANCE_SQUARED * env->num_boids,
-        MAX_AVG_POSITION_SQUARED
-    ) - MAX_MARGIN_TURN_FACTOR;
+    env->min_reward = env->num_boids * (
+        -flmax(
+            MAX_AVOID_DISTANCE_SQUARED * env->num_boids,
+            MAX_AVG_POSITION_SQUARED
+        ) - MAX_MARGIN_TURN_FACTOR
+    );
 }
 
 void free_allocated(Boids* env) {
@@ -212,7 +214,7 @@ void c_step(Boids *env) {
         }
     }
 
-    // environment level updates
+    env->rewards[0] = 2.0f * (env->rewards[0] - env->min_reward) / (env->max_reward - env->min_reward) - 1.0f;
     compute_observations(env);
 }
 
