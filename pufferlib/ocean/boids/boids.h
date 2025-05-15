@@ -29,7 +29,6 @@
 #define BOID_WIDTH 32
 #define BOID_HEIGHT 32
 #define BOID_TEXTURE_PATH "./resources/puffers_128.png"
-#define LOG_INTERVAL 128
 
 typedef struct {
     float perf;
@@ -64,9 +63,10 @@ typedef struct {
     float max_reward;
     float min_reward;
     int max_steps;
-    int tick;
+    unsigned tick;
     Log log;
     Log* boid_logs;
+    unsigned report_interval;
     Client* client;
 } Boids;
 
@@ -127,10 +127,11 @@ static void compute_observations(Boids *env) {
 
     for (unsigned boids_indx = 0; boids_indx < env->num_boids; boids_indx++) {
         base_indx = boids_indx * 4;
-        env->observations[base_indx + 0] = env->boids[boids_indx].x;
-        env->observations[base_indx + 1] = env->boids[boids_indx].y;
-        env->observations[base_indx + 2] = env->boids[boids_indx].velocity.x;
-        env->observations[base_indx + 3] = env->boids[boids_indx].velocity.y;
+        env->observations[base_indx] = env->boids[boids_indx].x;
+        env->observations[base_indx+1] = env->boids[boids_indx].y;
+        env->observations[base_indx+2] = env->boids[boids_indx].velocity.x;
+        env->observations[base_indx+3] = env->boids[boids_indx].velocity.y;
+        // printf("base_indx: %d, observations: %f %f %f %f\n", base_indx, env->observations[base_indx], env->observations[base_indx+1], env->observations[base_indx+2], env->observations[base_indx+3]);
     }
 }
 
@@ -204,7 +205,7 @@ void c_step(Boids *env) {
         // per-boid log update
         env->boid_logs[current_indx].episode_return += current_boid_reward;
         env->boid_logs[current_indx].episode_length += 1.0f;
-        if (env->tick % LOG_INTERVAL == 0) {
+        if (env->tick == env->report_interval) {
             env->boid_logs[current_indx].score = env->boid_logs[current_indx].episode_return;
             env->boid_logs[current_indx].perf  = (env->boid_logs[current_indx].score/env->boid_logs[current_indx].episode_length + 1.0f)*0.5f;
             add_log(env, current_indx);

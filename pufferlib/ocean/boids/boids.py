@@ -25,12 +25,10 @@ class Boids(pufferlib.PufferEnv):
         self.num_boids = num_boids
         self.max_steps = max_steps
 
-        # Define single observation space for one agent (boid)
         self.single_observation_space = gymnasium.spaces.Box(
             -1000.0, 1000.0, shape=(4,), dtype=np.float32
         )
         
-        # Keep the original action space shape that the policy expects
         self.single_action_space = gymnasium.spaces.Box(
             -np.inf, np.inf, shape=(2,), dtype=np.float32
         )
@@ -46,15 +44,30 @@ class Boids(pufferlib.PufferEnv):
         
         self.c_envs = binding.vec_init(
             self.observations,
-            self.flat_actions,  # Pass the flattened buffer to C
+            self.flat_actions,
             self.rewards,
             self.terminals,
             self.truncations,
             num_envs,
             seed,
             num_boids=num_boids,
+            report_interval=self.report_interval,
             max_steps=max_steps
         )
+        # c_envs = []
+        # for env_num in range(num_envs):
+        #     c_envs.append(binding.env_init(
+        #         self.observations[env_num*num_boids:(env_num+1)*num_boids],
+        #         self.flat_actions[],
+        #         self.rewards[env_num*num_boids:(env_num+1)*num_boids],
+        #         self.terminals[env_num*num_boids:(env_num+1)*num_boids],
+        #         self.truncations[env_num*num_boids:(env_num+1)*num_boids],
+        #         seed,
+        #         num_boids=num_boids,
+        #         max_steps=max_steps
+        #     ))
+        
+        # self.c_envs = binding.vectorize(*c_envs)
 
     def reset(self, seed=0):
         self.tick = 0
@@ -67,9 +80,11 @@ class Boids(pufferlib.PufferEnv):
         
         # Copy the clipped actions to our flat actions buffer for C binding
         # Flatten from [num_agents, num_boids, 2] to a 1D array for C
+        # TODO: Check if I even need this? its not like I'm using the actions anywhere else
         self.flat_actions[:] = clipped_actions.reshape(-1)
         
         # Save the original actions for the experience buffer
+        # TODO: Same thing with this
         self.actions[:] = clipped_actions
         
         self.tick += 1
@@ -81,6 +96,7 @@ class Boids(pufferlib.PufferEnv):
             if log_data:
                 info.append(log_data)
 
+        # print(f"OBSERVATIONS: {self.observations}")
         return (self.observations, self.rewards,
             self.terminals, self.truncations, info)
 
