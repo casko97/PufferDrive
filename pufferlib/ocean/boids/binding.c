@@ -5,6 +5,7 @@
 
 static int my_init(Env* env, PyObject* args, PyObject* kwargs) {
     env->num_boids = unpack(kwargs, "num_boids");
+    env->report_interval = unpack(kwargs, "report_interval");
     init(env);
     return 0;
 }
