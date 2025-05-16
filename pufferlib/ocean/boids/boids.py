@@ -65,7 +65,7 @@ class Boids(pufferlib.PufferEnv):
 
     def step(self, actions):
         # Clip actions to valid range
-        clipped_actions = np.clip(actions, -3.0, 3.0)
+        clipped_actions = np.clip(actions, -1.0, 1.0)
         
         # Copy the clipped actions to our flat actions buffer for C binding
         # Flatten from [num_agents, num_boids, 2] to a 1D array for C
