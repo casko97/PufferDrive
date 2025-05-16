@@ -156,8 +156,8 @@ void c_step(Boids *env) {
         // apply action
         current_boid = &env->boids[current_indx];
 
-        current_boid->velocity.x += flclip(env->actions[current_indx * 2 + 0], -VELOCITY_CAP, VELOCITY_CAP);
-        current_boid->velocity.y += flclip(env->actions[current_indx * 2 + 1], -VELOCITY_CAP, VELOCITY_CAP);
+        current_boid->velocity.x = flclip(current_boid->velocity.x + env->actions[current_indx * 2 + 0], -VELOCITY_CAP, VELOCITY_CAP);
+        current_boid->velocity.y = flclip(current_boid->velocity.y + env->actions[current_indx * 2 + 1], -VELOCITY_CAP, VELOCITY_CAP);
 
         current_boid->x = flclip(current_boid->x + current_boid->velocity.x, 0, WIDTH  - BOID_WIDTH);
         current_boid->y = flclip(current_boid->y + current_boid->velocity.y, 0, HEIGHT - BOID_HEIGHT);
