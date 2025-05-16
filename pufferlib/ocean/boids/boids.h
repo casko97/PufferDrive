@@ -131,7 +131,6 @@ static void compute_observations(Boids *env) {
         env->observations[base_indx+1] = env->boids[boids_indx].y;
         env->observations[base_indx+2] = env->boids[boids_indx].velocity.x;
         env->observations[base_indx+3] = env->boids[boids_indx].velocity.y;
-        // printf("base_indx: %d, observations: %f %f %f %f\n", base_indx, env->observations[base_indx], env->observations[base_indx+1], env->observations[base_indx+2], env->observations[base_indx+3]);
     }
 }
 
