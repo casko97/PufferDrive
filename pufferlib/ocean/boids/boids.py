@@ -21,6 +21,7 @@ class Boids(pufferlib.PufferEnv):
         report_interval=1,
         seed=0
     ):
+        ACTION_SPACE_SIZE = 2
         self.num_agents = num_envs * num_boids
         self.num_boids = num_boids
         self.max_steps = max_steps
@@ -30,7 +31,7 @@ class Boids(pufferlib.PufferEnv):
         )
         
         self.single_action_space = gymnasium.spaces.Box(
-            -np.inf, np.inf, shape=(2,), dtype=np.float32
+            -np.inf, np.inf, shape=(ACTION_SPACE_SIZE,), dtype=np.float32
         )
 
         self.render_mode = render_mode
@@ -40,34 +41,23 @@ class Boids(pufferlib.PufferEnv):
 
         # Create C binding with flattened action buffer
         # We need to manually create a flattened action buffer to pass to C
-        self.flat_actions = np.zeros((self.num_agents * 2), dtype=np.float32)
+        self.flat_actions = np.zeros((self.num_agents * ACTION_SPACE_SIZE), dtype=np.float32)
         
-        self.c_envs = binding.vec_init(
-            self.observations,
-            self.flat_actions,
-            self.rewards,
-            self.terminals,
-            self.truncations,
-            num_envs,
-            seed,
-            num_boids=num_boids,
-            report_interval=self.report_interval,
-            max_steps=max_steps
-        )
-        # c_envs = []
-        # for env_num in range(num_envs):
-        #     c_envs.append(binding.env_init(
-        #         self.observations[env_num*num_boids:(env_num+1)*num_boids],
-        #         self.flat_actions[],
-        #         self.rewards[env_num*num_boids:(env_num+1)*num_boids],
-        #         self.terminals[env_num*num_boids:(env_num+1)*num_boids],
-        #         self.truncations[env_num*num_boids:(env_num+1)*num_boids],
-        #         seed,
-        #         num_boids=num_boids,
-        #         max_steps=max_steps
-        #     ))
+        c_envs = []
+        for env_num in range(num_envs):
+            c_envs.append(binding.env_init(
+                self.observations[env_num*num_boids:(env_num+1)*num_boids],
+                self.flat_actions[env_num*num_boids*ACTION_SPACE_SIZE:(env_num+1)*num_boids*ACTION_SPACE_SIZE],
+                self.rewards[env_num*num_boids:(env_num+1)*num_boids],
+                self.terminals[env_num*num_boids:(env_num+1)*num_boids],
+                self.truncations[env_num*num_boids:(env_num+1)*num_boids],
+                seed,
+                num_boids=num_boids,
+                report_interval=self.report_interval,
+                max_steps=max_steps
+            ))
         
-        # self.c_envs = binding.vectorize(*c_envs)
+        self.c_envs = binding.vectorize(*c_envs)
 
     def reset(self, seed=0):
         self.tick = 0
