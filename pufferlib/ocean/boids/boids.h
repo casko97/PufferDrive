@@ -12,14 +12,18 @@
 #define LEFT_MARGIN 50
 #define RIGHT_MARGIN 50
 #define VELOCITY_CAP 3
-#define MARGIN_TURN_FACTOR 0.2f
+#define MARGIN_TURN_FACTOR 1.0f
+// #define MARGIN_TURN_FACTOR 0.2f
+#define CENTERING_FACTOR 0.0f
+// #define CENTERING_FACTOR 0.0005f
+#define AVOID_FACTOR 0.0f
+// #define AVOID_FACTOR 0.05f
+#define MATCHING_FACTOR 0.0f
+// #define MATCHING_FACTOR 0.05f
 #define VISUAL_RANGE 20
 #define VISUAL_RANGE_SQUARED (VISUAL_RANGE * VISUAL_RANGE)
 #define PROTECTED_RANGE 2
 #define PROTECTED_RANGE_SQUARED (PROTECTED_RANGE * PROTECTED_RANGE)
-#define CENTERING_FACTOR 0.0005f
-#define AVOID_FACTOR 0.05f
-#define MATCHING_FACTOR 0.05f
 #define MAX_AVOID_DISTANCE_SQUARED (PROTECTED_RANGE_SQUARED * AVOID_FACTOR)
 #define MAX_AVG_POSITION_SQUARED  (VISUAL_RANGE_SQUARED * CENTERING_FACTOR)
 #define MAX_AVG_VELOCITY_SQUARED  (VELOCITY_CAP * 4 * MATCHING_FACTOR)
@@ -146,9 +150,9 @@ void c_reset(Boids *env) {
 void c_step(Boids *env) {
     Boid* current_boid;
     Boid observed_boid;
-    float vx_sum, vy_sum, x_sum, y_sum, current_boid_reward;
-    float diff_x, diff_y, dist2, x_avg, y_avg, vx_avg, vy_avg;
-    unsigned visual_count;
+    float vis_vx_sum, vis_vy_sum, vis_x_sum, vis_y_sum, vis_x_avg, vis_y_avg, vis_vx_avg, vis_vy_avg;
+    float diff_x, diff_y, dist2, protected_dist_sum, current_boid_reward;
+    unsigned visual_count, protected_count;
 
     env->tick++;
     env->rewards[0] = 0;
@@ -163,7 +167,7 @@ void c_step(Boids *env) {
         current_boid->y = flclip(current_boid->y + current_boid->velocity.y, 0, HEIGHT - BOID_HEIGHT);
 
         // reward calculation
-        current_boid_reward = 0.0f, visual_count = 0.0f, vx_sum = 0.0f, vy_sum = 0.0f, x_sum = 0.0f, y_sum = 0.0f;
+        current_boid_reward = 0.0f, visual_count = 0.0f, vis_vx_sum = 0.0f, vis_vy_sum = 0.0f, vis_x_sum = 0.0f, vis_y_sum = 0.0f;
         for (unsigned observed_indx = 0; observed_indx < env->num_boids; observed_indx++) {
             if (current_indx == observed_indx) continue;
             observed_boid = env->boids[observed_indx];
@@ -172,26 +176,30 @@ void c_step(Boids *env) {
             dist2 = diff_x*diff_x + diff_y*diff_y;
 
             if (dist2 < PROTECTED_RANGE_SQUARED) {
-                current_boid_reward -= (PROTECTED_RANGE_SQUARED - dist2) * AVOID_FACTOR;
+                protected_dist_sum += (PROTECTED_RANGE_SQUARED - dist2);
+                protected_count++;
             } else if (dist2 < VISUAL_RANGE_SQUARED) {
-                x_sum += observed_boid.x;
-                y_sum += observed_boid.y;
-                vx_sum += observed_boid.velocity.x;
-                vy_sum += observed_boid.velocity.y;
+                vis_x_sum += observed_boid.x;
+                vis_y_sum += observed_boid.y;
+                vis_vx_sum += observed_boid.velocity.x;
+                vis_vy_sum += observed_boid.velocity.y;
                 visual_count++;
             }
         }
 
+        if (protected_count) {
+            current_boid_reward -= fabsf(protected_dist_sum / protected_count) * AVOID_FACTOR;
+        }
         if (visual_count) {
-            x_avg  = x_sum  / visual_count;
-            y_avg  = y_sum  / visual_count;
-            vx_avg = vx_sum / visual_count;
-            vy_avg = vy_sum / visual_count;
+            vis_x_avg  = vis_x_sum  / visual_count;
+            vis_y_avg  = vis_y_sum  / visual_count;
+            vis_vx_avg = vis_vx_sum / visual_count;
+            vis_vy_avg = vis_vy_sum / visual_count;
 
-            current_boid_reward -= fabsf(vx_avg - current_boid->velocity.x) * MATCHING_FACTOR;
-            current_boid_reward -= fabsf(vy_avg - current_boid->velocity.y) * MATCHING_FACTOR;
-            current_boid_reward -= fabsf(x_avg  - current_boid->x) * CENTERING_FACTOR;
-            current_boid_reward -= fabsf(y_avg  - current_boid->y) * CENTERING_FACTOR;
+            current_boid_reward -= fabsf(vis_vx_avg - current_boid->velocity.x) * MATCHING_FACTOR;
+            current_boid_reward -= fabsf(vis_vy_avg - current_boid->velocity.y) * MATCHING_FACTOR;
+            current_boid_reward -= fabsf(vis_x_avg  - current_boid->x) * CENTERING_FACTOR;
+            current_boid_reward -= fabsf(vis_y_avg  - current_boid->y) * CENTERING_FACTOR;
         }
         if (current_boid->y < TOP_MARGIN || current_boid->y > HEIGHT - BOTTOM_MARGIN) {
             current_boid_reward -= MARGIN_TURN_FACTOR;
@@ -199,7 +207,10 @@ void c_step(Boids *env) {
         if (current_boid->x < LEFT_MARGIN || current_boid->x > WIDTH  - RIGHT_MARGIN) {
             current_boid_reward -= MARGIN_TURN_FACTOR;
         }
-        env->rewards[0] += current_boid_reward;
+        env->rewards[current_indx] = current_boid_reward;
+        // Normalization
+        // env->rewards[current_indx] = current_boid_reward / 15.0f;
+        env->rewards[current_indx] = current_boid_reward / 2.0f;
 
         // per-boid log update
         env->boid_logs[current_indx].episode_return += current_boid_reward;
@@ -212,7 +223,6 @@ void c_step(Boids *env) {
         }
     }
 
-    env->rewards[0] = 2.0f * (env->rewards[0] - env->min_reward) / (env->max_reward - env->min_reward) - 1.0f;
     compute_observations(env);
 }
 
