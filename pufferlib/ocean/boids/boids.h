@@ -151,7 +151,7 @@ void c_step(Boids *env) {
     Boid* current_boid;
     Boid observed_boid;
     float vis_vx_sum, vis_vy_sum, vis_x_sum, vis_y_sum, vis_x_avg, vis_y_avg, vis_vx_avg, vis_vy_avg;
-    float diff_x, diff_y, dist2, protected_dist_sum, current_boid_reward;
+    float diff_x, diff_y, dist, protected_dist_sum, current_boid_reward;
     unsigned visual_count, protected_count;
 
     env->tick++;
@@ -173,12 +173,12 @@ void c_step(Boids *env) {
             observed_boid = env->boids[observed_indx];
             diff_x = current_boid->x - observed_boid.x;
             diff_y = current_boid->y - observed_boid.y;
-            dist2 = diff_x*diff_x + diff_y*diff_y;
+            dist = sqrtf(diff_x*diff_x + diff_y*diff_y);
 
-            if (dist2 < PROTECTED_RANGE_SQUARED) {
-                protected_dist_sum += (PROTECTED_RANGE_SQUARED - dist2);
+            if (dist < PROTECTED_RANGE) {
+                protected_dist_sum += (PROTECTED_RANGE - dist);
                 protected_count++;
-            } else if (dist2 < VISUAL_RANGE_SQUARED) {
+            } else if (dist < VISUAL_RANGE) {
                 vis_x_sum += observed_boid.x;
                 vis_y_sum += observed_boid.y;
                 vis_vx_sum += observed_boid.velocity.x;
