@@ -21,13 +21,7 @@
 #define MATCHING_FACTOR 0.0f
 // #define MATCHING_FACTOR 0.05f
 #define VISUAL_RANGE 20
-#define VISUAL_RANGE_SQUARED (VISUAL_RANGE * VISUAL_RANGE)
 #define PROTECTED_RANGE 2
-#define PROTECTED_RANGE_SQUARED (PROTECTED_RANGE * PROTECTED_RANGE)
-#define MAX_AVOID_DISTANCE_SQUARED (PROTECTED_RANGE_SQUARED * AVOID_FACTOR)
-#define MAX_AVG_POSITION_SQUARED  (VISUAL_RANGE_SQUARED * CENTERING_FACTOR)
-#define MAX_AVG_VELOCITY_SQUARED  (VELOCITY_CAP * 4 * MATCHING_FACTOR)
-#define MAX_MARGIN_TURN_FACTOR 2 * MARGIN_TURN_FACTOR
 #define WIDTH 800
 #define HEIGHT 600
 #define BOID_WIDTH 32
@@ -111,14 +105,6 @@ void init(Boids *env) {
         env->boids[current_indx].velocity.y = 0;
     }
 
-    // reward bounds for min-max normalisation
-    env->max_reward = 0;
-    env->min_reward = env->num_boids * (
-        -flmax(
-            MAX_AVOID_DISTANCE_SQUARED * env->num_boids,
-            MAX_AVG_POSITION_SQUARED
-        ) - MAX_MARGIN_TURN_FACTOR
-    );
 }
 
 void free_allocated(Boids* env) {
