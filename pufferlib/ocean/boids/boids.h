@@ -193,7 +193,6 @@ void c_step(Boids *env) {
         if (current_boid->x < LEFT_MARGIN || current_boid->x > WIDTH  - RIGHT_MARGIN) {
             current_boid_reward -= MARGIN_TURN_FACTOR;
         }
-        env->rewards[current_indx] = current_boid_reward;
         // Normalization
         // env->rewards[current_indx] = current_boid_reward / 15.0f;
         env->rewards[current_indx] = current_boid_reward / 2.0f;
