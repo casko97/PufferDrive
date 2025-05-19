@@ -27,7 +27,6 @@ void demo() {
     // Initialize Boids environment struct
     Boids env = {0}; 
     env.num_boids = NUM_BOIDS_DEMO;
-    env.max_steps = MAX_STEPS_DEMO;
     
     // In the Python binding, these pointers are assigned from NumPy arrays.
     // Here, we need to allocate them explicitly.
