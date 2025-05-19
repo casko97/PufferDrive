@@ -58,6 +58,10 @@ typedef struct {
     unsigned char* terminals; // Not being used but is required by env_binding.h
     Boid* boids;
     unsigned int num_boids;
+    float margin_turn_factor;
+    float centering_factor;
+    float avoid_factor;
+    float matching_factor;
     unsigned tick;
     Log log;
     Log* boid_logs;
@@ -172,7 +176,7 @@ void c_step(Boids *env) {
         }
 
         if (protected_count) {
-            current_boid_reward -= fabsf(protected_dist_sum / protected_count) * AVOID_FACTOR;
+            current_boid_reward -= fabsf(protected_dist_sum / protected_count) * env->avoid_factor;
         }
         if (visual_count) {
             vis_x_avg  = vis_x_sum  / visual_count;
@@ -180,16 +184,16 @@ void c_step(Boids *env) {
             vis_vx_avg = vis_vx_sum / visual_count;
             vis_vy_avg = vis_vy_sum / visual_count;
 
-            current_boid_reward -= fabsf(vis_vx_avg - current_boid->velocity.x) * MATCHING_FACTOR;
-            current_boid_reward -= fabsf(vis_vy_avg - current_boid->velocity.y) * MATCHING_FACTOR;
-            current_boid_reward -= fabsf(vis_x_avg  - current_boid->x) * CENTERING_FACTOR;
-            current_boid_reward -= fabsf(vis_y_avg  - current_boid->y) * CENTERING_FACTOR;
+            current_boid_reward -= fabsf(vis_vx_avg - current_boid->velocity.x) * env->matching_factor;
+            current_boid_reward -= fabsf(vis_vy_avg - current_boid->velocity.y) * env->matching_factor;
+            current_boid_reward -= fabsf(vis_x_avg  - current_boid->x) * env->centering_factor;
+            current_boid_reward -= fabsf(vis_y_avg  - current_boid->y) * env->centering_factor;
         }
         if (current_boid->y < TOP_MARGIN || current_boid->y > HEIGHT - BOTTOM_MARGIN) {
-            current_boid_reward -= MARGIN_TURN_FACTOR;
+            current_boid_reward -= env->margin_turn_factor;
         }
         if (current_boid->x < LEFT_MARGIN || current_boid->x > WIDTH  - RIGHT_MARGIN) {
-            current_boid_reward -= MARGIN_TURN_FACTOR;
+            current_boid_reward -= env->margin_turn_factor;
         }
         // Normalization
         // env->rewards[current_indx] = current_boid_reward / 15.0f;

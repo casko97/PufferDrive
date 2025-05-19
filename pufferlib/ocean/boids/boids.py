@@ -13,11 +13,15 @@ class Boids(pufferlib.PufferEnv):
     def __init__(
         self,
         num_envs=1,
-        num_boids=1,
         buf=None,
         render_mode=None,
+        seed=0,
         report_interval=1,
-        seed=0
+        num_boids=1,
+        margin_turn_factor=1.0,
+        centering_factor=0.0,
+        avoid_factor=0.0,
+        matching_factor=0.0
     ):
         ACTION_SPACE_SIZE = 2
         self.num_agents = num_envs * num_boids
@@ -51,6 +55,10 @@ class Boids(pufferlib.PufferEnv):
                 seed,
                 num_boids=num_boids,
                 report_interval=self.report_interval,
+                margin_turn_factor=margin_turn_factor,
+                centering_factor=centering_factor,
+                avoid_factor=avoid_factor,
+                matching_factor=matching_factor,
             ))
         
         self.c_envs = binding.vectorize(*c_envs)
