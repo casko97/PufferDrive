@@ -58,12 +58,12 @@ typedef struct {
     unsigned char* terminals; // Not being used but is required by env_binding.h
     Boid* boids;
     unsigned int num_boids;
-    int max_steps;
     unsigned tick;
     Log log;
     Log* boid_logs;
     unsigned report_interval;
     Client* client;
+
 } Boids;
 
 static void add_log(Boids *env, unsigned boid_indx) {
@@ -94,7 +94,6 @@ void init(Boids *env) {
     env->boid_logs = (Log*)calloc(env->num_boids, sizeof(Log));
     env->log = (Log){0};
     env->tick = 0;
-    env->max_steps = 1000;
 
     for (unsigned current_indx = 0; current_indx < env->num_boids; current_indx++) {
         env->boids[current_indx].x = rndf(LEFT_MARGIN, WIDTH  - RIGHT_MARGIN);

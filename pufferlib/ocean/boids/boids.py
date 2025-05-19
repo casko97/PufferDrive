@@ -14,7 +14,6 @@ class Boids(pufferlib.PufferEnv):
         self,
         num_envs=1,
         num_boids=1,
-        max_steps=1000,
         buf=None,
         render_mode=None,
         report_interval=1,
@@ -23,7 +22,6 @@ class Boids(pufferlib.PufferEnv):
         ACTION_SPACE_SIZE = 2
         self.num_agents = num_envs * num_boids
         self.num_boids = num_boids
-        self.max_steps = max_steps
 
         self.single_observation_space = gymnasium.spaces.Box(
             -1000.0, 1000.0, shape=(4,), dtype=np.float32
@@ -53,7 +51,6 @@ class Boids(pufferlib.PufferEnv):
                 seed,
                 num_boids=num_boids,
                 report_interval=self.report_interval,
-                max_steps=max_steps
             ))
         
         self.c_envs = binding.vectorize(*c_envs)
