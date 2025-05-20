@@ -28,7 +28,6 @@ class Moba(pufferlib.PufferEnv):
         super().__init__(buf=buf)
 
         c_envs = []
-        offset = 0
         players = 5 if script_opponents else 10
         self.c_state = binding.shared()
         for i in range(num_envs):
