@@ -108,10 +108,6 @@ void init(Boids *env) {
 
 }
 
-void free_allocated(Boids* env) {
-    free(env->boids);
-    free(env->boid_logs);
-}
 
 static void compute_observations(Boids *env) {
     unsigned base_indx;
@@ -224,6 +220,12 @@ void c_close_client(Client* client) {
     UnloadTexture(client->boid_texture);
     CloseWindow();
     free(client);
+}
+
+void c_close(Boids* env) {
+    free(env->boids);
+    free(env->boid_logs);
+    c_close_client(env->client);
 }
 
 Client* make_client(Boids* env) {
