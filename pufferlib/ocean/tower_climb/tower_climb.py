@@ -2,7 +2,7 @@ import numpy as np
 import gymnasium
 
 import pufferlib
-from pufferlib.ocean.tower_climb.cy_tower_climb import CyTowerClimb
+from pufferlib.ocean.tower_climb import binding
 
 
 class TowerClimb(pufferlib.PufferEnv):
@@ -21,24 +21,29 @@ class TowerClimb(pufferlib.PufferEnv):
         self.single_action_space = gymnasium.spaces.Discrete(6)
 
         super().__init__(buf=buf)   
-        self.c_envs = CyTowerClimb(self.observations, self.actions, self.rewards,
-            self.terminals, num_envs, num_maps, reward_climb_row, reward_fall_row,
-            reward_illegal_move, reward_move_block)
+        c_envs = []
+        self.c_state = binding.shared(num_maps=num_maps)
+        self.c_envs = binding.vec_init(self.observations, self.actions,
+            self.rewards, self.terminals, self.truncations, num_envs, seed,
+            num_maps=num_maps, reward_climb_row=reward_climb_row,
+            reward_fall_row=reward_fall_row, reward_illegal_move=reward_illegal_move,
+            reward_move_block=reward_move_block, state=self.c_state)
 
     def reset(self, seed=None):
-        self.c_envs.reset()
+        binding.vec_reset(self.c_envs, seed)
         self.tick = 0
         return self.observations, []
 
     def step(self, actions):
         self.actions[:] = actions
-        self.c_envs.step()
+        binding.vec_step(self.c_envs)
         self.tick += 1
         info = []
         if self.tick % self.report_interval == 0:
-            log = self.c_envs.log()
-            if log['episode_length'] > 0:
+            log = binding.vec_log(self.c_envs)
+            if log:
                 info.append(log)
+
         return (self.observations, self.rewards,
             self.terminals, self.truncations, info)
 
