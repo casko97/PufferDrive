@@ -4,6 +4,7 @@
 #include <math.h>
 #include <string.h>
 #include <limits.h>
+#include <stdbool.h>
 
 #include "raylib.h"
 
@@ -136,16 +137,22 @@ void c_step(Boids *env) {
     float vis_vx_sum, vis_vy_sum, vis_x_sum, vis_y_sum, vis_x_avg, vis_y_avg, vis_vx_avg, vis_vy_avg;
     float diff_x, diff_y, dist, protected_dist_sum, current_boid_reward;
     unsigned visual_count, protected_count;
+    bool manual_control = IsKeyDown(KEY_LEFT_SHIFT);
+    float mouse_x = (float)GetMouseX();
+    float mouse_y = (float)GetMouseY();
 
     env->tick++;
     env->rewards[0] = 0;
     for (unsigned current_indx = 0; current_indx < env->num_boids; current_indx++) {
         // apply action
         current_boid = &env->boids[current_indx];
-
-        current_boid->velocity.x = flclip(current_boid->velocity.x + env->actions[current_indx * 2 + 0], -VELOCITY_CAP, VELOCITY_CAP);
-        current_boid->velocity.y = flclip(current_boid->velocity.y + env->actions[current_indx * 2 + 1], -VELOCITY_CAP, VELOCITY_CAP);
-
+        if (manual_control) {
+            current_boid->velocity.x = flclip(current_boid->velocity.x + (mouse_x - current_boid->x), -VELOCITY_CAP, VELOCITY_CAP);
+            current_boid->velocity.y = flclip(current_boid->velocity.y + (mouse_y - current_boid->y), -VELOCITY_CAP, VELOCITY_CAP);
+        } else {
+            current_boid->velocity.x = flclip(current_boid->velocity.x + env->actions[current_indx * 2 + 0], -VELOCITY_CAP, VELOCITY_CAP);
+            current_boid->velocity.y = flclip(current_boid->velocity.y + env->actions[current_indx * 2 + 1], -VELOCITY_CAP, VELOCITY_CAP);
+        }
         current_boid->x = flclip(current_boid->x + current_boid->velocity.x, 0, WIDTH  - BOID_WIDTH);
         current_boid->y = flclip(current_boid->y + current_boid->velocity.y, 0, HEIGHT - BOID_HEIGHT);
 
@@ -158,7 +165,6 @@ void c_step(Boids *env) {
             diff_x = current_boid->x - observed_boid.x;
             diff_y = current_boid->y - observed_boid.y;
             dist = sqrtf(diff_x*diff_x + diff_y*diff_y);
-
             if (dist < PROTECTED_RANGE) {
                 protected_dist_sum += (PROTECTED_RANGE - dist);
                 protected_count++;
@@ -170,7 +176,6 @@ void c_step(Boids *env) {
                 visual_count++;
             }
         }
-
         if (protected_count) {
             current_boid_reward -= fabsf(protected_dist_sum / protected_count) * env->avoid_factor;
         }
@@ -195,7 +200,7 @@ void c_step(Boids *env) {
         // env->rewards[current_indx] = current_boid_reward / 15.0f;
         env->rewards[current_indx] = current_boid_reward / 2.0f;
 
-        // per-boid log update
+        //log updates
         env->boid_logs[current_indx].episode_return += current_boid_reward;
         env->boid_logs[current_indx].episode_length += 1.0f;
         if (env->tick == env->report_interval) {
