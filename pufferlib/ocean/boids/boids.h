@@ -106,7 +106,6 @@ void init(Boids *env) {
         env->boids[current_indx].velocity.x = 0;
         env->boids[current_indx].velocity.y = 0;
     }
-
 }
 
 
@@ -192,12 +191,17 @@ void c_step(Boids *env) {
         }
         if (current_boid->y < TOP_MARGIN || current_boid->y > HEIGHT - BOTTOM_MARGIN) {
             current_boid_reward -= env->margin_turn_factor;
+        } else {
+            current_boid_reward += env->margin_turn_factor;
         }
         if (current_boid->x < LEFT_MARGIN || current_boid->x > WIDTH  - RIGHT_MARGIN) {
             current_boid_reward -= env->margin_turn_factor;
+        } else {
+            current_boid_reward += env->margin_turn_factor;
         }
         // Normalization
         // env->rewards[current_indx] = current_boid_reward / 15.0f;
+        // printf("current_boid_reward: %f\n", current_boid_reward);
         env->rewards[current_indx] = current_boid_reward / 2.0f;
 
         //log updates
@@ -230,7 +234,9 @@ void c_close_client(Client* client) {
 void c_close(Boids* env) {
     free(env->boids);
     free(env->boid_logs);
-    c_close_client(env->client);
+    if (env->client != NULL) {
+        c_close_client(env->client);
+    }
 }
 
 Client* make_client(Boids* env) {
