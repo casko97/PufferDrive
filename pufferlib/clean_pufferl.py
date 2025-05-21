@@ -117,6 +117,11 @@ class CleanPuffeRL:
             raise pufferlib.APIUsageError(
                 f'minibatch_size {minibatch_size} > max_minibatch_size {max_minibatch_size} must divide evenly')
 
+        if batch_size < minibatch_size:
+            raise pufferlib.APIUsageError(
+                f'batch_size {batch_size} must be >= minibatch_size {minibatch_size}'
+            )
+
         self.accumulate_minibatches = max(1, minibatch_size // max_minibatch_size)
         self.total_minibatches = int(config['update_epochs'] * batch_size / self.minibatch_size)
         self.minibatch_segments = self.minibatch_size // horizon 
@@ -130,7 +135,6 @@ class CleanPuffeRL:
         self.policy = policy
         if config['compile']:
             self.policy = torch.compile(policy, mode=config['compile_mode'], fullgraph=config['compile_fullgraph'])
-
 
         # Optimizer
         if config['optimizer'] == 'adam':
@@ -894,6 +898,9 @@ def eval(args=None, vecenv=None, policy=None):
             logits, value = policy(ob, state)
             action, logprob, _ = pufferlib.pytorch.sample_logits(logits)
             action = action.cpu().numpy().reshape(vecenv.action_space.shape)
+
+        if isinstance(logits, torch.distributions.Normal):
+            action = np.clip(action, vecenv.action_space.low, vecenv.action_space.high)
 
         ob = vecenv.step(action)[0]
 

@@ -4,7 +4,7 @@
 #include <stdio.h>
 #include "raylib.h"
 
-const float VELOCITY = 5.0f;
+const float VELOCITY = 20.0f;
 
 typedef struct {
     float perf;
@@ -16,6 +16,7 @@ typedef struct {
 
 typedef struct {
     Texture2D puffer;
+    Texture2D star;
 } Client;
 
 typedef struct {
@@ -35,14 +36,14 @@ typedef struct {
     Client* client;
     Agent* agents;
     Goal* goals;
-    unsigned char* observations;
-    int* actions;
+    float* observations;
+    float* actions;
     float* rewards;
     unsigned char* terminals;
-    int size;
+    int width;
+    int height;
     int num_agents;
     int num_goals;
-    int tick;
 } Target;
 
 void init(Target* env) {
@@ -58,17 +59,18 @@ void update_goals(Target* env) {
             float dx = (goal->x - agent->x);
             float dy = (goal->y - agent->y);
             float dist = sqrt(dx*dx + dy*dy);
-            if (dist > 10) {
+            if (dist > 32) {
                 continue;
             }
-            goal->x = rand() % env->size;
-            goal->y = rand() % env->size;
+            goal->x = rand() % env->width;
+            goal->y = rand() % env->height;
             env->rewards[a] = 1.0f;
             env->log.perf += 1.0f;
             env->log.score += 1.0f;
             env->log.episode_length += agent->ticks_since_reward;
-            env->log.episode_return += agent->ticks_since_reward;
+            env->log.episode_return += 1.0f;
             env->log.n++;
+            agent->ticks_since_reward = 0;
         }
     }
     int obs_idx = 0;
@@ -76,36 +78,41 @@ void update_goals(Target* env) {
         Agent* agent = &env->agents[a];
         for (int g=0; g<env->num_goals; g++) {
             Goal* goal = &env->goals[g];
-            env->observations[obs_idx++] = (goal->x - agent->x)/env->size;
-            env->observations[obs_idx++] = (goal->y - agent->y)/env->size;
+            env->observations[obs_idx++] = (goal->x - agent->x)/env->width;
+            env->observations[obs_idx++] = (goal->y - agent->y)/env->height;
         }
         for (int a=0; a<env->num_agents; a++) {
             Agent* other = &env->agents[a];
-            env->observations[obs_idx++] = (other->x - agent->x)/env->size;
-            env->observations[obs_idx++] = (other->y - agent->y)/env->size;
+            env->observations[obs_idx++] = (other->x - agent->x)/env->width;
+            env->observations[obs_idx++] = (other->y - agent->y)/env->height;
         }
+        env->observations[obs_idx++] = agent->heading/(2*PI);
+        env->observations[obs_idx++] = env->rewards[a];
+        env->observations[obs_idx++] = agent->x/env->width;
+        env->observations[obs_idx++] = agent->y/env->height;
     }
 }
 
 void c_reset(Target* env) {
     for (int i=0; i<env->num_agents; i++) {
-        env->agents[i].x = rand() % env->size;
-        env->agents[i].y = rand() % env->size;
+        env->agents[i].x = rand() % env->width;
+        env->agents[i].y = rand() % env->height;
         env->agents[i].ticks_since_reward = 0;
     }
     for (int i=0; i<env->num_goals; i++) {
-        env->goals[i].x = rand() % env->size;
-        env->goals[i].y = rand() % env->size;
+        env->goals[i].x = rand() % env->width;
+        env->goals[i].y = rand() % env->height;
     }
     update_goals(env);
 }
 
 void c_step(Target* env) {
-    memset(env->rewards, 0, env->num_agents*sizeof(float));
-    env->tick += 1;
+    //memset(env->rewards, 0, env->num_agents*sizeof(float));
 
     for (int i=0; i<env->num_agents; i++) {
+        env->rewards[i] = 0;
         Agent* agent = &env->agents[i];
+        agent->ticks_since_reward += 1;
         agent->heading += env->actions[i];
         if (agent->heading < 0) {
             agent->heading += 2*PI;
@@ -113,18 +120,22 @@ void c_step(Target* env) {
             agent->heading -= 2*PI;
         }
 
-        agent->x += cosf(agent->heading);
+        agent->x += VELOCITY*cosf(agent->heading);
         if (agent->x < 0) {
             agent->x = 0;
-        } else if (agent->x > env->size) {
-            agent->x = env->size;
+        } else if (agent->x > env->width) {
+            agent->x = env->width;
         }
 
-        agent->y += sinf(agent->heading);
+        agent->y += VELOCITY*sinf(agent->heading);
         if (agent->y < 0) {
             agent->y = 0;
-        } else if (agent->y > env->size) {
-            agent->y = env->size;
+        } else if (agent->y > env->height) {
+            agent->y = env->height;
+        }
+        if (agent->ticks_since_reward % 512 == 0) {
+            env->agents[i].x = rand() % env->width;
+            env->agents[i].y = rand() % env->height;
         }
     }
     update_goals(env);
@@ -137,10 +148,11 @@ void c_close(Target* env) {
 
 Client* make_client(Target* env) {
     Client* client = (Client*)calloc(1, sizeof(Client));
-    InitWindow(env->size, env->size, "PufferLib Target");
+    InitWindow(env->width, env->height, "PufferLib Target");
     SetTargetFPS(60);
 
     client->puffer = LoadTexture("resources/puffers_128.png");
+    client->star = LoadTexture("resources/star.png");
     return client;
 }
 
@@ -163,7 +175,12 @@ void c_render(Target* env) {
 
     for (int i=0; i<env->num_goals; i++) {
         Goal* goal = &env->goals[i];
-        DrawCircle(goal->x, goal->y, 32, GREEN);
+        DrawTexture(
+            env->client->star,
+            goal->x - 32,
+            goal->y - 32,
+            WHITE
+        );
     }
 
     for (int i=0; i<env->num_agents; i++) {

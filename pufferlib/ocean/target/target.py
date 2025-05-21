@@ -1,5 +1,18 @@
 '''A simple sample environment. Use this as a template for your own envs.'''
 
+'''
+Pain points for docs:
+    - Build in C first
+    - Make sure obs types match in C and python
+    - Getting obs and action spaces and types correct
+    - Double check obs are not zero
+    - Correct reset behavior
+    - Make sure rewards look correct
+    - don't forget params/init in binding
+    - Use debug mode to catch segaults
+    - TODO: Add check on num agents vs obs shape!!
+'''
+
 import gymnasium
 import numpy as np
 
@@ -7,15 +20,20 @@ import pufferlib
 from pufferlib.ocean.target import binding
 
 class Target(pufferlib.PufferEnv):
-    def __init__(self, num_envs=1, num_agents=8, num_targets=8, render_mode=None, log_interval=128, size=11, buf=None, seed=0):
+    def __init__(self, num_envs=1, width=1080, height=720, num_agents=8,
+            num_goals=8, render_mode=None, log_interval=128, size=11, buf=None, seed=0):
         self.single_observation_space = gymnasium.spaces.Box(low=0, high=1,
-            shape=(size*size,), dtype=np.uint8)
-        self.single_action_space = gymnasium.spaces.Discrete(5)
+            shape=(2*(num_agents+num_goals) + 4,), dtype=np.float32)
+        self.single_action_space = gymnasium.spaces.Box(
+            low=-0.5, high=0.5, shape=(1,), dtype=np.float32)
+        #self.single_action_space = gymnasium.spaces.Discrete(9)
+
         self.render_mode = render_mode
-        self.num_agents = num_envs
+        self.num_agents = num_envs*num_agents
         self.log_interval = log_interval
 
         super().__init__(buf)
+        #self.actions = self.actions.astype(np.float32)
         c_envs = []
         for i in range(num_envs):
             c_env = binding.env_init(
@@ -24,7 +42,8 @@ class Target(pufferlib.PufferEnv):
                 self.rewards[i*num_agents:(i+1)*num_agents],
                 self.terminals[i*num_agents:(i+1)*num_agents],
                 self.truncations[i*num_agents:(i+1)*num_agents],
-                seed, num_agents=num_agents, num_targets=num_targets, size=size)
+                seed, width=width, height=height,
+                num_agents=num_agents, num_goals=num_goals)
             c_envs.append(c_env)
 
         self.c_envs = binding.vectorize(*c_envs)
@@ -36,15 +55,15 @@ class Target(pufferlib.PufferEnv):
 
     def step(self, actions):
         self.tick += 1
-
+        #actions = (actions.astype(np.float32) - 4)/8
         self.actions[:] = actions
         binding.vec_step(self.c_envs)
 
-        episode_returns = self.rewards[self.terminals]
-
         info = []
         if self.tick % self.log_interval == 0:
-            info.append(binding.vec_log(self.c_envs))
+            log = binding.vec_log(self.c_envs)
+            if log:
+                info.append(log)
 
         return (self.observations, self.rewards,
             self.terminals, self.truncations, info)
@@ -70,8 +89,5 @@ if __name__ == '__main__':
         steps += N
 
     print('Cython SPS:', steps / (time.time() - start))
-
-
-
 
 
