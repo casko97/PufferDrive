@@ -24,16 +24,13 @@ class Target(pufferlib.PufferEnv):
             num_goals=8, render_mode=None, log_interval=128, size=11, buf=None, seed=0):
         self.single_observation_space = gymnasium.spaces.Box(low=0, high=1,
             shape=(2*(num_agents+num_goals) + 4,), dtype=np.float32)
-        self.single_action_space = gymnasium.spaces.Box(
-            low=-0.5, high=0.5, shape=(1,), dtype=np.float32)
-        #self.single_action_space = gymnasium.spaces.Discrete(9)
+        self.single_action_space = gymnasium.spaces.MultiDiscrete([9, 5])
 
         self.render_mode = render_mode
         self.num_agents = num_envs*num_agents
         self.log_interval = log_interval
 
         super().__init__(buf)
-        #self.actions = self.actions.astype(np.float32)
         c_envs = []
         for i in range(num_envs):
             c_env = binding.env_init(
@@ -55,7 +52,6 @@ class Target(pufferlib.PufferEnv):
 
     def step(self, actions):
         self.tick += 1
-        #actions = (actions.astype(np.float32) - 4)/8
         self.actions[:] = actions
         binding.vec_step(self.c_envs)
 

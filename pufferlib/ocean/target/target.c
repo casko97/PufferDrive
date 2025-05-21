@@ -22,8 +22,8 @@ int main() {
         .num_goals = 8
     };
     init(&env);
-    env.observations = calloc(env.num_agents*(2*(env.num_agents + env.num_goals)+1), sizeof(float));
-    env.actions = calloc(2*env.num_agents, sizeof(float));
+    env.observations = calloc(env.num_agents*(2*(env.num_agents + env.num_goals)+4), sizeof(float));
+    env.actions = calloc(2*env.num_agents, sizeof(int));
     env.rewards = calloc(env.num_agents, sizeof(float));
     env.terminals = calloc(env.num_agents, sizeof(unsigned char));
 
@@ -34,7 +34,8 @@ int main() {
             env.actions[0] = 0;
         } else {
             for (int i=0; i<env.num_agents; i++) {
-                env.actions[i] = (float)rand()/(float)RAND_MAX - 0.5f ;
+                env.actions[2*i] = rand() % 9;
+                env.actions[2*i + 1] = rand() % 5;
             }
             //forward_linearlstm(net, env.observations, env.actions);
         }

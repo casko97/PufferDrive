@@ -4,7 +4,7 @@
 #include <stdio.h>
 #include "raylib.h"
 
-const float VELOCITY = 20.0f;
+const float MAX_SPEED = 20.0f;
 
 typedef struct {
     float perf;
@@ -23,6 +23,7 @@ typedef struct {
     float x;
     float y;
     float heading;
+    float speed;
     int ticks_since_reward;
 } Agent;
 
@@ -37,7 +38,7 @@ typedef struct {
     Agent* agents;
     Goal* goals;
     float* observations;
-    float* actions;
+    int* actions;
     float* rewards;
     unsigned char* terminals;
     int width;
@@ -113,21 +114,29 @@ void c_step(Target* env) {
         env->rewards[i] = 0;
         Agent* agent = &env->agents[i];
         agent->ticks_since_reward += 1;
-        agent->heading += env->actions[i];
+
+        agent->heading += ((float)env->actions[2*i] - 4.0f)/12.0f;
         if (agent->heading < 0) {
             agent->heading += 2*PI;
         } else if (agent->heading > 2*PI) {
             agent->heading -= 2*PI;
         }
 
-        agent->x += VELOCITY*cosf(agent->heading);
+        agent->speed += 1.0f*((float)env->actions[2*i + 1] - 2.0f);
+        if (agent->speed > MAX_SPEED) {
+            agent->speed = MAX_SPEED;
+        } else if (agent->speed < -MAX_SPEED) {
+            agent->speed = -MAX_SPEED;
+        }
+
+        agent->x += agent->speed*cosf(agent->heading);
         if (agent->x < 0) {
             agent->x = 0;
         } else if (agent->x > env->width) {
             agent->x = env->width;
         }
 
-        agent->y += VELOCITY*sinf(agent->heading);
+        agent->y += agent->speed*sinf(agent->heading);
         if (agent->y < 0) {
             agent->y = 0;
         } else if (agent->y > env->height) {
