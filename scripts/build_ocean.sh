@@ -74,7 +74,8 @@ if [ "$MODE" = "local" ]; then
     if [ "$PLATFORM" = "Linux" ]; then
         # These important debug flags don't work on macos
         FLAGS+=(
-            -fsanitize=address,undefined,bounds,pointer-overflow,leak -g
+            -fsanitize=address,undefined,bounds,pointer-overflow,leak
+            -fno-omit-frame-pointer
         )
     fi  
     clang -g -O0 ${FLAGS[@]}

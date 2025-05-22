@@ -40,7 +40,6 @@ void vtrace_check_cuda(torch::Tensor values, torch::Tensor rewards,
     }
 }
 
-
  // [num_steps, horizon]
 __global__ void puff_advantage_kernel(float* values, float* rewards,
         float* dones, float* importance, float* advantages, float gamma,

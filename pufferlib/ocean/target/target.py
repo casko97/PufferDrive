@@ -1,18 +1,5 @@
 '''A simple sample environment. Use this as a template for your own envs.'''
 
-'''
-Pain points for docs:
-    - Build in C first
-    - Make sure obs types match in C and python
-    - Getting obs and action spaces and types correct
-    - Double check obs are not zero
-    - Correct reset behavior
-    - Make sure rewards look correct
-    - don't forget params/init in binding
-    - Use debug mode to catch segaults
-    - TODO: Add check on num agents vs obs shape!!
-'''
-
 import gymnasium
 import numpy as np
 
@@ -21,7 +8,7 @@ from pufferlib.ocean.target import binding
 
 class Target(pufferlib.PufferEnv):
     def __init__(self, num_envs=1, width=1080, height=720, num_agents=8,
-            num_goals=8, render_mode=None, log_interval=128, size=11, buf=None, seed=0):
+            num_goals=4, render_mode=None, log_interval=128, size=11, buf=None, seed=0):
         self.single_observation_space = gymnasium.spaces.Box(low=0, high=1,
             shape=(2*(num_agents+num_goals) + 4,), dtype=np.float32)
         self.single_action_space = gymnasium.spaces.MultiDiscrete([9, 5])
@@ -45,7 +32,7 @@ class Target(pufferlib.PufferEnv):
 
         self.c_envs = binding.vectorize(*c_envs)
 
-    def reset(self, seed=None):
+    def reset(self, seed=0):
         binding.vec_reset(self.c_envs, seed)
         self.tick = 0
         return self.observations, []
@@ -71,19 +58,21 @@ class Target(pufferlib.PufferEnv):
         binding.vec_close(self.c_envs)
 
 if __name__ == '__main__':
-    N = 2048
-    TIME = 10
-    env = Target(num_envs=2048)
-    actions = np.random.randint(0, 5, N)
+    N = 512
+
+    env = Target(num_envs=N)
     env.reset()
-
-    import time
     steps = 0
+
+    CACHE = 1024
+    actions = np.random.randint(env.single_action_space.nvec, size=(CACHE, 2))
+
+    i = 0
+    import time
     start = time.time()
-    while time.time() - start < TIME:
-        env.step(actions)
-        steps += N
+    while time.time() - start < 10:
+        env.step(actions[i % CACHE])
+        steps += env.num_agents
+        i += 1
 
-    print('Cython SPS:', steps / (time.time() - start))
-
-
+    print('Target SPS:', int(steps / (time.time() - start)))

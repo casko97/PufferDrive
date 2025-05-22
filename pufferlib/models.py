@@ -44,13 +44,12 @@ class Default(nn.Module):
             )
 
         if self.is_multidiscrete:
-            action_nvec = env.single_action_space.nvec
-            self.decoder = nn.ModuleList([pufferlib.pytorch.layer_init(
-                nn.Linear(hidden_size, n), std=0.01) for n in action_nvec])
+            self.action_nvec = tuple(env.single_action_space.nvec)
+            self.decoder = pufferlib.pytorch.layer_init(
+                    nn.Linear(hidden_size, sum(self.action_nvec)), std=0.01)
         elif not self.is_continuous:
             self.decoder = pufferlib.pytorch.layer_init(
                 nn.Linear(hidden_size, env.single_action_space.n), std=0.01)
-
         else:
             self.decoder_mean = pufferlib.pytorch.layer_init(
                 nn.Linear(hidden_size, env.single_action_space.shape[0]), std=0.01)
@@ -83,7 +82,7 @@ class Default(nn.Module):
         '''Decodes a batch of hidden states into (multi)discrete actions.
         Assumes no time dimension (handled by LSTM wrappers).'''
         if self.is_multidiscrete:
-            logits = [dec(hidden) for dec in self.decoder]
+            logits = self.decoder(hidden).split(self.action_nvec, dim=1)
         elif self.is_continuous:
             mean = self.decoder_mean(hidden)
             logstd = self.decoder_logstd.expand_as(mean)

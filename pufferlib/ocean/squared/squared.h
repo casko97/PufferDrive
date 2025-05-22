@@ -1,3 +1,9 @@
+/* Squared: a sample single-agent grid env.
+ * Use this as a tutorial and template for your first env.
+ * See the Target env for a slightly more complex example.
+ * Star PufferLib on GitHub to support. It really, really helps!
+ */
+
 #include <stdlib.h>
 #include <string.h>
 #include "raylib.h"
@@ -12,46 +18,29 @@ const unsigned char EMPTY = 0;
 const unsigned char AGENT = 1;
 const unsigned char TARGET = 2;
 
-typedef struct Log Log;
-struct Log {
-    float perf;
-    float score;
-    float episode_return;
-    float episode_length;
-    float n;
-};
- 
-typedef struct Client Client;
-typedef struct Squared Squared;
-struct Squared {
-    Log log;
-    Client* client;
-    unsigned char* observations;
-    int* actions;
-    float* rewards;
-    unsigned char* terminals;
+// Required struct. Only use floats!
+typedef struct {
+    float perf; // Recommended 0-1 normalized single real number perf metric
+    float score; // Recommended unnormalized single real number perf metric
+    float episode_return; // Recommended metric: sum of agent rewards over episode
+    float episode_length; // Recommended metric: number of steps of agent episode
+    // Any extra fields you add here may be exported to Python in binding.c
+    float n; // Required as the last field 
+} Log;
+
+// Required that you have some struct for your env
+// Recommended that you name it the same as the env file
+typedef struct {
+    Log log; // Required field. Env binding code uses this to aggregate logs
+    unsigned char* observations; // Required. You can use any obs type, but make sure it matches in Python!
+    int* actions; // Required. int* for discrete/multidiscrete, float* for box
+    float* rewards; // Required
+    unsigned char* terminals; // Required. We don't yet have truncations as standard yet
     int size;
     int tick;
     int r;
     int c;
-};
-
-void allocate(Squared* env) {
-    env->observations = (unsigned char*)calloc(env->size*env->size, sizeof(unsigned char));
-    env->actions = (int*)calloc(1, sizeof(int));
-    env->rewards = (float*)calloc(1, sizeof(float));
-    env->terminals = (unsigned char*)calloc(1, sizeof(unsigned char));
-}
-
-void free_allocated(Squared* env) {
-    free(env->observations);
-    free(env->actions);
-    free(env->rewards);
-    free(env->terminals);
-}
-
-void c_close(Squared* env) {
-}
+} Squared;
 
 void add_log(Squared* env) {
     env->log.perf += (env->rewards[0] > 0) ? 1 : 0;
@@ -61,19 +50,22 @@ void add_log(Squared* env) {
     env->log.n++;
 }
 
+// Required function
 void c_reset(Squared* env) {
-    memset(env->observations, 0, env->size*env->size*sizeof(unsigned char));
-    env->observations[env->size*env->size/2] = AGENT;
+    int tiles = env->size*env->size;
+    memset(env->observations, 0, tiles*sizeof(unsigned char));
+    env->observations[tiles/2] = AGENT;
     env->r = env->size/2;
     env->c = env->size/2;
     env->tick = 0;
     int target_idx;
     do {
-        target_idx = rand() % (env->size*env->size);
-    } while (target_idx == env->size*env->size/2);
+        target_idx = rand() % tiles;
+    } while (target_idx == tiles/2);
     env->observations[target_idx] = TARGET;
 }
 
+// Required function
 void c_step(Squared* env) {
     env->tick += 1;
 
@@ -117,31 +109,14 @@ void c_step(Squared* env) {
     env->observations[pos] = AGENT;
 }
 
-typedef struct Client Client;
-struct Client {
-    Texture2D ball;
-};
-
-Client* make_client(Squared* env) {
-    Client* client = (Client*)calloc(1, sizeof(Client));
-    int px = 64*env->size;
-    InitWindow(px, px, "PufferLib Squared");
-    SetTargetFPS(5);
-
-    //client->agent = LoadTexture("resources/puffers_128.png");
-    return client;
-}
-
-void close_client(Client* client) {
-    CloseWindow();
-    free(client);
-}
-
+// Required function. Should handle creating the client on first call
 void c_render(Squared* env) {
-    if (env->client == NULL) {
-        env->client = make_client(env);
+    if (!IsWindowReady()) {
+        InitWindow(64*env->size, 64*env->size, "PufferLib Squared");
+        SetTargetFPS(5);
     }
 
+    // Standard across our envs so exiting is always the same
     if (IsKeyDown(KEY_ESCAPE)) {
         exit(0);
     }
@@ -156,9 +131,18 @@ void c_render(Squared* env) {
             if (tex == EMPTY) {
                 continue;
             }
-            Color color = (tex == AGENT) ? (Color){0, 255, 255, 255} : (Color){255, 0, 0, 255};
+            Color color = (tex == AGENT) ? (Color){0, 187, 187, 255} : (Color){187, 0, 0, 255};
             DrawRectangle(j*px, i*px, px, px, color);
         }
     }
+
     EndDrawing();
+}
+
+// Required function. Should clean up anything you allocated
+// Do not free env->observations, actions, rewards, terminals
+void c_close(Squared* env) {
+    if (IsWindowReady()) {
+        CloseWindow();
+    }
 }

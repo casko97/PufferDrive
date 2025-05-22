@@ -2,6 +2,19 @@
 # --no-build-isolation for 5090
 # Make c and torch compile at the same time
 # CUDA_VISIBLE_DEVICES=None LD_PRELOAD=$(gcc -print-file-name=libasan.so) python3.12 -m pufferlib.clean_pufferl eval --train.device cpu
+'''
+Pain points for docs:
+    - Build in C first
+    - Make sure obs types match in C and python
+    - Getting obs and action spaces and types correct
+    - Double check obs are not zero
+    - Correct reset behavior
+    - Make sure rewards look correct
+    - don't forget params/init in binding
+    - Use debug mode to catch segaults
+    - TODO: Add check on num agents vs obs shape!!
+'''
+
 
 from setuptools import find_packages, find_namespace_packages, setup, Extension
 from Cython.Build import cythonize

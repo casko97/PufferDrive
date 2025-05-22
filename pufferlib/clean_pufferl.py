@@ -942,8 +942,8 @@ def sweep(args=None):
         # Prevent logging final eval steps as training steps
         args['train']['total_timesteps'] = total_timesteps
 
-def profile():
-    args = args or load_config()
+def profile(args=None, vecenv=None, policy=None):
+    args = load_config()
     vecenv = vecenv or load_env(args)
     policy = policy or load_policy(args, vecenv)
 
@@ -961,7 +961,7 @@ def profile():
     print(prof.key_averages().table(sort_by='cuda_time_total', row_limit=10))
     prof.export_chrome_trace("trace.json")
 
-def export(args):
+def export(args=None, vecenv=None, policy=None):
     args = args or load_config()
     vecenv = vecenv or load_env(args)
     policy = policy or load_policy(args, vecenv)
@@ -976,7 +976,7 @@ def export(args):
     weights.tofile(path)
     print(f'Saved {len(weights)} weights to {path}')
 
-def autotune(args):
+def autotune(args=None, vecenv=None, policy=None):
     package = args['package']
     module_name = 'pufferlib.ocean' if package == 'ocean' else f'pufferlib.environments.{package}'
     env_module = importlib.import_module(module_name)

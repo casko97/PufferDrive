@@ -1,17 +1,22 @@
+/* Target: a sample multiagent env about puffers eating stars.
+ * Use this as a tutorial and template for your own multiagent envs.
+ * We suggest starting with the Squared env for a simpler intro.
+ * Star PufferLib on GitHub to support. It really, really helps!
+ */
+
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
-#include <stdio.h>
 #include "raylib.h"
 
-const float MAX_SPEED = 20.0f;
-
+// Required struct. Only use floats!
 typedef struct {
-    float perf;
-    float score;
-    float episode_return;
-    float episode_length;
-    float n;
+    float perf; // Recommended 0-1 normalized single real number perf metric
+    float score; // Recommended unnormalized single real number perf metric
+    float episode_return; // Recommended metric: sum of agent rewards over episode
+    float episode_length; // Recommended metric: number of steps of agent episode
+    // Any extra fields you add here may be exported to Python in binding.c
+    float n; // Required as the last field 
 } Log;
 
 typedef struct {
@@ -32,21 +37,27 @@ typedef struct {
     float y;
 } Goal;
 
+// Required that you have some struct for your env
+// Recommended that you name it the same as the env file
 typedef struct {
-    Log log;
+    Log log; // Required field. Env binding code uses this to aggregate logs
     Client* client;
     Agent* agents;
     Goal* goals;
-    float* observations;
-    int* actions;
-    float* rewards;
-    unsigned char* terminals;
+    float* observations; // Required. You can use any obs type, but make sure it matches in Python!
+    int* actions; // Required. int* for discrete/multidiscrete, float* for box
+    float* rewards; // Required
+    unsigned char* terminals; // Required. We don't yet have truncations as standard yet
     int width;
     int height;
     int num_agents;
     int num_goals;
 } Target;
 
+/* Recommended to have an init function of some kind if you allocate 
+ * extra memory. This should be freed by c_close. Don't forget to call
+ * this in binding.c!
+ */
 void init(Target* env) {
     env->agents = calloc(env->num_agents, sizeof(Agent));
     env->goals = calloc(env->num_goals, sizeof(Goal));
@@ -69,11 +80,19 @@ void update_goals(Target* env) {
             env->log.perf += 1.0f;
             env->log.score += 1.0f;
             env->log.episode_length += agent->ticks_since_reward;
+            agent->ticks_since_reward = 0;
             env->log.episode_return += 1.0f;
             env->log.n++;
-            agent->ticks_since_reward = 0;
         }
     }
+}
+
+/* Recommended to have an observation function of some kind because
+ * you need to compute agent observations in both reset and in step.
+ * If using float obs, try to normalize to roughly -1 to 1 by dividing
+ * by an appropriate constant.
+ */
+void compute_observations(Target* env) {
     int obs_idx = 0;
     for (int a=0; a<env->num_agents; a++) {
         Agent* agent = &env->agents[a];
@@ -94,6 +113,7 @@ void update_goals(Target* env) {
     }
 }
 
+// Required function
 void c_reset(Target* env) {
     for (int i=0; i<env->num_agents; i++) {
         env->agents[i].x = rand() % env->width;
@@ -104,77 +124,59 @@ void c_reset(Target* env) {
         env->goals[i].x = rand() % env->width;
         env->goals[i].y = rand() % env->height;
     }
-    update_goals(env);
+    compute_observations(env);
 }
 
-void c_step(Target* env) {
-    //memset(env->rewards, 0, env->num_agents*sizeof(float));
+float clip(float val, float min, float max) {
+    if (val < min) {
+        return min;
+    } else if (val > max) {
+        return max;
+    }
+    return val;
+}
 
+// Required function
+void c_step(Target* env) {
     for (int i=0; i<env->num_agents; i++) {
         env->rewards[i] = 0;
         Agent* agent = &env->agents[i];
         agent->ticks_since_reward += 1;
 
         agent->heading += ((float)env->actions[2*i] - 4.0f)/12.0f;
-        if (agent->heading < 0) {
-            agent->heading += 2*PI;
-        } else if (agent->heading > 2*PI) {
-            agent->heading -= 2*PI;
-        }
+        agent->heading = clip(agent->heading, 0, 2*PI);
 
         agent->speed += 1.0f*((float)env->actions[2*i + 1] - 2.0f);
-        if (agent->speed > MAX_SPEED) {
-            agent->speed = MAX_SPEED;
-        } else if (agent->speed < -MAX_SPEED) {
-            agent->speed = -MAX_SPEED;
-        }
+        agent->speed = clip(agent->speed, -20.0f, 20.0f);
 
         agent->x += agent->speed*cosf(agent->heading);
-        if (agent->x < 0) {
-            agent->x = 0;
-        } else if (agent->x > env->width) {
-            agent->x = env->width;
-        }
+        agent->x = clip(agent->x, 0, env->width);
 
         agent->y += agent->speed*sinf(agent->heading);
-        if (agent->y < 0) {
-            agent->y = 0;
-        } else if (agent->y > env->height) {
-            agent->y = env->height;
-        }
+        agent->y = clip(agent->y, 0, env->height);
+
         if (agent->ticks_since_reward % 512 == 0) {
             env->agents[i].x = rand() % env->width;
             env->agents[i].y = rand() % env->height;
         }
     }
     update_goals(env);
+    compute_observations(env);
 }
 
-void c_close(Target* env) {
-    free(env->agents);
-    free(env->goals);
-}
-
-Client* make_client(Target* env) {
-    Client* client = (Client*)calloc(1, sizeof(Client));
-    InitWindow(env->width, env->height, "PufferLib Target");
-    SetTargetFPS(60);
-
-    client->puffer = LoadTexture("resources/puffers_128.png");
-    client->star = LoadTexture("resources/star.png");
-    return client;
-}
-
-void close_client(Client* client) {
-    CloseWindow();
-    free(client);
-}
-
+// Required function. Should handle creating the client on first call
 void c_render(Target* env) {
     if (env->client == NULL) {
-        env->client = make_client(env);
+        InitWindow(env->width, env->height, "PufferLib Target");
+        SetTargetFPS(60);
+        env->client = (Client*)calloc(1, sizeof(Client));
+
+        // Don't do this before calling InitWindow
+        env->client->puffer = LoadTexture("resources/puffers_128.png");
+        env->client->star = LoadTexture("resources/star.png");
     }
 
+    // Standard across our envs so exiting is always the same
     if (IsKeyDown(KEY_ESCAPE)) {
         exit(0);
     }
@@ -214,4 +216,18 @@ void c_render(Target* env) {
     }
 
     EndDrawing();
+}
+
+// Required function. Should clean up anything you allocated
+// Do not free env->observations, actions, rewards, terminals
+void c_close(Target* env) {
+    free(env->agents);
+    free(env->goals);
+    if (env->client != NULL) {
+        Client* client = env->client;
+        UnloadTexture(client->puffer);
+        UnloadTexture(client->star);
+        CloseWindow();
+        free(client);
+    }
 }
