@@ -1,47 +1,21 @@
-# This is a modified `sample.yaml` config with sampling removed, for benchmark_env_perf.py script.
+name: "GDY-MettaGrid"
+_target_: mettagrid.mettagrid_env.MettaGridEnv
+
 report_stats_interval: 100
 normalize_rewards: false
 
 sampling: 0
 
 game:
-  num_agents: 24
-
-  map_builder:
-    _target_: mettagrid.room.multi_room.MultiRoom
-    num_rooms: 4
-    border_width: 6
-
-    room:
-      _target_: mettagrid.room.random.Random
-      width: 25
-      height: 25
-      border_width: 0
-
-      agents: 6
-
-      objects:
-        mine: 10
-        generator: 2
-        altar: 1
-        armory: 1
-        lasery: 1
-        lab: 1
-        factory: 1
-        temple: 1
-
-        block: 20
-        wall: 20
-
-  recursive_map_builder: true
-
+  num_agents: 16
   obs_width: 11
   obs_height: 11
   max_steps: 1000
+  recursive_map_builder: true
 
   agent:
     max_inventory: 50
-    freeze_duration: 10
+    freeze_duration: 0
     hp: 10
     rewards:
       # action_failure_penalty: 0.00001
@@ -104,28 +78,17 @@ game:
       cooldown: 10
       initial_items: 1
 
+    mine:
+      hp: 30
+      output_ore.red: 1
+      max_output: 5
+      conversion_ticks: 1
+      cooldown: 50
+      initial_items: 1
+
     mine.red:
       hp: 30
       output_ore.red: 1
-      color: 0
-      max_output: 5
-      conversion_ticks: 1
-      cooldown: 50
-      initial_items: 1
-
-    mine.blue:
-      hp: 30
-      color: 1
-      output_ore.blue: 1
-      max_output: 5
-      conversion_ticks: 1
-      cooldown: 50
-      initial_items: 1
-
-    mine.green:
-      hp: 30
-      output_ore.green: 1
-      color: 2
       max_output: 5
       conversion_ticks: 1
       cooldown: 50
@@ -135,30 +98,9 @@ game:
       hp: 30
       input_ore.red: 1
       output_battery: 1
-      color: 0
       max_output: 5
       conversion_ticks: 1
-      cooldown: 25
-      initial_items: 1
-
-    generator.blue:
-      hp: 30
-      input_ore.blue: 1
-      output_battery: 1
-      color: 1
-      max_output: 5
-      conversion_ticks: 1
-      cooldown: 25
-      initial_items: 1
-
-    generator.green:
-      hp: 30
-      input_ore.green: 1
-      output_battery: 1
-      color: 2
-      max_output: 5
-      conversion_ticks: 1
-      cooldown: 25
+      cooldown: 50
       initial_items: 1
 
     armory:
@@ -167,7 +109,7 @@ game:
       output_armor: 1
       max_output: 5
       conversion_ticks: 1
-      cooldown: 10
+      cooldown: 20
       initial_items: 1
 
     lasery:
@@ -177,7 +119,7 @@ game:
       output_laser: 1
       max_output: 5
       conversion_ticks: 1
-      cooldown: 10
+      cooldown: 20
       initial_items: 1
 
     lab:
@@ -189,7 +131,6 @@ game:
       conversion_ticks: 1
       cooldown: 5
       initial_items: 1
-
     factory:
       hp: 30
       input_blueprint: 1
@@ -213,12 +154,7 @@ game:
       initial_items: 1
 
     wall:
-      hp: 20
-      swappable: false
-
-    block:
-      hp: 20
-      swappable: true
+      hp: 10
 
   actions:
     noop:
@@ -248,3 +184,29 @@ game:
         team_3: 0.5
       team_4:
         team_4: 0.5
+
+  map_builder:
+    _target_: mettagrid.room.multi_room.MultiRoom
+    num_rooms: ${div:${..num_agents},4}
+    border_width: 6
+
+    room:
+      _target_: mettagrid.room.random.Random
+      width: 25
+      height: 25
+      border_width: 0
+
+      agents: 4
+
+      objects:
+        mine: 10
+        generator: 2
+        altar: 1
+        armory: 1
+        lasery: 1
+        lab: 1
+        factory: 1
+        temple: 1
+
+        wall: 40
+

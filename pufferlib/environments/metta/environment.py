@@ -9,20 +9,32 @@ def make(name, config='pufferlib/environments/metta/metta.yaml', render_mode='au
     '''Crafter creation function'''
     return MettaPuff(config, render_mode, buf)
 
+def oc_divide(a, b):
+    """
+    Divide a by b, returning an int if both inputs are ints and result is a whole number,
+    otherwise return a float.
+    """
+    result = a / b
+    # If both inputs are integers and the result is a whole number, return as int
+    if isinstance(a, int) and isinstance(b, int) and result.is_integer():
+        return int(result)
+    return result
+
+
 class MettaPuff(pufferlib.PufferEnv):
     def __init__(self, config, render_mode='human', buf=None, seed=0):
         self.render_mode = render_mode
         import mettagrid.mettagrid_env
         from omegaconf import OmegaConf
+        OmegaConf.register_new_resolver("div", oc_divide, replace=True)
         cfg = OmegaConf.load(config)
 
         from mettagrid.mettagrid_env import MettaGridEnv
         self.env = MettaGridEnv(cfg, render_mode=render_mode, buf=buf)
 
-        if render_mode == 'human':
-            from mettagrid.gym_wrapper import RaylibRendererWrapper
-            from mettagrid.gym_wrapper import RaylibRendererWrapper
-            self.env = RaylibRendererWrapper(self.env, self.env._env_cfg)
+        #if render_mode == 'human':
+        #    from mettagrid.gym_wrapper import RaylibRendererWrapper
+        #    self.env = RaylibRendererWrapper(self.env, self.env._env_cfg)
 
         self.single_observation_space = self.env.single_observation_space
         self.single_action_space = self.env.single_action_space
