@@ -1,8 +1,6 @@
 import functools
 
 import pufferlib
-from mettagrid.gym_wrapper import RaylibRendererWrapper
-
 
 def env_creator(name='metta'):
     return functools.partial(make, name)
@@ -22,6 +20,7 @@ class MettaPuff(pufferlib.PufferEnv):
         self.env = MettaGridEnv(cfg, render_mode=render_mode, buf=buf)
 
         if render_mode == 'human':
+            from mettagrid.gym_wrapper import RaylibRendererWrapper
             from mettagrid.gym_wrapper import RaylibRendererWrapper
             self.env = RaylibRendererWrapper(self.env, self.env._env_cfg)
 

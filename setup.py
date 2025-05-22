@@ -221,6 +221,13 @@ environments = {
         # The Magent2 package is broken for now
         #'magent2==0.3.2',
     ],
+    'metta': [
+        f'gym=={GYM_VERSION}',
+        f'gymnasium=={GYMNASIUM_VERSION}',
+        'omegaconf',
+        'hydra-core',
+        'duckdb',
+    ],
     'microrts': [
         f'gym=={GYM_VERSION}',
         f'gymnasium=={GYMNASIUM_VERSION}',
