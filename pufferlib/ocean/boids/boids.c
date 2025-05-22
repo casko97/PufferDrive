@@ -47,7 +47,7 @@ void demo() {
 
     if (client == NULL) {
         fprintf(stderr, "ERROR: Failed to create rendering client during initial setup.\n");
-        free_allocated(&env);
+        c_close(&env);
         free(env.observations); free(env.actions); free(env.rewards);
         return;
     }
@@ -66,10 +66,7 @@ void demo() {
         total_steps++;
     }
 
-    if (client) {
-        c_close_client(client);
-    }
-    free_allocated(&env);
+    c_close(&env);
     free(env.observations);
     free(env.actions);
     free(env.rewards);
