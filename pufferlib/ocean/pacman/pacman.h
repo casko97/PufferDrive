@@ -186,7 +186,7 @@ void allocate(PacmanEnv *env) {
   env->terminals = (char *)calloc(1, sizeof(char));
 }
 
-void free_initialized(PacmanEnv *env) {
+void c_close(PacmanEnv *env) {
   free(env->game_map);
   free(env->dots);
 }
@@ -196,7 +196,7 @@ void free_allocated(PacmanEnv *env) {
   free(env->observations);
   free(env->terminals);
   free(env->rewards);
-  free_initialized(env);
+  c_close(env);
 }
 
 bool vec2_equal(IVector2 a, IVector2 b) {
@@ -624,6 +624,7 @@ typedef struct DirectionSprites {
 typedef struct Client Client;
 struct Client {
   int tile_size;
+  int frame;
   
   float step_time;
   float time_accumulator;
@@ -917,6 +918,9 @@ void c_render(PacmanEnv *env) {
   Client* client = env->client;
 
   float progress = client->time_accumulator / client->step_time;
+  update_interpolation(env->client, env);
+  //float progress = client->frame / 8.0f;
+  //client->frame = (client->frame + 1) % 8;
 
   handle_input(env);
 

@@ -71,7 +71,7 @@ void performance_test() {
     }
     long end = time(NULL);
     printf("SPS: %ld\n", i / (end - start));
-    free_initialized(&env);
+    free_allocated(&env);
 }
 
 int main() {

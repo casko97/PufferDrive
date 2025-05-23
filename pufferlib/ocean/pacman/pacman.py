@@ -9,7 +9,7 @@ from pufferlib.ocean.pacman import binding
 
 class Pacman(pufferlib.PufferEnv):
     def __init__(self, num_envs=1, render_mode=None,
-            randomize_starting_position = False,
+            randomize_starting_position = 0,
             min_start_timeout = 0,
             max_start_timeout = 49,
             frightened_time = 20,
@@ -41,7 +41,6 @@ class Pacman(pufferlib.PufferEnv):
         self.tick = 0
 
         super().__init__(buf)
-        self.actions = self.actions.astype(np.float32)
 
         self.c_envs = binding.vec_init(self.observations, self.actions, self.rewards,
             self.terminals, self.truncations, num_envs, seed,
