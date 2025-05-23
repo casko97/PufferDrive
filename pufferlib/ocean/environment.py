@@ -123,6 +123,7 @@ MAKE_FUNCTIONS = {
     'enduro': 'Enduro',
     'cartpole': 'Cartpole',
     'moba': 'Moba',
+    'boids': 'Boids',
     'nmmo3': 'NMMO3',
     'snake': 'Snake',
     'squared': 'Squared',

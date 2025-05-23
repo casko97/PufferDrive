@@ -393,6 +393,24 @@ extension_kwargs = dict(
     extra_objects=[RAYLIB_A],
 )
 
+# Put C env names here. PufferLib will look for
+# pufferlib/ocean/<name>/binding.c
+c_extensions_names = [
+    'gpudrive',
+    'squared',
+    'pong',
+    'boids',
+    'breakout',
+    'enduro',
+    'blastar',
+    'grid',
+    'nmmo3',
+    'tactical',
+    'connect4',
+    'go',
+    'cartpole'
+]
+
 # TODO: Include other C files so rebuild is auto?
 c_extension_paths = glob.glob('pufferlib/ocean/**/binding.c', recursive=True)
 c_extensions = [
