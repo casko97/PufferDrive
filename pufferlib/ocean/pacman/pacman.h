@@ -761,6 +761,11 @@ Client *make_client(PacmanEnv *env) {
 #define INKY_COLOR (Color){0, 255, 255, 255}
 #define CLYDE_COLOR (Color){255, 185, 80, 255}
 
+const Color PUFF_RED = (Color){187, 0, 0, 255};
+const Color PUFF_CYAN = (Color){0, 187, 187, 255};
+const Color PUFF_WHITE = (Color){241, 241, 241, 241};
+const Color PUFF_BACKGROUND = (Color){6, 24, 24, 255};
+
 void render_ghost(Client *client, Ghost *ghost, DirectionSprites *sprites, IVector2 previous_pos, float progress) {
   Texture2D texture;
   
@@ -892,11 +897,11 @@ void render_map(Client *client, PacmanEnv *env) {
         float height = client->tile_size / 4.0f;
         DrawRectangle(x * client->tile_size + client->tile_size / 2.0f - width / 2.0f,
                       y * client->tile_size + client->tile_size / 2.0f - height / 2.0f + PX_PADDING_TOP,
-                      width, height, DOT_COLOR);
+                      width, height, PUFF_WHITE);
       } else if (tile == POWER_TILE) {
         DrawCircle(x * client->tile_size + client->tile_size / 2.0f,
                    y * client->tile_size + client->tile_size / 2.0f + PX_PADDING_TOP,
-                   client->tile_size / 3.0f, DOT_COLOR);
+                   client->tile_size / 3.0f, PUFF_RED);
       }
     }
   }
@@ -925,7 +930,7 @@ void c_render(PacmanEnv *env) {
   handle_input(env);
 
   BeginDrawing();
-  ClearBackground(BLACK);
+  ClearBackground(PUFF_BACKGROUND);
 
   render_map(client, env);
 
