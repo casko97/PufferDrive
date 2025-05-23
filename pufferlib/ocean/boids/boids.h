@@ -72,13 +72,6 @@ typedef struct {
 } Boids;
 
 static void add_log(Boids *env, unsigned boid_indx) {
-    env->log.perf           += env->boid_logs[boid_indx].perf;
-    env->log.score          += env->boid_logs[boid_indx].score;
-    env->log.episode_return += env->boid_logs[boid_indx].episode_return;
-    env->log.n              += 1.0f;
-
-    /* clear per-boid log for next episode */
-    env->boid_logs[boid_indx] = (Log){0};
 }
 
 static inline float flmax(float a, float b) { return a > b ? a : b; }
@@ -142,6 +135,7 @@ void c_step(Boids *env) {
 
     env->tick++;
     env->rewards[0] = 0;
+    env->log.score = 0;
     for (unsigned current_indx = 0; current_indx < env->num_boids; current_indx++) {
         // apply action
         current_boid = &env->boids[current_indx];
@@ -205,15 +199,16 @@ void c_step(Boids *env) {
         env->rewards[current_indx] = current_boid_reward / 2.0f;
 
         //log updates
-        env->boid_logs[current_indx].episode_return += current_boid_reward;
-        env->boid_logs[current_indx].episode_length += 1.0f;
         if (env->tick == env->report_interval) {
-            env->boid_logs[current_indx].score = env->boid_logs[current_indx].episode_return;
-            env->boid_logs[current_indx].perf  = (env->boid_logs[current_indx].score/env->boid_logs[current_indx].episode_length + 1.0f)*0.5f;
-            add_log(env, current_indx);
+            env->log.score          += env->rewards[current_indx];
+            env->log.n              += 1.0f;
+
+            /* clear per-boid log for next episode */
+            // env->boid_logs[boid_indx] = (Log){0};
             env->tick = 0;
         }
     }
+    env->log.score /= env->num_boids;
 
     compute_observations(env);
 }
