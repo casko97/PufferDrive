@@ -140,6 +140,7 @@ MAKE_FUNCTIONS = {
     'cpr': 'PyCPR',
     'impulse_wars': 'ImpulseWars',
     'gpudrive': 'GPUDrive',
+    'pacman': 'Pacman',
     'spaces': make_spaces,
     'multiagent': make_multiagent,
 }
