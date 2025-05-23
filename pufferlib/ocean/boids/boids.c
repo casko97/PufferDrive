@@ -34,7 +34,7 @@ void demo() {
     size_t act_size = env.num_boids * 2; // num_boids * (dvx, dvy)
     env.observations = (float*)calloc(obs_size, sizeof(float));
     env.actions = (float*)calloc(act_size, sizeof(float));
-    env.rewards = (float*)calloc(1, sizeof(float)); // Env-level reward
+    env.rewards = (float*)calloc(env.num_boids, sizeof(float)); // Env-level reward
     
     if (!env.observations || !env.actions || !env.rewards) {
         fprintf(stderr, "ERROR: Failed to allocate memory for demo buffers.\n");

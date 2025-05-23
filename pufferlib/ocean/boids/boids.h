@@ -12,19 +12,11 @@
 #define BOTTOM_MARGIN 50
 #define LEFT_MARGIN 50
 #define RIGHT_MARGIN 50
-#define VELOCITY_CAP 3
-#define MARGIN_TURN_FACTOR 1.0f
-// #define MARGIN_TURN_FACTOR 0.2f
-#define CENTERING_FACTOR 0.0f
-// #define CENTERING_FACTOR 0.0005f
-#define AVOID_FACTOR 0.0f
-// #define AVOID_FACTOR 0.05f
-#define MATCHING_FACTOR 0.0f
-// #define MATCHING_FACTOR 0.05f
+#define VELOCITY_CAP 5
 #define VISUAL_RANGE 20
-#define PROTECTED_RANGE 2
-#define WIDTH 800
-#define HEIGHT 600
+#define PROTECTED_RANGE 100
+#define WIDTH 1080
+#define HEIGHT 720
 #define BOID_WIDTH 32
 #define BOID_HEIGHT 32
 #define BOID_TEXTURE_PATH "./resources/puffers_128.png"
@@ -71,9 +63,6 @@ typedef struct {
 
 } Boids;
 
-static void add_log(Boids *env, unsigned boid_indx) {
-}
-
 static inline float flmax(float a, float b) { return a > b ? a : b; }
 static inline float flmin(float a, float b) { return a > b ? b : a; }
 static inline float flclip(float x,float lo,float hi) { return flmin(hi,flmax(lo,x)); }
@@ -105,12 +94,14 @@ void init(Boids *env) {
 static void compute_observations(Boids *env) {
     unsigned base_indx;
 
-    for (unsigned boids_indx = 0; boids_indx < env->num_boids; boids_indx++) {
-        base_indx = boids_indx * 4;
-        env->observations[base_indx] = env->boids[boids_indx].x;
-        env->observations[base_indx+1] = env->boids[boids_indx].y;
-        env->observations[base_indx+2] = env->boids[boids_indx].velocity.x;
-        env->observations[base_indx+3] = env->boids[boids_indx].velocity.y;
+    int idx = 0;
+    for (unsigned i=0; i<env->num_boids; i++) {
+        for (unsigned j=0; j<env->num_boids; j++) {
+            env->observations[idx++] = (env->boids[j].x - env->boids[i].x) / WIDTH;
+            env->observations[idx++] = (env->boids[j].y - env->boids[i].y) / HEIGHT;
+            env->observations[idx++] = (env->boids[j].velocity.x - env->boids[i].velocity.x) / VELOCITY_CAP;
+            env->observations[idx++] = (env->boids[j].velocity.y - env->boids[i].velocity.y) / VELOCITY_CAP;
+        }
     }
 }
 
@@ -143,8 +134,8 @@ void c_step(Boids *env) {
             current_boid->velocity.x = flclip(current_boid->velocity.x + (mouse_x - current_boid->x), -VELOCITY_CAP, VELOCITY_CAP);
             current_boid->velocity.y = flclip(current_boid->velocity.y + (mouse_y - current_boid->y), -VELOCITY_CAP, VELOCITY_CAP);
         } else {
-            current_boid->velocity.x = flclip(current_boid->velocity.x + env->actions[current_indx * 2 + 0], -VELOCITY_CAP, VELOCITY_CAP);
-            current_boid->velocity.y = flclip(current_boid->velocity.y + env->actions[current_indx * 2 + 1], -VELOCITY_CAP, VELOCITY_CAP);
+            current_boid->velocity.x = flclip(current_boid->velocity.x + 2*env->actions[current_indx * 2 + 0], -VELOCITY_CAP, VELOCITY_CAP);
+            current_boid->velocity.y = flclip(current_boid->velocity.y + 2*env->actions[current_indx * 2 + 1], -VELOCITY_CAP, VELOCITY_CAP);
         }
         current_boid->x = flclip(current_boid->x + current_boid->velocity.x, 0, WIDTH  - BOID_WIDTH);
         current_boid->y = flclip(current_boid->y + current_boid->velocity.y, 0, HEIGHT - BOID_HEIGHT);
@@ -169,8 +160,9 @@ void c_step(Boids *env) {
                 visual_count++;
             }
         }
-        if (protected_count) {
-            current_boid_reward -= fabsf(protected_dist_sum / protected_count) * env->avoid_factor;
+        if (protected_count > 0) {
+            //current_boid_reward -= fabsf(protected_dist_sum / protected_count) * env->avoid_factor;
+            current_boid_reward -= flclip(protected_count/5.0, 0.0f, 1.0f) * env->avoid_factor;
         }
         if (visual_count) {
             vis_x_avg  = vis_x_sum  / visual_count;
@@ -208,7 +200,7 @@ void c_step(Boids *env) {
             env->tick = 0;
         }
     }
-    env->log.score /= env->num_boids;
+    //env->log.score /= env->num_boids;
 
     compute_observations(env);
 }

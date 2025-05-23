@@ -28,27 +28,30 @@ class Boids(pufferlib.PufferEnv):
         self.num_boids = num_boids
 
         self.single_observation_space = gymnasium.spaces.Box(
-            -1000.0, 1000.0, shape=(4,), dtype=np.float32
+            -1000.0, 1000.0, shape=(num_boids*4,), dtype=np.float32
         )
         
-        self.single_action_space = gymnasium.spaces.Box(
-            -np.inf, np.inf, shape=(ACTION_SPACE_SIZE,), dtype=np.float32
-        )
+        #self.single_action_space = gymnasium.spaces.Box(
+        #    -np.inf, np.inf, shape=(ACTION_SPACE_SIZE,), dtype=np.float32
+        #)
+        self.single_action_space = gymnasium.spaces.MultiDiscrete([5, 5])
 
         self.render_mode = render_mode
         self.report_interval = report_interval
 
         super().__init__(buf)
+        self.actions = self.actions.astype(np.float32)
 
         # Create C binding with flattened action buffer
         # We need to manually create a flattened action buffer to pass to C
-        self.flat_actions = np.zeros((self.num_agents * ACTION_SPACE_SIZE), dtype=np.float32)
+        #self.flat_actions = np.zeros((self.num_agents * ACTION_SPACE_SIZE), dtype=np.float32)
         
         c_envs = []
         for env_num in range(num_envs):
             c_envs.append(binding.env_init(
                 self.observations[env_num*num_boids:(env_num+1)*num_boids],
-                self.flat_actions[env_num*num_boids*ACTION_SPACE_SIZE:(env_num+1)*num_boids*ACTION_SPACE_SIZE],
+                #self.flat_actions[env_num*num_boids*ACTION_SPACE_SIZE:(env_num+1)*num_boids*ACTION_SPACE_SIZE],
+                self.actions[env_num*num_boids:(env_num+1)*num_boids],
                 self.rewards[env_num*num_boids:(env_num+1)*num_boids],
                 self.terminals[env_num*num_boids:(env_num+1)*num_boids],
                 self.truncations[env_num*num_boids:(env_num+1)*num_boids],
@@ -70,12 +73,13 @@ class Boids(pufferlib.PufferEnv):
 
     def step(self, actions):
         # Clip actions to valid range
-        clipped_actions = np.clip(actions, -1.0, 1.0)
+        clipped_actions = (actions.astype(np.float32) - 2.0) / 4.0
+        #clipped_actions = np.clip(actions, -1.0, 1.0)
         
         # Copy the clipped actions to our flat actions buffer for C binding
         # Flatten from [num_agents, num_boids, 2] to a 1D array for C
         # TODO: Check if I even need this? its not like I'm using the actions anywhere else
-        self.flat_actions[:] = clipped_actions.reshape(-1)
+        #self.flat_actions[:] = clipped_actions.reshape(-1)
         
         # Save the original actions for the experience buffer
         # TODO: Same thing with this

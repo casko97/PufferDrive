@@ -18,6 +18,39 @@ from pufferlib.pytorch import layer_init, _nativize_dtype, nativize_tensor
 import numpy as np
 
 
+class Boids(nn.Module):
+    def __init__(self, env, cnn_channels=32, hidden_size=128, **kwargs):
+        super().__init__()
+        self.hidden_size = hidden_size
+        self.is_continuous = False
+        self.network = nn.Sequential(
+            pufferlib.pytorch.layer_init(nn.Linear(4, hidden_size)),
+            nn.GELU(),
+            pufferlib.pytorch.layer_init(nn.Linear(hidden_size, hidden_size)),
+        )
+        self.action_vec = tuple(env.single_action_space.nvec)
+        self.actor = pufferlib.pytorch.layer_init(
+            nn.Linear(hidden_size, sum(self.action_vec)), std=0.01)
+        self.value_fn = pufferlib.pytorch.layer_init(
+            nn.Linear(hidden_size, 1), std=1)
+
+    def forward(self, observations, state=None):
+        hidden = self.encode_observations(observations)
+        actions, value = self.decode_actions(hidden)
+        return actions, value
+
+    def forward_train(self, x, state=None):
+        return self.forward(x, state)
+
+    def encode_observations(self, observations, state=None):
+        batch, n, = observations.shape
+        return self.network(observations.reshape(batch, n//4, 4)).max(dim=1)[0]
+
+    def decode_actions(self, flat_hidden, state=None):
+        value = self.value_fn(flat_hidden)
+        action = self.actor(flat_hidden).split(self.action_vec, dim=1)
+        return action, value
+
 class NMMO3LSTM(pufferlib.models.LSTMWrapper):
     def __init__(self, env, policy, input_size=512, hidden_size=512):
         super().__init__(env, policy, input_size, hidden_size)
