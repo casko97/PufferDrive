@@ -342,6 +342,7 @@ class Multiprocessing:
                     num_workers, i, w_send_pipes[i], w_recv_pipes[i],
                     self.shm, is_native, seed_i)
             )
+            p.daemon = True
             p.start()
             self.processes.append(p)
 
@@ -690,6 +691,7 @@ def make(env_creator_or_creators, env_args=None, env_kwargs=None, backend=Puffer
         if not isinstance(env_args[i], (list, tuple)):
             raise pufferlib.APIUsageError('env_args must be a list of lists or tuples')
         if not isinstance(env_kwargs[i], dict):
+            breakpoint()
             raise pufferlib.APIUsageError('env_kwargs must be a list of dictionaries')
 
     # Keeps batch size consistent when debugging with Serial backend

@@ -5,6 +5,10 @@
 #from torch.distributed.elastic.multiprocessing.errors import record
 #@record
 
+import warnings
+warnings.filterwarnings('error', category=RuntimeWarning)
+
+
 import os
 import sys
 import glob
@@ -41,14 +45,12 @@ from rich.console import Console
 from rich_argparse import RichHelpFormatter
 rich.traceback.install(show_locals=False)
 
-# TODO: Should this be here?
-# Aggressively exit on ctrl+c
-import signal
+import signal # Aggressively exit on ctrl+c
 signal.signal(signal.SIGINT, lambda sig, frame: os._exit(0))
 
 
-class CleanPuffeRL:
-    def __init__(self, config, vecenv, policy):
+class PuffeRL:
+    def __init__(self, config, vecenv, policy, logger=None):
         # Backend perf optimization
         torch.set_float32_matmul_precision('high')
         torch.backends.cudnn.deterministic = config['torch_deterministic']
@@ -146,6 +148,7 @@ class CleanPuffeRL:
             )
         elif config['optimizer'] == 'muon':
             from heavyball import ForeachMuon
+            warnings.filterwarnings(action='ignore', category=UserWarning, module=r'heavyball.*')
             import heavyball.utils
             heavyball.utils.compile_mode = config['compile_mode'] if config['compile'] else None
             optimizer = ForeachMuon(
@@ -158,6 +161,11 @@ class CleanPuffeRL:
             raise ValueError(f'Unknown optimizer: {config["optimizer"]}')
 
         self.optimizer = optimizer
+
+        # Logging
+        self.logger = logger
+        if logger is None:
+            self.logger = NoLogger(config)
 
         # Learning rate scheduler
         epochs = config['total_timesteps'] // config['batch_size']
@@ -434,7 +442,6 @@ class CleanPuffeRL:
             logs = self.mean_and_log()
             self.losses = losses
             self.print_dashboard()
-            self.last_stats = self.stats
             self.stats = defaultdict(list)
             self.last_log_time = time.time()
             self.last_log_step = self.global_step
@@ -472,22 +479,25 @@ class CleanPuffeRL:
 
         if torch.distributed.is_initialized():
            if torch.distributed.get_rank() != 0:
+               self.logger.log(logs, self.global_step)
                return logs
            else:
                return None
+
+        self.logger.log(logs, self.global_step)
         return logs
 
     def close(self):
         self.vecenv.close()
         self.utilization.stop()
         model_path = self.save_checkpoint()
-        run_id = self.config['run_id']
+        run_id = self.logger.run_id
         path = os.path.join(self.config['data_dir'], f'{run_id}.pt')
         shutil.copy(model_path, path)
         return path
 
     def save_checkpoint(self):
-        run_id = self.config['run_id']
+        run_id = self.logger.run_id
         path = os.path.join(self.config['data_dir'], run_id)
         if not os.path.exists(path):
             os.makedirs(path)
@@ -589,6 +599,10 @@ class CleanPuffeRL:
         right.add_column(f"{c1}User Stats", justify="left", width=20)
         right.add_column(f"{c1}Value", justify="right", width=10)
         i = 0
+
+        if self.stats:
+            self.last_stats = self.stats
+
         for metric, value in (self.stats or self.last_stats).items():
             try: # Discard non-numeric values
                 int(value)
@@ -690,11 +704,11 @@ class Profile:
 
 class Utilization(Thread):
     def __init__(self, delay=1, maxlen=20):
-        super().__init__()
-        self.cpu_mem = deque(maxlen=maxlen)
-        self.cpu_util = deque(maxlen=maxlen)
-        self.gpu_util = deque(maxlen=maxlen)
-        self.gpu_mem = deque(maxlen=maxlen)
+        super().__init__(daemon=True)
+        self.cpu_mem = deque([0], maxlen=maxlen)
+        self.cpu_util = deque([0], maxlen=maxlen)
+        self.gpu_util = deque([0], maxlen=maxlen)
+        self.gpu_mem = deque([0], maxlen=maxlen)
         self.stopped = False
         self.delay = delay
         self.start()
@@ -792,8 +806,8 @@ class WandbLogger:
         self.wandb = wandb
         self.run_id = wandb.run.id
 
-    def log(self, logs):
-        self.wandb.log(logs)
+    def log(self, logs, step):
+        self.wandb.log(logs, step=step)
 
     def close(self, model_path):
         artifact = self.wandb.Artifact(self.run_id, type='model')
@@ -807,25 +821,22 @@ class WandbLogger:
         model_file = max(os.listdir(data_dir))
         return f'{data_dir}/{model_file}'
  
-def train(args=None, vecenv=None, policy=None, logger=None):
-    args = args or load_config()
-    vecenv = vecenv or load_env(args)
+def train(env_name, args=None, vecenv=None, policy=None, logger=None):
+    args = args or load_config(env_name)
+    vecenv = vecenv or load_env(env_name, args)
     policy = policy or load_policy(args, vecenv)
 
     # Assume TorchRun DDP is used if LOCAL_RANK is set
     if 'LOCAL_RANK' in os.environ:
         torch.distributed.init_process_group(backend='nccl', rank=0, world_size=1)
 
-    if logger is None:
-        if args['neptune']:
-            logger = NeptuneLogger(args)
-        elif args['wandb']:
-            logger = WandbLogger(args)
-        else:
-            logger = NoLogger(args)
+    if args['neptune']:
+        logger = NeptuneLogger(args)
+    elif args['wandb']:
+        logger = WandbLogger(args)
 
-    train_config = dict(**args['train'], env=args['env_name'], run_id=logger.run_id)
-    pufferl = CleanPuffeRL(train_config, vecenv, policy)
+    train_config = dict(**args['train'], env=args['env_name'])
+    pufferl = PuffeRL(train_config, vecenv, policy, logger)
 
     all_logs = []
     while pufferl.global_step < train_config['total_timesteps']:
@@ -833,7 +844,6 @@ def train(args=None, vecenv=None, policy=None, logger=None):
         logs = pufferl.train()
 
         if logs is not None:
-            logger.log(logs, pufferl.global_step)
             if pufferl.global_step > 0.20*train_config['total_timesteps']:
                 all_logs.append(logs)
 
@@ -856,10 +866,10 @@ def train(args=None, vecenv=None, policy=None, logger=None):
     logger.close(model_path)
     return all_logs
 
-def eval(args=None, vecenv=None, policy=None):
+def eval(env_name, args=None, vecenv=None, policy=None):
     args = args or load_config()
     args['vec'] = dict(backend='Serial', num_envs=1)
-    vecenv = vecenv or load_env(args)
+    vecenv = vecenv or load_env(env_name, args)
     if not isinstance(vecenv, pufferlib.vector.Serial):
         raise pufferlib.APIUsageError('eval requires Serial vector env')
 
@@ -882,7 +892,7 @@ def eval(args=None, vecenv=None, policy=None):
         if len(frames) < args['save_frames']:
             frames.append(render)
 
-        # TODO: Frames from raylib
+        # Screenshot Ocean envs with F12, gifs with control + F12
         if driver.render_mode == 'ansi':
             print('\033[0;0H' + render + '\n')
             time.sleep(1/args['fps'])
@@ -909,7 +919,7 @@ def eval(args=None, vecenv=None, policy=None):
             imageio.mimsave(args['gif_path'], frames, fps=args['fps'], loop=0)
             frames.append('Done')
 
-def sweep(args=None):
+def sweep(args=None, env_name=None):
     args = args or load_config()
     if not args['wandb'] and not args['neptune']:
         raise pufferlib.APIUsageError('Sweeps require either wandb or neptune')
@@ -929,7 +939,7 @@ def sweep(args=None):
         torch.manual_seed(seed)
         sweep.suggest(args)
         total_timesteps = args['train']['total_timesteps']
-        all_logs = train(args)
+        all_logs = train(args, env_name=env_name)
         all_logs = [e for e in all_logs if target_key in e]
         scores = downsample_alt([log[target_key] for log in all_logs], 10)
         costs = downsample_alt([log['uptime'] for log in all_logs], 10)
@@ -942,13 +952,13 @@ def sweep(args=None):
         # Prevent logging final eval steps as training steps
         args['train']['total_timesteps'] = total_timesteps
 
-def profile(args=None, vecenv=None, policy=None):
+def profile(args=None, env_name=None, vecenv=None, policy=None):
     args = load_config()
-    vecenv = vecenv or load_env(args)
+    vecenv = vecenv or load_env(env_name, args)
     policy = policy or load_policy(args, vecenv)
 
     train_config = dict(**args['train'], env=args['env_name'], tag=args['tag'])
-    pufferl = CleanPuffeRL(train_config, vecenv, policy, neptune=args['neptune'], wandb=args['wandb'])
+    pufferl = PuffeRL(train_config, vecenv, policy, neptune=args['neptune'], wandb=args['wandb'])
 
     import torchvision.models as models
     from torch.profiler import profile, record_function, ProfilerActivity
@@ -961,9 +971,9 @@ def profile(args=None, vecenv=None, policy=None):
     print(prof.key_averages().table(sort_by='cuda_time_total', row_limit=10))
     prof.export_chrome_trace("trace.json")
 
-def export(args=None, vecenv=None, policy=None):
+def export(args=None, env_name=None, vecenv=None, policy=None):
     args = args or load_config()
-    vecenv = vecenv or load_env(args)
+    vecenv = vecenv or load_env(env_name, args)
     policy = policy or load_policy(args, vecenv)
 
     weights = []
@@ -976,7 +986,7 @@ def export(args=None, vecenv=None, policy=None):
     weights.tofile(path)
     print(f'Saved {len(weights)} weights to {path}')
 
-def autotune(args=None, vecenv=None, policy=None):
+def autotune(args=None, env_name=None, vecenv=None, policy=None):
     package = args['package']
     module_name = 'pufferlib.ocean' if package == 'ocean' else f'pufferlib.environments.{package}'
     env_module = importlib.import_module(module_name)
@@ -984,12 +994,10 @@ def autotune(args=None, vecenv=None, policy=None):
     make_env = env_module.env_creator(env_name)
     pufferlib.vector.autotune(make_env, batch_size=args['train']['env_batch_size'])
  
-def load_env(args):
+def load_env(env_name, args):
     package = args['package']
     module_name = 'pufferlib.ocean' if package == 'ocean' else f'pufferlib.environments.{package}'
     env_module = importlib.import_module(module_name)
-
-    env_name = args['env_name']
     make_env = env_module.env_creator(env_name)
     return pufferlib.vector.make(make_env, env_kwargs=args['env'], **args['vec'])
 
@@ -1023,8 +1031,10 @@ def load_policy(args, vecenv):
 
         policy.load_state_dict(torch.load(path, map_location=device))
 
-    # Load optimizer state
     load_path = args['load_model_path']
+    if load_path == 'latest':
+        load_path = max(glob.glob("experiments/*.pt"), key=os.path.getctime)
+
     if load_path is not None:
         policy.load_state_dict(torch.load(load_path, map_location=args['train']['device']))
         #state_path = os.path.join(*load_path.split('/')[:-1], 'state.pt')
@@ -1033,15 +1043,11 @@ def load_policy(args, vecenv):
 
     return policy
 
-def load_config():
+def load_config(env_name):
     parser = argparse.ArgumentParser(
         description=f':blowfish: PufferLib [bright_cyan]{pufferlib.__version__}[/]'
         ' demo options. Shows valid args for your env and policy',
         formatter_class=RichHelpFormatter, add_help=False)
-    parser.add_argument('--env', '--environment', type=str,
-        default='puffer_breakout', help='Name of specific environment to run')
-    parser.add_argument('--mode', type=str, default='train',
-        choices='train eval sweep autotune profile'.split())
     parser.add_argument('--load-model-path', type=str, default=None,
         help='Path to a pretrained checkpoint')
     parser.add_argument('--load-id', type=str,
@@ -1066,12 +1072,16 @@ def load_config():
     puffer_dir = os.path.dirname(os.path.realpath(__file__))
     puffer_config_dir = os.path.join(puffer_dir, 'config/**/*.ini')
     puffer_default_config = os.path.join(puffer_dir, 'config/default.ini')
-    for path in glob.glob(puffer_config_dir, recursive=True):
+    if env_name == 'default':
         p = configparser.ConfigParser()
-        p.read([puffer_default_config, path])
-        if args.env in p['base']['env_name'].split(): break
+        p.read(puffer_default_config)
     else:
-        raise pufferlib.APIUsageError('No config for env_name {}'.format(args.env))
+        for path in glob.glob(puffer_config_dir, recursive=True):
+            p = configparser.ConfigParser()
+            p.read([puffer_default_config, path])
+            if env_name in p['base']['env_name'].split(): break
+        else:
+            raise pufferlib.APIUsageError('No config for env_name {}'.format(args.env))
 
     # Dynamic help menu from config
     for section in p.sections():
@@ -1089,7 +1099,6 @@ def load_config():
 
     # Unpack to nested dict
     parsed = vars(parser.parse_args())
-    env_name = parsed.pop('env')
     args = defaultdict(dict)
     for key, value in parsed.items():
         next = args
@@ -1100,30 +1109,31 @@ def load_config():
         prev[subkey] = value
 
     args['train']['use_rnn'] = args['rnn_name'] is not None
-    args['env_name'] = env_name
+    #args['train']['env'] = env_name
+    #args['env_name'] = env_name
     return args
 
-# Entry point
-def puffer():
-    err = 'Usage: puffer [train, eval, sweep, autotune, profile, export]'
-    if len(sys.argv) < 2:
+def main():
+    err = 'Usage: puffer [train, eval, sweep, autotune, profile, export] [env_name] [optional args]. --help for more info'
+    if len(sys.argv) < 3:
         raise pufferlib.APIUsageError(err)
 
     mode = sys.argv.pop(1)
+    env_name = sys.argv.pop(1)
     if mode == 'train':
-        train()
+        train(env_name=env_name)
     elif mode == 'eval':
-        eval()
+        eval(env_name=env_name)
     elif mode == 'sweep':
-        sweep()
+        sweep(env_name=env_name)
     elif mode == 'autotune':
-        autotune()
+        autotune(env_name=env_name)
     elif mode == 'profile':
-        profile()
+        profile(env_name=env_name)
     elif mode == 'export':
-        export()
+        export(env_name=env_name)
     else:
         raise pufferlib.APIUsageError(err)
 
 if __name__ == '__main__':
-    puffer()
+    main()

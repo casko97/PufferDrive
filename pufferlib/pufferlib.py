@@ -109,6 +109,7 @@ class PufferEnv:
     def recv(self):
         return (self.observations, self.rewards, self.terminals,
             self.truncations, self.infos, self.agent_ids, self.masks)
+
 ### Postprocessing
 class ResizeObservation(gymnasium.Wrapper):
     '''Fixed downscaling wrapper. Do NOT use gym.wrappers.ResizeObservation

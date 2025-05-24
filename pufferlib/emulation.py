@@ -221,6 +221,7 @@ class GymnasiumPufferEnv(gymnasium.Env):
 
         ob, reward, done, truncated, info = self.env.step(action)
 
+
         if self.is_obs_emulated:
             emulate(self.obs_struct, ob)
         else:
@@ -241,9 +242,8 @@ class GymnasiumPufferEnv(gymnasium.Env):
         return self.env.close()
 
 class PettingZooPufferEnv:
-    def __init__(self, env=None, env_creator=None, env_args=[], buf=None, env_kwargs={}, to_puffer=False):
+    def __init__(self, env=None, env_creator=None, env_args=[], env_kwargs={}, buf=None, seed=0):
         self.env = make_object(env, env_creator, env_args, env_kwargs)
-        self.to_puffer = to_puffer
         self.initialized = False
         self.all_done = True
 

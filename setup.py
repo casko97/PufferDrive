@@ -515,7 +515,7 @@ setup(
     keywords=["Puffer", "AI", "RL", "Reinforcement Learning"],
     entry_points={
         'console_scripts': [
-            'puffer = pufferlib.clean_pufferl:puffer',
+            'puffer = pufferlib.pufferl:main',
         ],
     },
     classifiers=[
