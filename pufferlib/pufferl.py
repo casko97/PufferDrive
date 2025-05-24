@@ -858,12 +858,12 @@ def train(env_name, args=None, vecenv=None, policy=None, logger=None):
 
     logs = pufferl.mean_and_log()
     if logs is not None:
-        logger.log(logs, pufferl.global_step)
+        pufferl.logger.log(logs, pufferl.global_step)
         all_logs.append(logs)
 
     pufferl.print_dashboard()
     model_path = pufferl.close()
-    logger.close(model_path)
+    pufferl.logger.close(model_path)
     return all_logs
 
 def eval(env_name, args=None, vecenv=None, policy=None):
