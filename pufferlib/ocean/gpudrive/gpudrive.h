@@ -1477,10 +1477,6 @@ void c_render(GPUDrive* env) {
                 env->entities[i].width,
                 env->entities[i].height
             };
-            // Hide second life 
-            // if(env->entities[i].respawn_timestep != -1){
-            //     continue;
-            // }
             // Save current transform
             rlPushMatrix();
             // Translate to position, rotate around Y axis, then draw
