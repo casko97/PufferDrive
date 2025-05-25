@@ -867,7 +867,7 @@ def train(env_name, args=None, vecenv=None, policy=None, logger=None):
     return all_logs
 
 def eval(env_name, args=None, vecenv=None, policy=None):
-    args = args or load_config()
+    args = args or load_config(env_name)
     args['vec'] = dict(backend='Serial', num_envs=1)
     vecenv = vecenv or load_env(env_name, args)
     if not isinstance(vecenv, pufferlib.vector.Serial):
@@ -920,7 +920,7 @@ def eval(env_name, args=None, vecenv=None, policy=None):
             frames.append('Done')
 
 def sweep(args=None, env_name=None):
-    args = args or load_config()
+    args = args or load_config(env_name)
     if not args['wandb'] and not args['neptune']:
         raise pufferlib.APIUsageError('Sweeps require either wandb or neptune')
 
@@ -939,7 +939,7 @@ def sweep(args=None, env_name=None):
         torch.manual_seed(seed)
         sweep.suggest(args)
         total_timesteps = args['train']['total_timesteps']
-        all_logs = train(args, env_name=env_name)
+        all_logs = train(env_name, args=args)
         all_logs = [e for e in all_logs if target_key in e]
         scores = downsample_alt([log[target_key] for log in all_logs], 10)
         costs = downsample_alt([log['uptime'] for log in all_logs], 10)
