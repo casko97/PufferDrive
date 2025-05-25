@@ -197,6 +197,7 @@ struct GPUDrive {
     float world_mean_x;
     float world_mean_y;
     int spawn_immunity_timer;
+    float reward_goal_post_respawn;
 };
 
 void add_log(GPUDrive* env) {
@@ -1100,16 +1101,15 @@ void c_step(GPUDrive* env){
         env->logs[i].score = 0.0f;
 	    env->logs[i].episode_length += 1;
         int agent_idx = env->active_agent_indices[i];
-        int reached_goal = env->entities[agent_idx].reached_goal;
-        int collision_state = env->entities[agent_idx].collision_state;
-        if(reached_goal || collision_state > 0){
-            respawn_agent(env, agent_idx);
-        }
         env->entities[agent_idx].collision_state = 0;
-        // move_dynamics(env, i, agent_idx);
-        move_expert(env, env->actions, agent_idx);
+        move_dynamics(env, i, agent_idx);
+        // move_expert(env, env->actions, agent_idx);
+    }
+
+    for(int i = 0; i < env->active_agent_count; i++){
+        int agent_idx = env->active_agent_indices[i];
         collision_check(env, agent_idx);
-        collision_state = env->entities[agent_idx].collision_state;
+        int collision_state = env->entities[agent_idx].collision_state;
         
         if(collision_state > 0){
             if(collision_state == VEHICLE_COLLISION){
@@ -1135,12 +1135,26 @@ void c_step(GPUDrive* env){
                 env->entities[agent_idx].y,
                 env->entities[agent_idx].goal_position_x,
                 env->entities[agent_idx].goal_position_y);
-        if(distance_to_goal < 2.0f){  
-            env->rewards[i] += 1.0f;
-            env->logs[i].episode_return += 1.0f;
+        if(distance_to_goal < 2.0f){
+            if(env->entities[agent_idx].respawn_timestep != -1){
+                env->rewards[i] += env->reward_goal_post_respawn;
+                env->logs[i].episode_return += env->reward_goal_post_respawn;
+            } else { 
+                env->rewards[i] += 1.0f;
+                env->logs[i].episode_return += 1.0f;
+            }
 	        env->entities[agent_idx].reached_goal = 1;
             env->entities[agent_idx].reached_goal_this_episode = 1;
 	    }
+    }
+
+    for(int i = 0; i < env->active_agent_count; i++){
+        int agent_idx = env->active_agent_indices[i];
+        int reached_goal = env->entities[agent_idx].reached_goal;
+        int collision_state = env->entities[agent_idx].collision_state;
+        if(reached_goal || collision_state > 0){
+            respawn_agent(env, agent_idx);
+        }
     }
     compute_observations(env);
 }   

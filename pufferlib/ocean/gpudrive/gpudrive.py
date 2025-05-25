@@ -2,6 +2,7 @@ import numpy as np
 import gymnasium
 import json
 import struct
+import os
 
 import pufferlib
 from pufferlib.ocean.gpudrive import binding
@@ -12,6 +13,7 @@ class GPUDrive(pufferlib.PufferEnv):
             human_agent_idx=0,
             reward_vehicle_collision=-0.1,
             reward_offroad_collision=-0.1,
+            reward_goal_post_respawn=0.5,
             spawn_immunity_timer=30,
             num_maps=100,
             num_agents=512,
@@ -26,6 +28,10 @@ class GPUDrive(pufferlib.PufferEnv):
         self.single_observation_space = gymnasium.spaces.Box(low=-1, high=1,
             shape=(self.num_obs,), dtype=np.float32)
         self.single_action_space = gymnasium.spaces.MultiDiscrete([7, 13])
+        # Check if resources directory exists
+        binary_path = "resources/gpudrive/binaries/map_000.bin"
+        if not os.path.exists(binary_path):
+            raise FileNotFoundError(f"Required directory {binary_path} not found. Please ensure the GPUDrive maps are downloaded and installed correctly per docs.")
         agent_offsets, map_ids, num_envs = binding.shared(num_agents=num_agents, num_maps=num_maps)
         self.num_agents = num_agents
         super().__init__(buf=buf)
@@ -43,6 +49,7 @@ class GPUDrive(pufferlib.PufferEnv):
                 human_agent_idx=human_agent_idx,
                 reward_vehicle_collision=reward_vehicle_collision,
                 reward_offroad_collision=reward_offroad_collision,
+                reward_goal_post_respawn=reward_goal_post_respawn,
                 spawn_immunity_timer=spawn_immunity_timer,
                 map_id=map_ids[i],
                 max_agents = nxt-cur
