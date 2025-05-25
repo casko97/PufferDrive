@@ -120,6 +120,7 @@ MAKE_FUNCTIONS = {
     'breakout': 'Breakout',
     'blastar': 'Blastar',
     'pong': 'Pong',
+    'freeway': 'Freeway',
     'enduro': 'Enduro',
     'cartpole': 'Cartpole',
     'moba': 'Moba',
