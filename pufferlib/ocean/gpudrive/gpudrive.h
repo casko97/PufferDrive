@@ -1112,31 +1112,33 @@ void c_step(GPUDrive* env){
         collision_check(env, agent_idx);
         int collision_state = env->entities[agent_idx].collision_state;
         
-        if(collision_state == VEHICLE_COLLISION){
-            if(env->entities[agent_idx].respawn_timestep != -1) {
-                env->rewards[i] = env->reward_vehicle_collision_post_respawn;
-                env->logs[i].episode_return += env->reward_vehicle_collision_post_respawn;
-            } else {
-                env->rewards[i] = env->reward_vehicle_collision;
-                env->logs[i].episode_return += env->reward_vehicle_collision;
-                env->logs[i].clean_collision_rate = 1.0f;
+        if(collision_state > 0){
+            if(collision_state == VEHICLE_COLLISION){
+                if(env->entities[agent_idx].respawn_timestep != -1) {
+                    env->rewards[i] = env->reward_vehicle_collision_post_respawn;
+                    env->logs[i].episode_return += env->reward_vehicle_collision_post_respawn;
+                } else {
+                    env->rewards[i] = env->reward_vehicle_collision;
+                    env->logs[i].episode_return += env->reward_vehicle_collision;
+                    env->logs[i].clean_collision_rate = 1.0f;
+                }
+                env->logs[i].collision_rate = 1.0f;
             }
-            env->logs[i].collision_rate = 1.0f;
-        }
-        else if(collision_state == OFFROAD){
-            env->rewards[i] = env->reward_offroad_collision;
-            env->logs[i].offroad_rate = 1.0f;
-            env->logs[i].episode_return += env->reward_offroad_collision;
-        }
-        if(!env->entities[agent_idx].reached_goal_this_episode){
-            env->entities[agent_idx].collided_before_goal = 1;
+            else if(collision_state == OFFROAD){
+                env->rewards[i] = env->reward_offroad_collision;
+                env->logs[i].offroad_rate = 1.0f;
+                env->logs[i].episode_return += env->reward_offroad_collision;
+            }
+            if(!env->entities[agent_idx].reached_goal_this_episode){
+                env->entities[agent_idx].collided_before_goal = 1;
+            }
         }
 
         float distance_to_goal = relative_distance_2d(
-            env->entities[agent_idx].x,
-            env->entities[agent_idx].y,
-            env->entities[agent_idx].goal_position_x,
-            env->entities[agent_idx].goal_position_y);
+                env->entities[agent_idx].x,
+                env->entities[agent_idx].y,
+                env->entities[agent_idx].goal_position_x,
+                env->entities[agent_idx].goal_position_y);
         if(distance_to_goal < 2.0f){
             if(env->entities[agent_idx].respawn_timestep != -1){
                 env->rewards[i] += env->reward_goal_post_respawn;
@@ -1475,6 +1477,10 @@ void c_render(GPUDrive* env) {
                 env->entities[i].width,
                 env->entities[i].height
             };
+            // Hide second life 
+            // if(env->entities[i].respawn_timestep != -1){
+            //     continue;
+            // }
             // Save current transform
             rlPushMatrix();
             // Translate to position, rotate around Y axis, then draw
