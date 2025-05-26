@@ -338,7 +338,7 @@ class Protein:
             num_random_samples = 50,
             global_search_scale = 1,
             random_suggestions = 1024,
-            num_suggestions = 4096,
+            suggestions_per_pareto = 256,
             seed_with_search_center = True,
             expansion_rate = 0.25,
         ):
@@ -346,7 +346,7 @@ class Protein:
         self.num_random_samples = num_random_samples
         self.global_search_scale = global_search_scale
         self.random_suggestions = random_suggestions
-        self.num_suggestions = num_suggestions
+        self.suggestions_per_pareto = suggestions_per_pareto
         self.seed_with_search_center = seed_with_search_center
         self.resample_frequency = resample_frequency
         self.max_suggestion_cost = max_suggestion_cost
@@ -414,7 +414,8 @@ class Protein:
 
         ### Sample suggestions
         search_centers = np.stack([e['input'] for e in candidates])
-        suggestions = self.hyperparameters.sample(self.num_suggestions, mu=search_centers)
+        suggestions = self.hyperparameters.sample(
+            len(candidates)*self.suggestions_per_pareto, mu=search_centers)
 
         ### Predict scores and costs
         suggestions = torch.from_numpy(suggestions)
