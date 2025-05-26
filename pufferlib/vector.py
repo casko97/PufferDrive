@@ -342,7 +342,6 @@ class Multiprocessing:
                     num_workers, i, w_send_pipes[i], w_recv_pipes[i],
                     self.shm, is_native, seed_i)
             )
-            p.daemon = True
             p.start()
             self.processes.append(p)
 

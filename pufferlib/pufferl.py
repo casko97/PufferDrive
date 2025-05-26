@@ -704,7 +704,7 @@ class Profile:
 
 class Utilization(Thread):
     def __init__(self, delay=1, maxlen=20):
-        super().__init__(daemon=True)
+        super().__init__()
         self.cpu_mem = deque([0], maxlen=maxlen)
         self.cpu_util = deque([0], maxlen=maxlen)
         self.gpu_util = deque([0], maxlen=maxlen)
