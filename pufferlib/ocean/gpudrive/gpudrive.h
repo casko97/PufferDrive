@@ -128,6 +128,8 @@ struct Entity {
     float vy;
     float vz;
     float heading;
+    float heading_x;
+    float heading_y;
     int valid;
     int reached_goal;
     int respawn_timestep;
@@ -327,6 +329,8 @@ void set_start_position(GPUDrive* env){
             e->vz = e->traj_vz[0];
         }
         e->heading = e->traj_heading[0];
+        e->heading_x = cosf(e->heading);
+        e->heading_y = sinf(e->heading);
         e->valid = e->traj_valid[0];
     }
     //EndDrawing();
@@ -750,6 +754,8 @@ void move_dynamics(GPUDrive* env, int action_idx, int agent_idx){
         agent->x = x;
         agent->y = y;
         agent->heading = heading;
+        agent->heading_x = cosf(heading);
+        agent->heading_y = sinf(heading);
         agent->vx = new_vx;
         agent->vy = new_vy;
     }
@@ -762,6 +768,8 @@ void move_expert(GPUDrive* env, int* actions, int agent_idx){
     agent->y = agent->traj_y[env->timestep];
     agent->z = agent->traj_z[env->timestep];
     agent->heading = agent->traj_heading[env->timestep];
+    agent->heading_x = cosf(agent->heading);
+    agent->heading_y = sinf(agent->heading);
 }
 
 bool check_line_intersection(float p1[2], float p2[2], float q1[2], float q2[2]) {
@@ -793,26 +801,6 @@ bool check_line_intersection(float p1[2], float p2[2], float q1[2], float q2[2])
     return (s >= 0 && s <= 1 && t >= 0 && t <= 1);
 }
 
-float point_to_line_distance(float point[2], float line_start[2], float line_end[2]) {
-    float x0 = point[0], y0 = point[1];
-    float x1 = line_start[0], y1 = line_start[1];
-    float x2 = line_end[0], y2 = line_end[1];
-    float dx = x2 - x1;
-    float dy = y2 - y1;
-    float denom = dx*dx + dy*dy;
-    if (denom == 0) { // Line segment is a point
-        return sqrtf((x0 - x1)*(x0 - x1) + (y0 - y1)*(y0 - y1));
-    }
-    // Parametric value t for closest point on line
-    float t = ((x0 - x1)*dx + (y0 - y1)*dy) / denom;
-    t = fmaxf(0.0f, fminf(1.0f, t)); // Clamp t to [0, 1] for line segment
-    // Closest point on the line segment
-    float closest_x = x1 + t*dx;
-    float closest_y = y1 + t*dy;
-    // Distance from point to closest point
-    return sqrtf((x0 - closest_x)*(x0 - closest_x) + (y0 - closest_y)*(y0 - closest_y));
-}
-
 int checkNeighbors(GPUDrive* env, float x, float y, int* entity_list, int max_size, const int (*local_offsets)[2], int offset_size) {
     // Get the grid index for the given position (x, y)
     int index = getGridIndex(env, x, y);
@@ -840,6 +828,59 @@ int checkNeighbors(GPUDrive* env, float x, float y, int* entity_list, int max_si
         }
     }
     return entity_list_count;
+}
+
+int check_aabb_collision(Entity* car1, Entity* car2) {
+    // Get car corners in world space
+    float cos1 = car1->heading_x;
+    float sin1 = car1->heading_y;
+    float cos2 = car2->heading_x;
+    float sin2 = car2->heading_y;
+    
+    // Calculate half dimensions
+    float half_len1 = car1->length * 0.5f;
+    float half_width1 = car1->width * 0.5f;
+    float half_len2 = car2->length * 0.5f;
+    float half_width2 = car2->width * 0.5f;
+    
+    // Calculate car1's corners in world space
+    float car1_corners[4][2] = {
+        {car1->x + (half_len1 * cos1 - half_width1 * sin1), car1->y + (half_len1 * sin1 + half_width1 * cos1)},
+        {car1->x + (half_len1 * cos1 + half_width1 * sin1), car1->y + (half_len1 * sin1 - half_width1 * cos1)},
+        {car1->x + (-half_len1 * cos1 - half_width1 * sin1), car1->y + (-half_len1 * sin1 + half_width1 * cos1)},
+        {car1->x + (-half_len1 * cos1 + half_width1 * sin1), car1->y + (-half_len1 * sin1 - half_width1 * cos1)}
+    };
+    
+    // Calculate car2's corners in world space
+    float car2_corners[4][2] = {
+        {car2->x + (half_len2 * cos2 - half_width2 * sin2), car2->y + (half_len2 * sin2 + half_width2 * cos2)},
+        {car2->x + (half_len2 * cos2 + half_width2 * sin2), car2->y + (half_len2 * sin2 - half_width2 * cos2)},
+        {car2->x + (-half_len2 * cos2 - half_width2 * sin2), car2->y + (-half_len2 * sin2 + half_width2 * cos2)},
+        {car2->x + (-half_len2 * cos2 + half_width2 * sin2), car2->y + (-half_len2 * sin2 - half_width2 * cos2)}
+    };
+    
+    // Find min/max x and y for each car
+    float min_x1 = car1_corners[0][0], max_x1 = car1_corners[0][0];
+    float min_y1 = car1_corners[0][1], max_y1 = car1_corners[0][1];
+    float min_x2 = car2_corners[0][0], max_x2 = car2_corners[0][0];
+    float min_y2 = car2_corners[0][1], max_y2 = car2_corners[0][1];
+    
+    for(int i = 1; i < 4; i++) {
+        // Car1 bounds
+        min_x1 = fminf(min_x1, car1_corners[i][0]);
+        max_x1 = fmaxf(max_x1, car1_corners[i][0]);
+        min_y1 = fminf(min_y1, car1_corners[i][1]);
+        max_y1 = fmaxf(max_y1, car1_corners[i][1]);
+        
+        // Car2 bounds
+        min_x2 = fminf(min_x2, car2_corners[i][0]);
+        max_x2 = fmaxf(max_x2, car2_corners[i][0]);
+        min_y2 = fminf(min_y2, car2_corners[i][1]);
+        max_y2 = fmaxf(max_y2, car2_corners[i][1]);
+    }
+    
+    // Check for overlap
+    return !(max_x1 < min_x2 || min_x1 > max_x2 || max_y1 < min_y2 || min_y1 > max_y2);
 }
 
 void collision_check(GPUDrive* env, int agent_idx) {
@@ -888,30 +929,13 @@ void collision_check(GPUDrive* env, int agent_idx) {
         Entity* entity = &env->entities[index];
         float x1 = entity->x;
         float y1 = entity->y;
-        float dist = sqrtf((x1 - agent->x)*(x1 - agent->x) + (y1 - agent->y)*(y1 - agent->y));
-        if(dist > 15.0f) continue;
-        float other_corners[4][2];
-        for (int z = 0; z < 4; z++) {
-            float other_cos_heading = cosf(entity->traj_heading[0]);
-            float other_sin_heading = sinf(entity->traj_heading[0]);
-            float other_half_length = entity->length / 2.0f;
-            float other_half_width = entity->width / 2.0f;
-            other_corners[z][0] = entity->x + (offsets[z][0]*other_half_length*other_cos_heading - offsets[z][1]*other_half_width*other_sin_heading);
-            other_corners[z][1] = entity->y + (offsets[z][0]*other_half_length*other_sin_heading + offsets[z][1]*other_half_width*other_cos_heading);
+        float dist = ((x1 - agent->x)*(x1 - agent->x) + (y1 - agent->y)*(y1 - agent->y));
+        if(dist > 225.0f) continue;
+        if(check_aabb_collision(agent, entity)) {
+            collided = VEHICLE_COLLISION;
+            car_collided_with_index = index;
+            break;
         }
-        for (int k = 0; k < 4; k++) { // Check each edge of the bounding box
-            int next = (k + 1) % 4;
-            for (int l = 0; l < 4; l++) { // Check each edge of the bounding box
-                int next_l = (l + 1) % 4;
-                if (check_line_intersection(corners[k], corners[next], other_corners[l], other_corners[next_l])) {
-                    collided = VEHICLE_COLLISION;
-                    car_collided_with_index = index;
-                    break;
-                }
-            }
-            if (collided == VEHICLE_COLLISION) break;
-        }
-        if (collided == VEHICLE_COLLISION) break;
     }
     agent->collision_state = collided;
     // spawn immunity for collisions with other agent cars as agent_idx respawns
@@ -952,8 +976,8 @@ void compute_observations(GPUDrive* env) {
         Entity* ego_entity = &env->entities[env->active_agent_indices[i]];
         if(ego_entity->type > 3) break;
         float ego_heading = ego_entity->heading;
-        float cos_heading = cosf(ego_heading);
-        float sin_heading = sinf(ego_heading);
+        float cos_heading = ego_entity->heading_x;
+        float sin_heading = ego_entity->heading_y;
         float ego_speed = sqrtf(ego_entity->vx*ego_entity->vx + ego_entity->vy*ego_entity->vy);
         // Set goal distances
         float goal_x = ego_entity->goal_position_x - ego_entity->x;
@@ -963,10 +987,10 @@ void compute_observations(GPUDrive* env) {
         float rel_goal_y = -goal_x*sin_heading + goal_y*cos_heading;
         //obs[0] = normalize_value(rel_goal_x, MIN_REL_GOAL_COORD, MAX_REL_GOAL_COORD);
         //obs[1] = normalize_value(rel_goal_y, MIN_REL_GOAL_COORD, MAX_REL_GOAL_COORD);
-        obs[0] = rel_goal_x/100.0f;
-        obs[1] = rel_goal_y/100.0f;
+        obs[0] = rel_goal_x* 0.01f;
+        obs[1] = rel_goal_y* 0.01f;
         //obs[2] = ego_speed / MAX_SPEED;
-        obs[2] = ego_speed / 100.0f;
+        obs[2] = ego_speed * 0.01f;
         obs[3] = ego_entity->width / MAX_VEH_WIDTH;
         obs[4] = ego_entity->length / MAX_VEH_LEN;
         obs[5] = (ego_entity->collision_state > 0) ? 1 : 0;
@@ -988,21 +1012,27 @@ void compute_observations(GPUDrive* env) {
             // Store original relative positions
             float dx = other_entity->x - ego_entity->x;
             float dy = other_entity->y - ego_entity->y;
-            float dist = sqrtf(dx*dx + dy*dy);
-            if(dist > 50.0f) continue;
+            float dist = (dx*dx + dy*dy);
+            if(dist > 2500.0f) continue;
             // Rotate to ego vehicle's frame
             float rel_x = dx*cos_heading + dy*sin_heading;
             float rel_y = -dx*sin_heading + dy*cos_heading;
             // Store observations with correct indexing
-            obs[obs_idx] = rel_x / 100.0f;
-            obs[obs_idx + 1] = rel_y / 100.0f;
+            obs[obs_idx] = rel_x * 0.01f;
+            obs[obs_idx + 1] = rel_y * 0.01f;
             obs[obs_idx + 2] = other_entity->width / MAX_VEH_WIDTH;
             obs[obs_idx + 3] = other_entity->length / MAX_VEH_LEN;
             // relative heading
-            float rel_heading = normalize_heading(other_entity->heading - ego_heading);
-            obs[obs_idx + 4] = cosf(rel_heading) / MAX_ORIENTATION_RAD;
-            obs[obs_idx + 5] = sinf(rel_heading) / MAX_ORIENTATION_RAD;
-            // relative speed
+            float rel_heading_x = other_entity->heading_x * ego_entity->heading_x + 
+                     other_entity->heading_y * ego_entity->heading_y;  // cos(a-b) = cos(a)cos(b) + sin(a)sin(b)
+            float rel_heading_y = other_entity->heading_y * ego_entity->heading_x - 
+                                other_entity->heading_x * ego_entity->heading_y;  // sin(a-b) = sin(a)cos(b) - cos(a)sin(b)
+
+            obs[obs_idx + 4] = rel_heading_x / MAX_ORIENTATION_RAD;
+            obs[obs_idx + 5] = rel_heading_y / MAX_ORIENTATION_RAD;
+            // obs[obs_idx + 4] = cosf(rel_heading) / MAX_ORIENTATION_RAD;
+            // obs[obs_idx + 5] = sinf(rel_heading) / MAX_ORIENTATION_RAD;
+            // // relative speed
             float other_speed = sqrtf(other_entity->vx*other_entity->vx + other_entity->vy*other_entity->vy);
             obs[obs_idx + 6] = other_speed / MAX_SPEED;
             cars_seen++;
@@ -1044,8 +1074,8 @@ void compute_observations(GPUDrive* env) {
             // Compute sin and cos of relative angle directly without atan2f
             float cos_angle = dx_norm*cos_heading + dy_norm*sin_heading;
             float sin_angle = -dx_norm*sin_heading + dy_norm*cos_heading;
-            obs[obs_idx] = x_obs / 100.0f;
-            obs[obs_idx + 1] = y_obs / 100.0f;
+            obs[obs_idx] = x_obs * 0.01f;
+            obs[obs_idx + 1] = y_obs * 0.01f;
             obs[obs_idx + 2] = length / MAX_ROAD_SEGMENT_LENGTH;
             obs[obs_idx + 3] = width / MAX_ROAD_SCALE;
             obs[obs_idx + 4] = cos_angle / MAX_ORIENTATION_RAD;
@@ -1078,6 +1108,8 @@ void respawn_agent(GPUDrive* env, int agent_idx){
     env->entities[agent_idx].x = env->entities[agent_idx].traj_x[0];
     env->entities[agent_idx].y = env->entities[agent_idx].traj_y[0];
     env->entities[agent_idx].heading = env->entities[agent_idx].traj_heading[0];
+    env->entities[agent_idx].heading_x = cosf(env->entities[agent_idx].heading);
+    env->entities[agent_idx].heading_y = sinf(env->entities[agent_idx].heading);
     env->entities[agent_idx].vx = env->entities[agent_idx].traj_vx[0];
     env->entities[agent_idx].vy = env->entities[agent_idx].traj_vy[0];
     env->entities[agent_idx].reached_goal = 0;
@@ -1091,6 +1123,7 @@ void c_step(GPUDrive* env){
         add_log(env);
 	    c_reset(env);
     }
+
     // Move statix experts
     for (int i = 0; i < env->expert_static_car_count; i++) {
         int expert_idx = env->expert_static_car_indices[i];
