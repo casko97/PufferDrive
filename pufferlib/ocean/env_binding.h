@@ -410,7 +410,7 @@ static PyObject* vec_init(PyObject* self, PyObject* args, PyObject* kwargs) {
         vec->envs[i] = env;
         
         // // Make sure the log is initialized to 0
-        // memset(&env->log, 0, sizeof(Log));
+        memset(&env->log, 0, sizeof(Log));
         
         env->observations = (void*)((char*)PyArray_DATA(observations) + i*PyArray_STRIDE(observations, 0));
         env->actions = (void*)((char*)PyArray_DATA(actions) + i*PyArray_STRIDE(actions, 0));
@@ -434,7 +434,6 @@ static PyObject* vec_init(PyObject* self, PyObject* args, PyObject* kwargs) {
 
         PyObject* empty_args = PyTuple_New(0);
         my_init(env, empty_args, kwargs);
-        Py_DECREF(kwargs);
         if (PyErr_Occurred()) {
             return NULL;
         }
