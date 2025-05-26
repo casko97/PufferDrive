@@ -851,7 +851,6 @@ def train(env_name, args=None, vecenv=None, policy=None, logger=None):
 
     logs = pufferl.mean_and_log()
     if logs is not None:
-        pufferl.logger.log(logs, pufferl.global_step)
         all_logs.append(logs)
 
     pufferl.print_dashboard()
