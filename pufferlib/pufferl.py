@@ -731,13 +731,6 @@ class Utilization(Thread):
     def stop(self):
         self.stopped = True
 
-# TODO: Is there a simpler interp
-def downsample_linear(arr, m):
-    n = len(arr)
-    x_old = np.linspace(0, 1, n)  # Original indices normalized
-    x_new = np.linspace(0, 1, m)  # New indices normalized
-    return np.interp(x_new, x_old, arr)
-
 def downsample_alt(arr, m):
     last = arr[-1]
     arr = arr[:-1]
@@ -941,9 +934,9 @@ def sweep(args=None, env_name=None):
         total_timesteps = args['train']['total_timesteps']
         all_logs = train(env_name, args=args)
         all_logs = [e for e in all_logs if target_key in e]
-        scores = downsample_alt([log[target_key] for log in all_logs], 10)
-        costs = downsample_alt([log['uptime'] for log in all_logs], 10)
-        timesteps = downsample_alt([log['agent_steps'] for log in all_logs], 10)
+        scores = downsample_alt([log[target_key] for log in all_logs], 5)
+        costs = downsample_alt([log['uptime'] for log in all_logs], 5)
+        timesteps = downsample_alt([log['agent_steps'] for log in all_logs], 5)
 
         for score, cost, timestep in zip(scores, costs, timesteps):
             args['train']['total_timesteps'] = timestep
