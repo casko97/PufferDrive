@@ -224,7 +224,10 @@ def pareto_points(observations, eps=1e-6):
     idxs = []
     for idx, obs in enumerate(observations):
         # TODO: Ties and groups
-        higher_score = scores + eps > scores[idx]
+        try:
+            higher_score = scores + eps > scores[idx]
+        except:
+            breakpoint()
         lower_cost = costs - eps < costs[idx]
         better = higher_score & lower_cost
         better[idx] = False
@@ -249,11 +252,12 @@ class Random:
     def suggest(self, fill=None):
         suggestions = self.hyperparameters.sample(self.random_suggestions)
         self.suggestion = random.choice(suggestions)
-        return self.hyperparameters.to_dict(self.suggestion, fill)
+        return self.hyperparameters.to_dict(self.suggestion, fill), {}
 
-    def observe(self, score, cost, is_failure=False):
+    def observe(self, hypers, score, cost, is_failure=False):
+        params = self.hyperparameters.from_dict(hypers)
         self.success_observations.append(dict(
-            input=self.suggestion,
+            input=hypers,
             output=score,
             cost=cost,
             is_failure=is_failure,
@@ -336,18 +340,9 @@ class Protein:
             random_suggestions = 1024,
             suggestions_per_pareto = 256,
             seed_with_search_center = True,
-            min_score = None,
-            max_score = None,
+            expansion_rate = 0.25,
         ):
         self.hyperparameters = Hyperparameters(sweep_config)
-
-        self.min_score = min_score
-        self.max_score = max_score
-        if self.min_score is None:
-            warnings.warn('No min_score specified. This can destabilize tuning.')
-        if self.max_score is None:
-            warnings.warn('No max_score specified. This can destabilize tuning.')
-
         self.num_random_samples = num_random_samples
         self.global_search_scale = global_search_scale
         self.random_suggestions = random_suggestions
@@ -355,6 +350,7 @@ class Protein:
         self.seed_with_search_center = seed_with_search_center
         self.resample_frequency = resample_frequency
         self.max_suggestion_cost = max_suggestion_cost
+        self.expansion_rate = expansion_rate
 
         self.success_observations = []
         self.failure_observations = []
@@ -383,27 +379,13 @@ class Protein:
 
         params = np.array([e['input'] for e in self.success_observations])
         params = torch.from_numpy(params)
-        eps = 1e-2
 
         # Scores variable y
         y = np.array([e['output'] for e in self.success_observations])
 
         # Transformed scores
-        min_score = self.min_score
-        if min_score is None:
-            min_score = np.min(y)
-
-        if np.min(y) < min_score - 1e-6:
-            raise ValueError(f'Min score {min_score} is less than min score in data {np.min(y)}')
-
-        max_score = self.max_score
-        if max_score is None:
-            max_score = np.max(y)
-
-        if np.max(y) > max_score + 1e-6:
-            raise ValueError(f'Max score {max_score} is greater than max score in data {np.max(y)}')
-
-        # Linearize
+        min_score = np.min(y)
+        max_score = np.max(y)
         y_norm = (y - min_score) / (np.abs(max_score - min_score) + 1e-6)
 
         self.gp_score.set_data(params, torch.from_numpy(y_norm))
@@ -424,10 +406,7 @@ class Protein:
         self.gp_cost.mean_function = lambda x: 1
         self.gp_cost.set_data(params, torch.from_numpy(log_c_norm))
         self.gp_cost.train()
-        try:
-            gp.util.train(self.gp_cost, self.cost_opt)
-        except:
-            breakpoint()
+        gp.util.train(self.gp_cost, self.cost_opt)
         self.gp_cost.eval()
 
         candidates, pareto_idxs = pareto_points(self.success_observations)
@@ -466,7 +445,7 @@ class Protein:
 
         max_c_mask = gp_c < self.max_suggestion_cost
 
-        target = 1.25*np.random.rand()
+        target = (1 + self.expansion_rate)*np.random.rand()
         weight = 1 - abs(target - gp_log_c_norm)
 
         suggestion_scores = self.hyperparameters.optimize_direction * max_c_mask * (
