@@ -858,29 +858,42 @@ int check_aabb_collision(Entity* car1, Entity* car2) {
         {car2->x + (-half_len2 * cos2 - half_width2 * sin2), car2->y + (-half_len2 * sin2 + half_width2 * cos2)},
         {car2->x + (-half_len2 * cos2 + half_width2 * sin2), car2->y + (-half_len2 * sin2 - half_width2 * cos2)}
     };
-    
-    // Find min/max x and y for each car
-    float min_x1 = car1_corners[0][0], max_x1 = car1_corners[0][0];
-    float min_y1 = car1_corners[0][1], max_y1 = car1_corners[0][1];
-    float min_x2 = car2_corners[0][0], max_x2 = car2_corners[0][0];
-    float min_y2 = car2_corners[0][1], max_y2 = car2_corners[0][1];
-    
-    for(int i = 1; i < 4; i++) {
-        // Car1 bounds
-        min_x1 = fminf(min_x1, car1_corners[i][0]);
-        max_x1 = fmaxf(max_x1, car1_corners[i][0]);
-        min_y1 = fminf(min_y1, car1_corners[i][1]);
-        max_y1 = fmaxf(max_y1, car1_corners[i][1]);
+
+    // Get the axes to check (normalized vectors perpendicular to each edge)
+    float axes[4][2] = {
+        {cos1, sin1},           // Car1's length axis
+        {-sin1, cos1},          // Car1's width axis
+        {cos2, sin2},           // Car2's length axis
+        {-sin2, cos2}           // Car2's width axis
+    };
+
+    // Check each axis
+    for(int i = 0; i < 4; i++) {
+        float min1 = INFINITY, max1 = -INFINITY;
+        float min2 = INFINITY, max2 = -INFINITY;
         
-        // Car2 bounds
-        min_x2 = fminf(min_x2, car2_corners[i][0]);
-        max_x2 = fmaxf(max_x2, car2_corners[i][0]);
-        min_y2 = fminf(min_y2, car2_corners[i][1]);
-        max_y2 = fmaxf(max_y2, car2_corners[i][1]);
+        // Project car1's corners onto the axis
+        for(int j = 0; j < 4; j++) {
+            float proj = car1_corners[j][0] * axes[i][0] + car1_corners[j][1] * axes[i][1];
+            min1 = fminf(min1, proj);
+            max1 = fmaxf(max1, proj);
+        }
+        
+        // Project car2's corners onto the axis
+        for(int j = 0; j < 4; j++) {
+            float proj = car2_corners[j][0] * axes[i][0] + car2_corners[j][1] * axes[i][1];
+            min2 = fminf(min2, proj);
+            max2 = fmaxf(max2, proj);
+        }
+        
+        // If there's a gap on this axis, the boxes don't intersect
+        if(max1 < min2 || min1 > max2) {
+            return 0;  // No collision
+        }
     }
     
-    // Check for overlap
-    return !(max_x1 < min_x2 || min_x1 > max_x2 || max_y1 < min_y2 || min_y1 > max_y2);
+    // If we get here, there's no separating axis, so the boxes intersect
+    return 1;  // Collision
 }
 
 void collision_check(GPUDrive* env, int agent_idx) {
@@ -1549,6 +1562,45 @@ void c_render(GPUDrive* env) {
             };
             DrawModelEx(car_model, (Vector3){0, 0, 0}, (Vector3){1, 0, 0}, 90.0f, scale, WHITE);
             rlPopMatrix();
+                 
+            float cos_heading = env->entities[i].heading_x;
+            float sin_heading = env->entities[i].heading_y;
+            
+            // Calculate half dimensions
+            float half_len = env->entities[i].length * 0.5f;
+            float half_width = env->entities[i].width * 0.5f;
+            
+            // Calculate the four corners of the collision box
+            Vector3 corners[4] = {
+                (Vector3){
+                    position.x + (half_len * cos_heading - half_width * sin_heading),
+                    position.y + (half_len * sin_heading + half_width * cos_heading),
+                    position.z
+                },
+                (Vector3){
+                    position.x + (half_len * cos_heading + half_width * sin_heading),
+                    position.y + (half_len * sin_heading - half_width * cos_heading),
+                    position.z
+                },
+                (Vector3){
+                    position.x + (-half_len * cos_heading - half_width * sin_heading),
+                    position.y + (-half_len * sin_heading + half_width * cos_heading),
+                    position.z
+                },
+                (Vector3){
+                    position.x + (-half_len * cos_heading + half_width * sin_heading),
+                    position.y + (-half_len * sin_heading - half_width * cos_heading),
+                    position.z
+                }
+            };
+            
+            // Draw the corners as spheres
+            for(int j = 0; j < 4; j++) {
+                DrawSphere(corners[j], 0.3f, RED);  // Draw red spheres at each corner
+            }
+            for(int j = 0; j < 4; j++) {
+                DrawLine3D(corners[j], corners[(j+1)%4], PURPLE);  // Draw red lines between corners
+            }
             // FPV Camera Control
             if(IsKeyDown(KEY_LEFT_CONTROL) && env->human_agent_idx== agent_index){
                 if(env->entities[agent_index].reached_goal){
