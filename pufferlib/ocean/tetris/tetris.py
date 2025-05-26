@@ -1,0 +1,73 @@
+import gymnasium
+import numpy as np
+import pufferlib
+from pufferlib.ocean.tetris import binding
+
+class Tetris(pufferlib.PufferEnv):
+    def __init__(
+             self, num_envs=1, n_cols=10, n_rows=10,
+            render_mode=None, log_interval=32, buf=None, seed=0):
+        self.single_observation_space = gymnasium.spaces.Box(low=0, high=1,
+            shape=(2,), dtype=np.float32)
+        self.single_action_space = gymnasium.spaces.MultiDiscrete([4, n_cols], dtype=np.int32)
+        self.render_mode = render_mode
+        self.log_interval = log_interval
+        self.num_agents = num_envs
+
+        super().__init__(buf)
+        self.actions = self.actions.astype(np.float32)
+
+        self.c_envs = binding.vec_init(
+            self.observations,
+            self.actions,
+            self.rewards,
+            self.terminals,
+            self.truncations,
+            num_envs,
+            seed,
+            n_cols=n_cols,
+            n_rows=n_rows,
+        )
+ 
+    def reset(self, seed=0):
+        binding.vec_reset(self.c_envs, seed)
+        self.tick = 0
+        return self.observations, []
+
+    def step(self, actions):
+        self.actions[:] = actions
+
+        self.tick += 1
+        binding.vec_step(self.c_envs)
+
+        info = []
+        if self.tick % self.log_interval == 0:
+            info.append(binding.vec_log(self.c_envs))
+
+        return (self.observations, self.rewards,
+            self.terminals, self.truncations, info)
+
+    def render(self):
+        binding.vec_render(self.c_envs, 0)
+
+    def close(self):
+        binding.vec_close(self.c_envs)
+
+if __name__ == '__main__':
+    TIME = 10
+    num_envs = 512
+    env = Tetris(num_envs=num_envs, render_mode='human')
+    actions = [
+        env.single_action_space.sample() for _ in range(1000)
+    ]
+    env.reset()
+
+    import time
+    start = time.time()
+    tick = 0
+    while time.time() - start < TIME:
+        env.step(actions[tick%1000])
+        tick += 1
+        env.render()
+    print('SPS:', (tick*num_envs) / (time.time() - start))
+
