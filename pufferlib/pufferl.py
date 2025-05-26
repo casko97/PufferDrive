@@ -732,6 +732,9 @@ class Utilization(Thread):
         self.stopped = True
 
 def downsample_alt(arr, m):
+    if len(arr) < m:
+        return arr
+
     last = arr[-1]
     arr = arr[:-1]
     arr = np.array(arr)
