@@ -249,7 +249,6 @@ static PyObject* env_put(PyObject* self, PyObject* args, PyObject* kwargs) {
 
     PyObject* empty_args = PyTuple_New(0);
     my_put(env, empty_args, kwargs);
-    Py_DECREF(kwargs);
     if (PyErr_Occurred()) {
         return NULL;
     }
