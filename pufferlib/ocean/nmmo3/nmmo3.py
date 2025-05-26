@@ -185,7 +185,7 @@ class NMMO3(pufferlib.PufferEnv):
 
         self.c_envs = binding.vectorize(*c_envs)
 
-    def reset(self, seed=None):
+    def reset(self, seed=0):
         self.rewards.fill(0)
         self.is_reset = True
         binding.vec_reset(self.c_envs, seed)
