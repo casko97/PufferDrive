@@ -746,7 +746,7 @@ def downsample_alt(arr, m):
 
 class NoLogger:
     def __init__(self, args):
-        self.run_id = str(int(random.random() * 1e8))
+        self.run_id = str(int(100*time.time()))
 
     def log(self, logs, step):
         pass
@@ -831,7 +831,7 @@ def train(env_name, args=None, vecenv=None, policy=None, logger=None):
     elif args['wandb']:
         logger = WandbLogger(args)
 
-    train_config = dict(**args['train'], env=args['env_name'])
+    train_config = dict(**args['train'], env=env_name)
     pufferl = PuffeRL(train_config, vecenv, policy, logger)
 
     all_logs = []

@@ -137,6 +137,8 @@ class ClipAction(gymnasium.Wrapper):
     def __init__(self, env):
         self.env = env
         assert isinstance(env.action_space, gymnasium.spaces.Box)
+        self._observation_space = env.observation_space
+        self._action_space = env.action_space
         dtype_info = np.finfo(env.action_space.dtype)
         self.action_space = gymnasium.spaces.Box(
             low=dtype_info.min,

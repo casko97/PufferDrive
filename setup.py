@@ -244,8 +244,7 @@ environments = {
         'minihack==0.1.5',
     ],
     'mujoco': [
-        f'gymnasium[mujoco]=={GYMNASIUM_VERSION}',
-        'mujoco==2.3.7',  # mujuco > 3 is supported by gymnasium > 1.0
+        f'gymnasium[mujoco]==1.0.0',
         'moviepy',
     ],
     'nethack': [
