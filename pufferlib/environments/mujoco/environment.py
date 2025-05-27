@@ -9,10 +9,9 @@ import gymnasium
 import pufferlib
 import pufferlib.emulation
 import pufferlib.environments
-import pufferlib.postprocess
 
 
-def single_env_creator(env_name, capture_video, gamma, run_name=None, idx=None, obs_norm=True, pufferl=False, buf=None):
+def single_env_creator(env_name, capture_video, gamma, run_name=None, idx=None, obs_norm=True, pufferl=False, buf=None, seed=0):
     if capture_video and idx == 0:
         assert run_name is not None, "run_name must be specified when capturing videos"
         env = gymnasium.make(env_name, render_mode="rgb_array")
@@ -20,8 +19,8 @@ def single_env_creator(env_name, capture_video, gamma, run_name=None, idx=None, 
     else:
         env = gymnasium.make(env_name)
 
-    env = pufferlib.postprocess.ClipAction(env)  # NOTE: this changed actions space
-    env = pufferlib.postprocess.EpisodeStats(env)
+    env = pufferlib.ClipAction(env)  # NOTE: this changed actions space
+    env = pufferlib.EpisodeStats(env)
 
     if obs_norm:
         env = gymnasium.wrappers.NormalizeObservation(env)
