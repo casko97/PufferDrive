@@ -202,7 +202,6 @@ const float DRONE_PIECE_MIN_SPEED = 5.0f;
 const float DRONE_PIECE_MAX_SPEED = 10.0f;
 
 // TODO: increase impulse of imploder of entity it directly hits?
-// TODO: long charge single shot slow big explosion weapon?
 // weapon projectile settings
 #define STANDARD_AMMO INFINITE
 #define STANDARD_PROJECTILES 1
@@ -353,7 +352,7 @@ const float DRONE_PIECE_MAX_SPEED = 10.0f;
 #define NUKE_AMMO 1
 #define NUKE_PROJECTILES 1
 #define NUKE_RECOIL_MAGNITUDE 150.0f
-#define NUKE_FIRE_MAGNITUDE 75.0f
+#define NUKE_FIRE_MAGNITUDE 85.0f
 #define NUKE_DAMPING 0.0f
 #define NUKE_CHARGE 5.0f
 #define NUKE_COOL_DOWN 3.0f
@@ -615,7 +614,6 @@ const weaponInformation nuke = {
     .spawnWeight = NUKE_SPAWN_WEIGHT,
 };
 
-#ifndef AUTOPXD
 weaponInformation *weaponInfos[] = {
     (weaponInformation *)&standard,
     (weaponInformation *)&machineGun,
@@ -628,7 +626,19 @@ weaponInformation *weaponInfos[] = {
     (weaponInformation *)&blackHole,
     (weaponInformation *)&nuke,
 };
-#endif
+
+const char *weaponNames[] = {
+    "standard",
+    "machine_gun",
+    "sniper",
+    "shotgun",
+    "imploder",
+    "accelerator",
+    "flak_cannon",
+    "mine_launcher",
+    "black_hole",
+    "tactical_nuke",
+};
 
 // max ammo of weapon
 int8_t weaponAmmo(const enum weaponType defaultWep, const enum weaponType type) {
@@ -764,7 +774,7 @@ void weaponExplosion(const enum weaponType type, b2ExplosionDef *explosionDef) {
         explosionDef->impulsePerLength = 200.0f;
         return;
     case NUKE_WEAPON:
-        explosionDef->radius = 30.0f;
+        explosionDef->radius = 35.0f;
         explosionDef->impulsePerLength = 300.0f;
         return;
     default:

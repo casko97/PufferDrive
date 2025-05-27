@@ -2,24 +2,9 @@
 #define IMPULSE_WARS_TYPES_H
 
 #include "box2d/box2d.h"
-
-// autopxd2 can't parse internal box2d headers or raylib headers
-#ifndef AUTOPXD
 #include "id_pool.h"
 #include "raylib.h"
 #include "rlights.h"
-#else
-typedef struct Vector2 {
-    float x;
-    float y;
-} Vector2;
-
-typedef struct dummyStruct {
-    void *dummy;
-} dummyStruct;
-
-typedef struct dummyStruct b2IdPool, Camera3D, Camera2D, Shader, Texture2D, RenderTexture2D;
-#endif
 
 #include "include/cc_array.h"
 
@@ -304,33 +289,37 @@ typedef struct droneEntity {
 
 // stats for the whole episode
 typedef struct droneStats {
-    float reward;
+    float returns;
     float distanceTraveled;
     float absDistanceTraveled;
+    float brakeTime;
+    float totalBursts;
+    float burstsHit;
+    float energyEmptied;
+    float wins;
+
     float shotsFired[_NUM_WEAPONS];
     float shotsHit[_NUM_WEAPONS];
     float shotsTaken[_NUM_WEAPONS];
     float ownShotsTaken[_NUM_WEAPONS];
     float weaponsPickedUp[_NUM_WEAPONS];
     float shotDistances[_NUM_WEAPONS];
-    float brakeTime;
-    float totalBursts;
-    float burstsHit;
-    float energyEmptied;
-    float wins;
+
+    float totalShotsFired;
+    float totalShotsHit;
+    float totalShotsTaken;
+    float totalOwnShotsTaken;
+    float totalWeaponsPickedUp;
+    float totalShotDistances;
 } droneStats;
 
-typedef struct logEntry {
+typedef struct Log {
     float length;
     float ties;
     droneStats stats[_MAX_DRONES];
-} logEntry;
 
-typedef struct logBuffer {
-    logEntry *logs;
-    uint16_t size;
-    uint16_t capacity;
-} logBuffer;
+    float n;
+} Log;
 
 typedef struct gameCamera {
     Camera3D camera3D;
@@ -394,7 +383,7 @@ typedef struct pathingInfo {
     int8_t *pathBuffer;
 } pathingInfo;
 
-typedef struct env {
+typedef struct iwEnv {
     uint8_t numDrones;
     uint8_t numAgents;
     uint8_t numTeams;
@@ -404,12 +393,11 @@ typedef struct env {
 
     uint16_t obsBytes;
     uint16_t discreteObsBytes;
+    bool continuousActions;
 
-    uint8_t *obs;
+    uint8_t *observations;
     float *rewards;
-    bool discretizeActions;
-    float *contActions;
-    int32_t *discActions;
+    float *actions;
     uint8_t *masks;
     uint8_t *terminals;
     uint8_t *truncations;
@@ -422,7 +410,7 @@ typedef struct env {
     bool needsReset;
 
     uint16_t episodeLength;
-    logBuffer *logs;
+    Log log;
     droneStats stats[_MAX_DRONES];
 
     b2WorldId worldID;
@@ -465,6 +453,6 @@ typedef struct env {
     // used for rendering explosions
     CC_Array *explosions;
     b2Vec2 debugPoint;
-} env;
+} iwEnv;
 
 #endif
