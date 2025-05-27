@@ -34,18 +34,21 @@ struct Tetris {
     int step;
     int n_rows;
     int n_cols;
+    int* preview_grid;
     int* grid;
     int score;
     float ep_return;
+    int current_tetrimino;
 };
 
 void init(Tetris* env) {
     env->grid = (int*)calloc(env->n_rows * env->n_cols, sizeof(int));
+    env->preview_grid = (int*)calloc(env->n_cols * SIZE, sizeof(int));
 }
 
 void allocate(Tetris* env) {
     init(env);
-    env->observations = (float*)calloc(2, sizeof(float));
+    env->observations = (float*)calloc(env->n_rows * env->n_cols + NUM_TETROMINOES+1, sizeof(float));
     env->actions = (float*)calloc(1, sizeof(float));
     env->rewards = (float*)calloc(1, sizeof(float));
     env->terminals = (unsigned char*)calloc(1, sizeof(unsigned char));
@@ -53,6 +56,7 @@ void allocate(Tetris* env) {
 
 void c_close(Tetris* env) {
     free(env->grid);
+    free(env->preview_grid);
 }
 
 void restore_grid(Tetris* env) {
@@ -61,7 +65,29 @@ void restore_grid(Tetris* env) {
             env->grid[r * env->n_cols + c] = 0;
         }
     }
+    for (int r = 0; r < SIZE; r++) {
+        for (int c = 0; c < env->n_cols; c++) {
+            env->preview_grid[r * env->n_cols + c] = 0;
+        }
+    }
 }
+
+void draw_new_tetromino(Tetris* env) {
+    env->current_tetrimino = rand() % NUM_TETROMINOES;
+    for (int r = 0; r < SIZE; r++) {
+        for (int c = 0; c < SIZE; c++) {
+            env->preview_grid[r * env->n_cols + c + env->n_cols/2] = 0;
+        }
+    }
+    for (int r = 0; r < SIZE; r++) {
+        for (int c = 0; c < SIZE; c++) {
+            if (TETROMINOES[env->current_tetrimino][0][r][c] == 1) {
+                env->preview_grid[r * env->n_cols + c + env->n_cols/2] = env->current_tetrimino + 1;
+            }
+        }
+    }
+}
+
 
 void free_allocated(Tetris* env) {
     free(env->actions);
@@ -79,19 +105,48 @@ void add_log(Tetris* env) {
     env->log.n += 1;
 }
 
-void place_tetromino(Tetris* env, int tetrimino_idx, int col, int rotation) {
-    int row = 0;
-    for (int r = 0; r < env->n_rows; r++) {
-        if (env->grid[r * env->n_cols + col] == 0) {
-            row = r;
+int is_valid_tetromino(Tetris* env, int tetrimino_idx, int col, int rotation) {
+    int landing_row = -1;
+    
+    for (int test_row = 0; test_row < env->n_rows; test_row++) {
+        bool can_place = true;
+        
+        for (int r = 0; r < SIZE && can_place; r++) {
+            for (int c = 0; c < SIZE && can_place; c++) {
+                if (TETROMINOES[tetrimino_idx][rotation][r][c] == 1) {
+                    int grid_row = test_row + r;
+                    int grid_col = col + c;
+                    
+                    if (grid_row >= env->n_rows || grid_col < 0 || grid_col >= env->n_cols) {
+                        can_place = false;
+                    }
+                    else if (env->grid[grid_row * env->n_cols + grid_col] != 0) {
+                        can_place = false;
+                    }
+                }
+            }
+        }
+        
+        if (can_place) {
+            landing_row = test_row;
+        } else {
             break;
         }
     }
+    
+    return landing_row;
+}
+
+void place_tetromino(Tetris* env, int tetrimino_idx, int col, int rotation, int landing_row) {
     for (int r = 0; r < SIZE; r++) {
         for (int c = 0; c < SIZE; c++) {
             if (TETROMINOES[tetrimino_idx][rotation][r][c] == 1) {
-                if (row + r < env->n_rows && col + c < env->n_cols) {
-                    env->grid[(row + r) * env->n_cols + (col + c)] = tetrimino_idx + 1;
+                int grid_row = landing_row + r;
+                int grid_col = col + c;
+                
+                // Place the piece if within bounds
+                if (grid_row < env->n_rows && grid_col >= 0 && grid_col < env->n_cols) {
+                    env->grid[grid_row * env->n_cols + grid_col] = tetrimino_idx + 1;
                 }
             }
         }
@@ -99,30 +154,37 @@ void place_tetromino(Tetris* env, int tetrimino_idx, int col, int rotation) {
 }
 
 void compute_observations(Tetris* env) {
-    env->observations[0] = env->score;
-    env->observations[1] = env->step;
+    for (int i = 0; i < NUM_TETROMINOES; i++) {
+        env->observations[i] = 0;
+    }
+    env->observations[env->current_tetrimino] = 1;
+    env->observations[NUM_TETROMINOES] = env->score;
 }
 
 void c_reset(Tetris* env) {
     env->score = 0.0f;
     env->ep_return = 0.0;
     env->step = 0;
+    draw_new_tetromino(env);
     restore_grid(env);
-    place_tetromino(env, rand() % NUM_TETROMINOES, 3, 0);
     compute_observations(env);
 }
 
 void c_step(Tetris* env) {
     env->terminals[0] = 0;
     env->rewards[0] = 0.0;
+    int col = ((int) env->actions[0])%env->n_cols;
+    int rotation = ((int) env->actions[0])/env->n_cols;
+    int landing_row = is_valid_tetromino(env, env->current_tetrimino, col, rotation);
+    if (landing_row >= 0) {
+        place_tetromino(env, env->current_tetrimino, col, rotation, landing_row);
+    }
+    draw_new_tetromino(env);
     compute_observations(env);
 }
 
-
-
 typedef struct Client Client;
 struct Client {
-
 };
 
 Client* make_client(Tetris* env) {
@@ -158,10 +220,16 @@ void c_render(Tetris* env) {
     BeginDrawing();
     ClearBackground(BG_COLOR);
 
-    for (int r = env->n_rows; r < env->n_rows + 4; r++) {
+    for (int r = 0; r < SIZE; r++) {
         for (int c = 0; c < env->n_cols; c++) {
-            int x = (env->n_cols - c -1) * SQUARE_SIZE;
-            int y = (env->n_rows + 5 - r -1) * SQUARE_SIZE;
+            int x = c * SQUARE_SIZE;
+            int y = (r + 1) * SQUARE_SIZE;
+            Color color = (env->preview_grid[r*env->n_cols + c] == 0) ? BG_COLOR : TETROMINOES_COLORS[env->preview_grid[r*env->n_cols + c] - 1];
+            DrawRectangle(
+                x + HALF_LINEWIDTH, 
+                y + HALF_LINEWIDTH,
+                SQUARE_SIZE-2*HALF_LINEWIDTH, SQUARE_SIZE-2*HALF_LINEWIDTH, color
+            );
             DrawRectangle(
                 x - HALF_LINEWIDTH, 
                 y - HALF_LINEWIDTH,
@@ -187,8 +255,8 @@ void c_render(Tetris* env) {
     
     for (int r = 0; r < env->n_rows; r++) {
         for (int c = 0; c < env->n_cols; c++) {
-            int x = (env->n_cols - c -1) * SQUARE_SIZE;
-            int y = (env->n_rows + 5 - r -1) * SQUARE_SIZE;
+            int x = c * SQUARE_SIZE;
+            int y = (r + SIZE + 1) * SQUARE_SIZE;
             Color color = (env->grid[r*env->n_cols + c] == 0) ? BG_COLOR : TETROMINOES_COLORS[env->grid[r*env->n_cols + c] - 1];
             DrawRectangle(
                 x + HALF_LINEWIDTH, 

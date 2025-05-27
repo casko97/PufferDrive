@@ -121,6 +121,7 @@ MAKE_FUNCTIONS = {
     'blastar': 'Blastar',
     'pong': 'Pong',
     'enduro': 'Enduro',
+    'tetris': 'Tetris',
     'cartpole': 'Cartpole',
     'moba': 'Moba',
     'boids': 'Boids',
