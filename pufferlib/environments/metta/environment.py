@@ -14,7 +14,7 @@ def make(name, config='pufferlib/environments/metta/metta.yaml', render_mode='au
     from omegaconf import OmegaConf
     OmegaConf.register_new_resolver("div", oc_divide, replace=True)
     cfg = OmegaConf.load(config)
-    return MettaGridEnv(cfg, render_mode, buf)
+    return MettaPuff(cfg, render_mode=render_mode, buf=buf)
 
 def oc_divide(a, b):
     """
@@ -27,26 +27,12 @@ def oc_divide(a, b):
         return int(result)
     return result
 
-
-class MettaPuff(pufferlib.PufferEnv):
+class MettaPuff(MettaGridEnv):
     def __init__(self, config, render_mode='human', buf=None, seed=0):
-        self.render_mode = render_mode
-        import mettagrid.mettagrid_env
-        from omegaconf import OmegaConf
-        OmegaConf.register_new_resolver("div", oc_divide, replace=True)
-        cfg = OmegaConf.load(config)
-
-        from mettagrid.mettagrid_env import MettaGridEnv
-        self.env = MettaGridEnv(cfg, render_mode=render_mode, buf=buf)
-
-        self.is_rendering = False
-        self.single_observation_space = self.env.single_observation_space
-        self.single_action_space = self.env.single_action_space
-        self.num_agents = self.env.num_agents
-        super().__init__(buf)
+        super().__init__(config, render_mode=render_mode, buf=buf)
 
     def step(self, actions):
-        obs, rew, term, trunc, info = self.env.step(actions)
+        obs, rew, term, trunc, info = super().step(actions)
 
         if all(term) or all(trunc):
             self.reset()
@@ -54,23 +40,8 @@ class MettaPuff(pufferlib.PufferEnv):
                 del info['agent_raw']
             if 'episode_rewards' in info:
                 info['score'] = info['episode_rewards']
+
         else:
             info = []
 
         return obs, rew, term, trunc, [info]
-
-    def reset(self, seed=None):
-        obs = self.env.reset()
-        self.tick = 0
-        return obs, []
-
-    def render(self):
-        if not self.is_rendering:
-            self.is_rendering = True
-            from mettagrid.gym_wrapper import RaylibRendererWrapper
-            self.env = RaylibRendererWrapper(self.env, self.env._env_cfg)
-
-        self.env.render()
-
-    def close(self):
-        self.env.close()
