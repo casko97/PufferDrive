@@ -1,5 +1,21 @@
 #include "terraform.h"
 
+void allocate(Terraform* env) {
+    env->observations = (unsigned char*)calloc(env->num_agents*125, sizeof(unsigned char));
+    env->actions = (int*)calloc(5*env->num_agents, sizeof(int));
+    env->rewards = (float*)calloc(env->num_agents, sizeof(float));
+    env->terminals = (unsigned char*)calloc(env->num_agents, sizeof(unsigned char));
+    init(env);
+}
+
+void free_allocated(Terraform* env) {
+    free(env->observations);
+    free(env->actions);
+    free(env->rewards);
+    free(env->terminals);
+    free_initialized(env);
+}
+
 void handle_camera_controls(Client* client) {
     static Vector2 prev_mouse_pos = {0};
     static bool is_dragging = false;

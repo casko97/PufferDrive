@@ -14,7 +14,10 @@ install(show_locals=False) # Rich tracebacks
 
 import pufferlib
 import pufferlib.sweep
-import pufferlib.utils
+
+from bokeh.models import ColumnDataSource, LinearColorMapper
+from bokeh.plotting import figure, show
+from bokeh.palettes import Turbo256
 
 
 def synthetic_basic_task(args):
@@ -49,25 +52,29 @@ def synthetic_cutoff_task(args):
 
 def test_sweep(args):
     method = args['sweep']['method']
-    if method == 'random':
+    if method == 'Random':
         sweep = pufferlib.sweep.Random(args['sweep'])
-    elif method == 'pareto_genetic':
+    elif method == 'ParetoGenetic':
         sweep = pufferlib.sweep.ParetoGenetic(args['sweep'])
-    elif method == 'protein':
+    elif method == 'Protein':
         sweep = pufferlib.sweep.Protein(
             args['sweep'],
-            resample_frequency=0,
-            num_random_samples=10, # Should be number of params
-            max_suggestion_cost=args['base']['max_suggestion_cost'],
-            min_score = 0,
-            max_score = 2.34,
-            #min_score = args['sweep']['metric']['min'],
-            #max_score = args['sweep']['metric']['max'],
+            expansion_rate = 1.0,
         )
     else:
         raise ValueError(f'Invalid sweep method {method} (random/pareto_genetic/protein)')
 
-    target_metric = args['sweep']['metric']['name']
+    task = args['task']
+    if task == 'linear':
+        synthetic_task = synthetic_linear_task
+    elif task == 'log':
+        synthetic_task = synthetic_log_task
+    elif task == 'percentile':
+        synthetic_task = synthetic_percentile_task
+    else:
+        raise ValueError(f'Invalid task {task}')
+
+    target_metric = args['sweep']['metric']
     scores, costs = [], []
     for i in range(args['max_runs']):
         seed = time.time_ns() & 0xFFFFFFFF
@@ -75,21 +82,75 @@ def test_sweep(args):
         np.random.seed(seed)
         torch.manual_seed(seed)
  
-        _, info = sweep.suggest(args)
-        score, cost = synthetic_log_task(args)
-        sweep.observe(args, score, cost)
-        print('Score:', score, 'Cost:', cost)
+        try:
+            _, info = sweep.suggest(args)
+        except:
+            break
+
+        total_timesteps = args['train']['total_timesteps']
+        for i in range(1, 6):
+            args['train']['total_timesteps'] = i*total_timesteps/5
+            score, cost = synthetic_task(args)
+            sweep.observe(args, score, cost)
+            print('Score:', score, 'Cost:', cost)
 
         scores.append(score)
         costs.append(cost)
 
     pareto, pareto_idx = pufferlib.sweep.pareto_points(sweep.success_observations)
 
-    pareto_scores = np.array(scores)[pareto_idx].tolist()
-    pareto_costs = np.array(costs)[pareto_idx].tolist()
-
     np.save(args['data_path']+'.npy', {'scores': scores, 'costs': costs})
-    np.save(args['data_path']+'_pareto.npy', {'scores': pareto_scores, 'costs': pareto_costs})
+
+    #pareto_scores = np.array(scores)[pareto_idx].tolist()
+    #pareto_costs = np.array(costs)[pareto_idx].tolist()
+    #np.save(args['data_path']+'_pareto.npy', {'scores': pareto_scores, 'costs': pareto_costs})
+
+def visualize(args):
+    data = np.load(args['vis_path'] + '.npy', allow_pickle=True).item()
+    costs = data['costs']
+    scores = data['scores']
+
+    sorted_costs = np.sort(costs)
+    aoc = np.max(scores) * np.cumsum(sorted_costs) / np.sum(costs)
+
+    # Create a ColumnDataSource that includes the 'order' for each point
+    source = ColumnDataSource(data=dict(
+        x=costs,
+        y=scores,
+        order=list(range(len(scores)))  # index/order for each point
+    ))
+
+    curve = ColumnDataSource(data=dict(
+        x=sorted_costs,
+        y=aoc,
+        order=list(range(len(scores)))  # index/order for each point
+    ))
+
+    # Define a color mapper across the range of point indices
+    mapper = LinearColorMapper(
+        palette=Turbo256,
+        low=0,
+        high=len(scores)
+    )
+
+    # Set up the figure
+    p = figure(title='Synthetic Hyperparam Test', 
+               x_axis_label='Cost', 
+               y_axis_label='Score')
+
+    # Use the 'order' field for color -> mapped by 'mapper'
+    p.scatter(x='x', 
+              y='y', 
+              color={'field': 'order', 'transform': mapper}, 
+              size=10, 
+              source=source)
+
+    p.line(x='x', 
+           y='y', 
+           color='purple',
+           source=curve)
+
+    show(p)
 
 
 if __name__ == '__main__':
@@ -97,9 +158,12 @@ if __name__ == '__main__':
         description=f':blowfish: PufferLib [bright_cyan]{pufferlib.__version__}[/]'
         ' demo options. Shows valid args for your env and policy',
         formatter_class=RichHelpFormatter, add_help=False)
+    parser.add_argument('--task', type=str, default='linear', help='Task to optimize')
+    parser.add_argument('--vis-path', type=str, default='',
+        help='Set to visualize a saved sweep')
     parser.add_argument('--data-path', type=str, default='sweep',
         help='Used for testing hparam algorithms')
-    parser.add_argument('--max-runs', type=int, default=200, help='Max number of sweep runs')
+    parser.add_argument('--max-runs', type=int, default=100, help='Max number of sweep runs')
     parser.add_argument('--tag', type=str, default=None, help='Tag for experiment')
     parser.add_argument('--wandb', action='store_true', help='Track on WandB')
     parser.add_argument('--neptune', action='store_true', help='Track on Neptune')
@@ -130,6 +194,8 @@ if __name__ == '__main__':
         except:
             prev[subkey] = value
 
-    test_sweep(args)
-    
+    if args['vis_path']:
+        visualize(args)
+        exit(0)
 
+    test_sweep(args)

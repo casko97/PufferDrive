@@ -1,13 +1,12 @@
-from .environment import env_creator
+from .environment import *
 
 try:
-    # NOTE: demo.py looks the policy class from the torch module
-    import pufferlib.environments.mujoco.policy as torch
+    import torch
 except ImportError:
     pass
 else:
-    from .policy import Policy
+    from .torch import Policy
     try:
-        from .policy import Recurrent
+        from .torch import Recurrent
     except:
         Recurrent = None

@@ -17,7 +17,6 @@ Pain points for docs:
 
 
 from setuptools import find_packages, find_namespace_packages, setup, Extension
-from Cython.Build import cythonize
 import numpy
 import os
 import glob
@@ -41,13 +40,6 @@ VERSION = "2.0.6"
 
 # Build with DEBUG=1 to enable debug symbols
 DEBUG = os.getenv("DEBUG", "0") == "1"
-
-# Put full paths to Cython extension here
-# Note we are trying to move away from Cython,
-# because our C envs are lighter weigh and
-# easier to debug (you can run gdb --args python ...)
-cython_extension_paths = [
-]
 
 # Build raylib for your platform
 RAYLIB_URL = 'https://github.com/raysan5/raylib/releases/download/5.5/'
@@ -252,8 +244,7 @@ environments = {
         'minihack==0.1.5',
     ],
     'mujoco': [
-        f'gymnasium[mujoco]=={GYMNASIUM_VERSION}',
-        'mujoco==2.3.7',  # mujuco > 3 is supported by gymnasium > 1.0
+        f'gymnasium[mujoco]==1.0.0',
         'moviepy',
     ],
     'nethack': [
@@ -318,7 +309,7 @@ docs = [
     'furo==2023.3.27',
 ]
 
-cleanrl = [
+train = [
     'stable_baselines3==2.1.0',
     'tensorboard==2.11.2',
     'torch',
@@ -340,7 +331,7 @@ ray = [
 # We force updated versions of Gym/Gymnasium/PettingZoo here to
 # ensure that users do not have issues with conflicting versions
 # when switching to incompatible environments
-common = cleanrl + [environments[env] for env in [
+common = train + [environments[env] for env in [
     'atari',
     #'box2d',
     'bsuite',
@@ -423,15 +414,6 @@ c_extensions = [
 ]
 c_extension_paths = [os.path.join(*path.split('/')[:-1]) for path in c_extension_paths]
 
-cython_extensions = cythonize([
-    Extension(
-        path.replace('/', '.'),
-        [path + '.pyx'],
-        **extension_kwargs,
-    )
-    for path in cython_extension_paths
-])
-
 # Check if CUDA compiler is available. You need cuda dev, not just runtime.
 torch_sources = [
     "pufferlib/extensions/pufferlib.cpp",
@@ -480,7 +462,6 @@ setup(
     install_requires=[
         'numpy<2',
         'opencv-python==3.4.17.63',
-        'cython>=3.0.0',
         'rich',
         'rich_argparse',
         f'gym<={GYM_VERSION}',
@@ -496,11 +477,11 @@ setup(
     extras_require={
         'docs': docs,
         'ray': ray,
-        'cleanrl': cleanrl,
+        'train': train,
         'common': common,
         **environments,
     },
-    ext_modules = cython_extensions + c_extensions + torch_extensions,
+    ext_modules = c_extensions + torch_extensions,
     cmdclass={
         "build_ext": BuildExt,
         "build_torch": TorchBuildExt,

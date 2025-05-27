@@ -21,6 +21,7 @@ const unsigned char EMPTY = 0;
 const unsigned char AGENT = 1;
 const unsigned char TARGET = 2;
 
+#define MAX_DIRT_HEIGHT 32.0f
 #define BUCKET_MAX_HEIGHT 1.0f
 #define DOZER_MAX_V 5.0f
 #define DOZER_CAPACITY 20.0f
@@ -115,30 +116,14 @@ void init(Terraform* env) {
     env->orig_map = calloc(env->size*env->size, sizeof(float));
     env->map = calloc(env->size*env->size, sizeof(float));
     env->dozers = calloc(env->num_agents, sizeof(Dozer));
-    perlin_noise(env->orig_map, env->size, env->size, 1.0/128.0, 8, 0, 0, 32.0);
+    perlin_noise(env->orig_map, env->size, env->size, 1.0/128.0, 8, 0, 0, MAX_DIRT_HEIGHT);
     env->returns = calloc(env->num_agents, sizeof(float));
-}
-
-void allocate(Terraform* env) {
-    env->observations = (unsigned char*)calloc(env->num_agents*125, sizeof(unsigned char));
-    env->actions = (int*)calloc(5*env->num_agents, sizeof(int));
-    env->rewards = (float*)calloc(env->num_agents, sizeof(float));
-    env->terminals = (unsigned char*)calloc(env->num_agents, sizeof(unsigned char));
-    init(env);
 }
 
 void free_initialized(Terraform* env) {
     free(env->orig_map);
     free(env->map);
     free(env->dozers);
-}
-
-void free_allocated(Terraform* env) {
-    free(env->observations);
-    free(env->actions);
-    free(env->rewards);
-    free(env->terminals);
-    free_initialized(env);
 }
 
 void add_log(Terraform* env) {
@@ -153,30 +138,34 @@ void add_log(Terraform* env) {
 
 void compute_all_observations(Terraform* env) {
     int dialate = 4;
+    int obs_idx = 0;
     for (int i = 0; i < env->num_agents; i++) {
         int x_offset = env->dozers[i].x - dialate*VISION;
         int y_offset = env->dozers[i].y - dialate*VISION;
         for (int x = 0; x < 2*dialate*VISION + 1; x+=dialate) {
             for (int y = 0; y < 2*dialate*VISION + 1; y+=dialate) {
                 if(x_offset + x < 0 || x_offset + x >= env->size || y_offset + y < 0 || y_offset + y >= env->size) {
+                    env->observations[obs_idx++] = 0;
                     continue;
                 }
                 int idx = (x_offset + x)*env->size + (y_offset + y);
+                /*
                 if (env->map[idx] <= 0) {
-                    env->observations[i*TOTAL_OBS + x*OBSERVATION_SIZE + y] = 0;
+                    env->observations[obs_idx++] = 0;
                 } else {
-                    env->observations[i*TOTAL_OBS + x*OBSERVATION_SIZE + y] = 1;
+                    env->observations[obs_idx++] = 1;
                 }
-                //env->observations[i*OBSERVATION_SIZE*OBSERVATION_SIZE + x*OBSERVATION_SIZE + y] = env->map[
-                //    (x_offset + x)*env->size + (y_offset + y)];
+                */
+                env->observations[obs_idx++] = env->map[
+                    (x_offset + x)*env->size + (y_offset + y)] * (255.0f/MAX_DIRT_HEIGHT);
             }
         }
         Dozer* dozer = &env->dozers[i];
         int idx = i*TOTAL_OBS + OBSERVATION_SIZE*OBSERVATION_SIZE;
-        env->observations[i*TOTAL_OBS + OBSERVATION_SIZE*OBSERVATION_SIZE] = (255.0f*dozer->x)/env->size;
-        env->observations[i*TOTAL_OBS + OBSERVATION_SIZE*OBSERVATION_SIZE + 1] = (255.0f*dozer->y)/env->size;
-        env->observations[i*TOTAL_OBS + OBSERVATION_SIZE*OBSERVATION_SIZE + 2] = 40.0f*dozer->v;
-        env->observations[i*TOTAL_OBS + OBSERVATION_SIZE*OBSERVATION_SIZE + 3] = 50.0f*dozer->heading;
+        env->observations[obs_idx++] = (255.0f*dozer->x)/env->size;
+        env->observations[obs_idx++] = (255.0f*dozer->y)/env->size;
+        env->observations[obs_idx++] = 40.0f*dozer->v;
+        env->observations[obs_idx++] = 50.0f*dozer->heading;
     }
 }
 

@@ -146,9 +146,6 @@ class Terraform(nn.Module):
             pufferlib.pytorch.layer_init(nn.Linear(hidden_size + cnn_channels, hidden_size)),
             nn.ReLU(),
         )
-        #self.actor = nn.ModuleList([
-        #    pufferlib.pytorch.layer_init(nn.Linear(hidden_size, n), std=0.01)
-        #    for n in env.single_action_space.nvec])
         self.atn_dim = env.single_action_space.nvec.tolist()
         self.actor = pufferlib.pytorch.layer_init(nn.Linear(hidden_size, sum(self.atn_dim)), std=0.01)
         self.value = pufferlib.pytorch.layer_init(
@@ -163,7 +160,7 @@ class Terraform(nn.Module):
         return self.forward(x, state)
 
     def encode_observations(self, observations, state=None):
-        obs_2d = observations[:, :121].reshape(-1, 11, 11).unsqueeze(1).float()# / 255.0
+        obs_2d = observations[:, :121].reshape(-1, 11, 11).unsqueeze(1).float() / 255.0
         obs_1d = observations[:, 121:].reshape(-1, 4).float() / 255.0
         hidden_2d = self.net_2d(obs_2d)
         hidden_1d = self.net_1d(obs_1d)
