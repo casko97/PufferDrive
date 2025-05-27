@@ -2,12 +2,19 @@ import functools
 
 import pufferlib
 
+from mettagrid.mettagrid_env import MettaGridEnv
+
 def env_creator(name='metta'):
     return functools.partial(make, name)
 
 def make(name, config='pufferlib/environments/metta/metta.yaml', render_mode='auto', buf=None, seed=0):
     '''Crafter creation function'''
-    return MettaPuff(config, render_mode, buf)
+    #return MettaPuff(config, render_mode, buf)
+    import mettagrid.mettagrid_env
+    from omegaconf import OmegaConf
+    OmegaConf.register_new_resolver("div", oc_divide, replace=True)
+    cfg = OmegaConf.load(config)
+    return MettaGridEnv(cfg, render_mode, buf)
 
 def oc_divide(a, b):
     """
@@ -32,10 +39,7 @@ class MettaPuff(pufferlib.PufferEnv):
         from mettagrid.mettagrid_env import MettaGridEnv
         self.env = MettaGridEnv(cfg, render_mode=render_mode, buf=buf)
 
-        #if render_mode == 'human':
-        #    from mettagrid.gym_wrapper import RaylibRendererWrapper
-        #    self.env = RaylibRendererWrapper(self.env, self.env._env_cfg)
-
+        self.is_rendering = False
         self.single_observation_space = self.env.single_observation_space
         self.single_action_space = self.env.single_action_space
         self.num_agents = self.env.num_agents
@@ -61,6 +65,11 @@ class MettaPuff(pufferlib.PufferEnv):
         return obs, []
 
     def render(self):
+        if not self.is_rendering:
+            self.is_rendering = True
+            from mettagrid.gym_wrapper import RaylibRendererWrapper
+            self.env = RaylibRendererWrapper(self.env, self.env._env_cfg)
+
         self.env.render()
 
     def close(self):
