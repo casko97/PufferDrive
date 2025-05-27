@@ -11,20 +11,21 @@ import pufferlib.emulation
 import pufferlib.environments
 
 
-def single_env_creator(env_name, capture_video, gamma, run_name=None, idx=None, obs_norm=True, pufferl=False, buf=None, seed=0):
+def single_env_creator(env_name, capture_video, gamma,
+        run_name=None, idx=None, obs_norm=True, pufferl=False, render_mode='rgb_array', buf=None, seed=0):
     if capture_video and idx == 0:
         assert run_name is not None, "run_name must be specified when capturing videos"
         env = gymnasium.make(env_name, render_mode="rgb_array")
         env = gymnasium.wrappers.RecordVideo(env, f"videos/{run_name}")
     else:
-        env = gymnasium.make(env_name)
+        env = gymnasium.make(env_name, render_mode=render_mode)
 
     env = pufferlib.ClipAction(env)  # NOTE: this changed actions space
     env = pufferlib.EpisodeStats(env)
 
     if obs_norm:
         env = gymnasium.wrappers.NormalizeObservation(env)
-        env = gymnasium.wrappers.TransformObservation(env, lambda obs: np.clip(obs, -10, 10))
+        env = gymnasium.wrappers.TransformObservation(env, lambda obs: np.clip(obs, -10, 10), env.observation_space)
 
     env = gymnasium.wrappers.NormalizeReward(env, gamma=gamma)
     env = gymnasium.wrappers.TransformReward(env, lambda reward: np.clip(reward, -10, 10))
