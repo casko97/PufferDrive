@@ -24,6 +24,7 @@ class GPUDrive(pufferlib.PufferEnv):
 
         # env
         self.render_mode = render_mode
+        self.num_maps = num_maps
         self.report_interval = report_interval
         self.reward_vehicle_collision = reward_vehicle_collision
         self.reward_offroad_collision = reward_offroad_collision
