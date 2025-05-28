@@ -3,7 +3,7 @@
 
 #ifdef __EMSCRIPTEN__
 void emscriptenStep(void *e) {
-    stepEnv((env *)e);
+    stepEnv((iwEnv *)e);
     return;
 }
 #endif
@@ -11,23 +11,19 @@ void emscriptenStep(void *e) {
 int main(void) {
     const int NUM_DRONES = 2;
 
-    env *e = fastCalloc(1, sizeof(env));
+    iwEnv *e = fastCalloc(1, sizeof(iwEnv));
 
-    uint8_t *obs = NULL;
-    posix_memalign((void **)&obs, sizeof(void *), alignedSize(NUM_DRONES * obsBytes(NUM_DRONES), sizeof(float)));
-
-    float *rewards = fastCalloc(NUM_DRONES, sizeof(float));
-    float *contActions = fastCalloc(NUM_DRONES * CONTINUOUS_ACTION_SIZE, sizeof(float));
-    int32_t *discActions = fastCalloc(NUM_DRONES * DISCRETE_ACTION_SIZE, sizeof(int32_t));
-    uint8_t *masks = fastCalloc(NUM_DRONES, sizeof(uint8_t));
-    uint8_t *terminals = fastCalloc(NUM_DRONES, sizeof(uint8_t));
-    uint8_t *truncations = fastCalloc(NUM_DRONES, sizeof(uint8_t));
-    logBuffer *logs = createLogBuffer(LOG_BUFFER_SIZE);
+    posix_memalign((void **)&e->observations, sizeof(void *), alignedSize(NUM_DRONES * obsBytes(NUM_DRONES), sizeof(float)));
+    e->rewards = fastCalloc(NUM_DRONES, sizeof(float));
+    e->actions = fastCalloc(NUM_DRONES * CONTINUOUS_ACTION_SIZE, sizeof(float));
+    e->masks = fastCalloc(NUM_DRONES, sizeof(uint8_t));
+    e->terminals = fastCalloc(NUM_DRONES, sizeof(uint8_t));
+    e->truncations = fastCalloc(NUM_DRONES, sizeof(uint8_t));
 
     rayClient *client = createRayClient();
     e->client = client;
 
-    initEnv(e, NUM_DRONES, 0, obs, true, contActions, discActions, rewards, masks, terminals, truncations, logs, -1, time(NULL), false, false, false);
+    initEnv(e, NUM_DRONES, 0, -1, time(NULL), false, false, false, false);
     initMaps(e);
     setupEnv(e);
     e->humanInput = true;
@@ -42,14 +38,12 @@ int main(void) {
 
     destroyEnv(e);
     destroyMaps();
-    free(obs);
-    fastFree(contActions);
-    fastFree(discActions);
-    fastFree(rewards);
-    fastFree(masks);
-    fastFree(terminals);
-    fastFree(truncations);
-    destroyLogBuffer(logs);
+    free(e->observations);
+    fastFree(e->actions);
+    fastFree(e->rewards);
+    fastFree(e->masks);
+    fastFree(e->terminals);
+    fastFree(e->truncations);
     fastFree(e);
     destroyRayClient(client);
 #endif

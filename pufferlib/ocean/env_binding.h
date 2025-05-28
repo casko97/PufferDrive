@@ -22,10 +22,13 @@ static PyObject* my_get(PyObject* dict, Env* env) {
 static int my_put(Env* env, PyObject* args, PyObject* kwargs);
 #ifndef MY_PUT
 static int my_put(Env* env, PyObject* args, PyObject* kwargs) {
-    return NULL;
+    return 0;
 }
 #endif
 
+#ifndef MY_METHODS
+#define MY_METHODS {NULL, NULL, 0, NULL}
+#endif
 
 static Env* unpack_env(PyObject* args) {
     PyObject* handle_obj = PyTuple_GetItem(args, 0);
@@ -571,12 +574,12 @@ static PyObject* vec_log(PyObject* self, PyObject* args) {
         Env* env = vec->envs[i];
         for (int j = 0; j < num_keys; j++) {
             ((float*)&aggregate)[j] += ((float*)&env->log)[j];
-            ((float*)&env->log)[j] = 0;
+            ((float*)&env->log)[j] = 0.0f;
         }
     }
 
     PyObject* dict = PyDict_New();
-    if (aggregate.n == 0) {
+    if (aggregate.n == 0.0f) {
         return dict;
     }
 
@@ -644,15 +647,16 @@ static PyMethodDef methods[] = {
     {"env_render", env_render, METH_VARARGS, "Render the environment"},
     {"env_close", env_close, METH_VARARGS, "Close the environment"},
     {"env_get", env_get, METH_VARARGS, "Get the environment state"},
-    {"env_put", env_put, METH_VARARGS | METH_KEYWORDS, "Put stuff into env"},
+    {"env_put", (PyCFunction)env_put, METH_VARARGS | METH_KEYWORDS, "Put stuff into env"},
     {"vectorize", vectorize, METH_VARARGS, "Make a vector of environment handles"},
     {"vec_init", (PyCFunction)vec_init, METH_VARARGS | METH_KEYWORDS, "Initialize a vector of environments"},
-    {"vec_reset", (PyCFunction)vec_reset, METH_VARARGS, "Reset the vector of environments"},
-    {"vec_step", (PyCFunction)vec_step, METH_VARARGS, "Step the vector of environments"},
+    {"vec_reset", vec_reset, METH_VARARGS, "Reset the vector of environments"},
+    {"vec_step", vec_step, METH_VARARGS, "Step the vector of environments"},
     {"vec_log", vec_log, METH_VARARGS, "Log the vector of environments"},
     {"vec_render", vec_render, METH_VARARGS, "Render the vector of environments"},
     {"vec_close", vec_close, METH_VARARGS, "Close the vector of environments"},
     {"shared", (PyCFunction)my_shared, METH_VARARGS | METH_KEYWORDS, "Shared state"},
+    MY_METHODS,
     {NULL, NULL, 0, NULL}
 };
 

@@ -111,75 +111,22 @@ function(configure_target target_name)
 endfunction()
 
 if(DEFINED BUILD_PYTHON_MODULE)
-	# transpile Cython to C
 	find_package(
 		Python
-		COMPONENTS Interpreter Development.Module
+		COMPONENTS Interpreter Development.Module NumPy
 		REQUIRED
 	)
 
-	# add all project headers as a dependency to the autopxd command so
-	# the PXD file will be regenerated if any of the headers change
-	file(GLOB_RECURSE IMPULSE_WARS_HEADERS RELATIVE ${CMAKE_SOURCE_DIR} "src/*.h")
+	# TODO: rename to binding.c
+	python_add_library(binding MODULE my_binding.c WITH_SOABI)
 
-	add_custom_command(
-		OUTPUT impulse_wars.pxd.raw
-		COMMENT "Converting C headers to Cython PXD file"
-		COMMAND autopxd
-			-I "${CMAKE_CURRENT_SOURCE_DIR}/src"
-			-I "${CMAKE_CURRENT_SOURCE_DIR}/src/include"
-			-I "${box2d_SOURCE_DIR}/include"
-			-I "${raylib_SOURCE_DIR}/src"
-			-D AUTOPXD
-			"${CMAKE_CURRENT_SOURCE_DIR}/src/env.h" impulse_wars.pxd.raw
-		DEPENDS "${IMPULSE_WARS_HEADERS}"
-		VERBATIM
+	target_include_directories(binding PRIVATE
+    	${Python_NumPy_INCLUDE_DIRS}
 	)
 
-	# workaround for autopxd not setting bools correctly
-	add_custom_command(
-		OUTPUT impulse_wars.pxd
-		COMMENT "Fixing bools in Cython PXD file"
-		COMMAND "${CMAKE_COMMAND}"
-			"-DSOURCE=${CMAKE_CURRENT_BINARY_DIR}/impulse_wars.pxd.raw"
-			"-DTARGET=${CMAKE_CURRENT_BINARY_DIR}/impulse_wars.pxd"
-			-P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/fix-cython-pxd.cmake"
-		DEPENDS impulse_wars.pxd.raw
-		VERBATIM
-	)
+	configure_target(binding)
 
-	# copy Cython file to binary dir to avoid "class is declared but not defined" errors
-	# apparently Cython doesn't like when you aren't compiling a file in the working directory
-	# and that file imports a PXD file
-	configure_file(
-		"${CMAKE_CURRENT_SOURCE_DIR}/cy_impulse_wars.pyx"
-		"${CMAKE_CURRENT_BINARY_DIR}/cy_impulse_wars.pyx"
-		COPYONLY
-	)
-
-	add_custom_command(
-		OUTPUT impulse_wars.c
-		COMMENT "Transpiling Cython to C"
-		COMMAND Python::Interpreter -m cython
-			-3
-			-X boundscheck=false
-			-X initializedcheck=false
-			-X wraparound=false
-			-X cdivision=true
-			cy_impulse_wars.pyx -o impulse_wars.c
-		DEPENDS impulse_wars.pxd cy_impulse_wars.pyx
-		VERBATIM
-	)
-
-	# build python module
-	python_add_library(cy_impulse_wars MODULE impulse_wars.c WITH_SOABI)
-
-	configure_target(cy_impulse_wars)
-	# disable false positive warnings for generated Cython source file
-	# but keep other warnings enabled just in case something crazy is generated
-	set_source_files_properties(impulse_wars.c PROPERTIES COMPILE_FLAGS "-Wno-pedantic")
-
-	install(TARGETS cy_impulse_wars DESTINATION .)
+	install(TARGETS binding DESTINATION .)
 elseif(DEFINED BUILD_DEMO)
 	add_executable(demo "${CMAKE_CURRENT_SOURCE_DIR}/src/demo.c")
 	configure_target(demo)
