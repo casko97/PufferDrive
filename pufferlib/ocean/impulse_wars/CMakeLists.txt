@@ -117,7 +117,8 @@ if(DEFINED BUILD_PYTHON_MODULE)
 		REQUIRED
 	)
 
-	python_add_library(binding MODULE binding.c WITH_SOABI)
+	# TODO: rename to binding.c
+	python_add_library(binding MODULE my_binding.c WITH_SOABI)
 
 	target_include_directories(binding PRIVATE
     	${Python_NumPy_INCLUDE_DIRS}
