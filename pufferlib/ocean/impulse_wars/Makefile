@@ -29,7 +29,7 @@ python-module-debug:
 debug-demo:
 	@mkdir -p $(DEBUG_DIR)
 	@cd $(DEBUG_DIR) && \
-	cmake -GNinja -DCMAKE_BUILD_TYPE=$(DEBUG_BUILD_TYPE) -DBUILD_DEMO=true .. && \
+	cmake -GNinja -DCMAKE_BUILD_TYPE=$(DEBUG_BUILD_TYPE) -DBUILD_DEMO=true -DCMAKE_C_COMPILER=clang-20 .. && \
 	cmake --build .
 
 # build C demo in release mode
@@ -37,7 +37,7 @@ debug-demo:
 release-demo:
 	@mkdir -p $(RELEASE_DIR)
 	@cd $(RELEASE_DIR) && \
-	cmake -GNinja -DCMAKE_BUILD_TYPE=$(RELEASE_BUILD_TYPE) -DBUILD_DEMO=true .. && \
+	cmake -GNinja -DCMAKE_BUILD_TYPE=$(RELEASE_BUILD_TYPE) -DBUILD_DEMO=true -DCMAKE_C_COMPILER=clang-20 .. && \
 	cmake --build .
 
 # build C demo in release mode for web
@@ -53,7 +53,7 @@ release-demo-web:
 benchmark:
 	@mkdir -p $(BENCHMARK_DIR)
 	@cd $(BENCHMARK_DIR) && \
-	cmake -GNinja -DCMAKE_BUILD_TYPE=$(RELEASE_BUILD_TYPE) -DBUILD_BENCHMARK=true .. && \
+	cmake -GNinja -DCMAKE_BUILD_TYPE=$(RELEASE_BUILD_TYPE) -DBUILD_BENCHMARK=true -DCMAKE_C_COMPILER=clang-20 .. && \
 	cmake --build .
 
 .PHONY: clean

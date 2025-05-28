@@ -37,7 +37,7 @@ float castCircleCallback(b2ShapeId shapeId, b2Vec2 point, b2Vec2 normal, float f
     return fraction;
 }
 
-static inline uint32_t pathOffset(const env *e, uint16_t srcCellIdx, uint16_t destCellIdx) {
+static inline uint32_t pathOffset(const iwEnv *e, uint16_t srcCellIdx, uint16_t destCellIdx) {
     const uint8_t srcCol = srcCellIdx % e->map->columns;
     const uint8_t srcRow = srcCellIdx / e->map->columns;
     const uint8_t destCol = destCellIdx % e->map->columns;
@@ -45,7 +45,7 @@ static inline uint32_t pathOffset(const env *e, uint16_t srcCellIdx, uint16_t de
     return (destRow * e->map->rows * e->map->columns * e->map->rows) + (destCol * e->map->rows * e->map->columns) + (srcRow * e->map->columns) + srcCol;
 }
 
-void pathfindBFS(const env *e, uint8_t *flatPaths, uint16_t destCellIdx) {
+void pathfindBFS(const iwEnv *e, uint8_t *flatPaths, uint16_t destCellIdx) {
     uint8_t (*paths)[e->map->columns] = (uint8_t (*)[e->map->columns])flatPaths;
     int8_t (*buffer)[3] = (int8_t (*)[3])e->mapPathing[e->mapIdx].pathBuffer;
 
@@ -122,7 +122,7 @@ void pathfindBFS(const env *e, uint8_t *flatPaths, uint16_t destCellIdx) {
     }
 }
 
-float distanceWithDamping(const env *e, const droneEntity *drone, const b2Vec2 direction, const float linearDamping, const float steps) {
+float distanceWithDamping(const iwEnv *e, const droneEntity *drone, const b2Vec2 direction, const float linearDamping, const float steps) {
     float speed = drone->weaponInfo->recoilMagnitude * DRONE_INV_MASS;
     if (!b2VecEqual(drone->velocity, b2Vec2_zero)) {
         speed = b2Length(b2MulAdd(drone->velocity, speed, direction));
@@ -132,7 +132,7 @@ float distanceWithDamping(const env *e, const droneEntity *drone, const b2Vec2 d
     return speed * (damping / linearDamping) * (1.0f - powf(1.0f / damping, steps));
 }
 
-bool safeToFire(env *e, const droneEntity *drone, const b2Vec2 direction) {
+bool safeToFire(iwEnv *e, const droneEntity *drone, const b2Vec2 direction) {
     float shotWait;
     if (drone->ammo > 1) {
         shotWait = ((drone->weaponInfo->coolDown + drone->weaponInfo->charge) / e->deltaTime) * 1.5f;
@@ -181,7 +181,7 @@ void scriptedAgentShoot(const droneEntity *drone, agentActions *actions) {
     }
 }
 
-void moveTo(env *e, const droneEntity *drone, agentActions *actions, const b2Vec2 dstPos) {
+void moveTo(iwEnv *e, const droneEntity *drone, agentActions *actions, const b2Vec2 dstPos) {
     ASSERT(drone->mapCellIdx != -1);
     int16_t dstIdx = entityPosToCellIdx(e, dstPos);
     if (dstIdx == -1) {
@@ -235,7 +235,7 @@ float weaponIdealRangeSquared(const droneEntity *drone) {
     }
 }
 
-bool shouldShootAtEnemy(env *e, const droneEntity *drone, const droneEntity *enemyDrone, const b2Vec2 enemyDroneDirection) {
+bool shouldShootAtEnemy(iwEnv *e, const droneEntity *drone, const droneEntity *enemyDrone, const b2Vec2 enemyDroneDirection) {
     if (!safeToFire(e, drone, enemyDroneDirection)) {
         return false;
     }
@@ -267,7 +267,7 @@ b2Vec2 predictiveAim(const droneEntity *drone, const droneEntity *enemyDrone, co
     return b2Normalize(b2Sub(predictedPos, drone->pos));
 }
 
-void handleWallProximity(env *e, const droneEntity *drone, const wallEntity *wall, const float distance, agentActions *actions) {
+void handleWallProximity(iwEnv *e, const droneEntity *drone, const wallEntity *wall, const float distance, agentActions *actions) {
     if (distance > WALL_BRAKE_DISTANCE) {
         return;
     }
@@ -308,9 +308,7 @@ void scriptedAgentBurst(const droneEntity *drone, agentActions *actions) {
     }
 }
 
-#ifndef AUTOPXD
-
-agentActions scriptedAgentActions(env *e, droneEntity *drone) {
+agentActions scriptedAgentActions(iwEnv *e, droneEntity *drone) {
     agentActions actions = {0};
     if (e->sittingDuck) {
         return actions;
@@ -434,7 +432,5 @@ agentActions scriptedAgentActions(env *e, droneEntity *drone) {
 
     return actions;
 }
-
-#endif
 
 #endif

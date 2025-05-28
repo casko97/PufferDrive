@@ -1,3 +1,4 @@
+from types import SimpleNamespace
 from typing import Any, Tuple
 
 from gymnasium import spaces
@@ -556,15 +557,11 @@ class TowerClimb(nn.Module):
         return action, value
 
 
-# ToDO: remove once Impulse Wars build is stable
-try:
-    from cy_impulse_wars import obsConstants
-except:
-    pass
+from pufferlib.ocean.impulse_wars import binding
 
 
 class ImpulseWarsLSTM(Recurrent):
-    def __init__(self, env: pufferlib.PufferEnv, policy: nn.Module, input_size: int = 256, hidden_size: int = 256):
+    def __init__(self, env: pufferlib.PufferEnv, policy: nn.Module, input_size: int = 512, hidden_size: int = 512):
         super().__init__(env, policy, input_size, hidden_size)
 
 
@@ -574,11 +571,11 @@ class ImpulseWarsPolicy(nn.Module):
         env: pufferlib.PufferEnv,
         cnn_channels: int = 64,
         weapon_type_embedding_dims: int = 2,
-        input_size: int = 256,
-        hidden_size: int = 256,
+        input_size: int = 512,
+        hidden_size: int = 512,
         batch_size: int = 131_072,
         num_drones: int = 2,
-        discretize_actions: bool = True,
+        continuous: bool = False,
         is_training: bool = True,
         device: str = "cuda",
         **kwargs,
@@ -586,11 +583,11 @@ class ImpulseWarsPolicy(nn.Module):
         super().__init__()
         self.hidden_size = hidden_size
 
-        self.is_continuous = not discretize_actions
+        self.is_continuous = continuous
 
         self.numDrones = num_drones
         self.isTraining = is_training
-        self.obsInfo = obsConstants(self.numDrones)
+        self.obsInfo = SimpleNamespace(**binding.get_consts(self.numDrones))
 
         self.discreteFactors = np.array(
             [self.obsInfo.wallTypes] * self.obsInfo.numNearWallObs
