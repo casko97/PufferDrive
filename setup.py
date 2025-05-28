@@ -121,6 +121,9 @@ if system == 'Linux':
     download_raylib('raylib-5.5_linux_amd64', '.tar.gz')
 elif system == 'Darwin':
     extra_compile_args += [
+        '-Wno-error=int-conversion',
+        '-Wno-error=incompatible-function-pointer-types',
+        '-Wno-error=implicit-function-declaration',
     ]
     extra_link_args += [
         '-framework', 'Cocoa',
