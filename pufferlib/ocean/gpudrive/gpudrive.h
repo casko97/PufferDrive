@@ -394,6 +394,7 @@ void set_active_agents(GPUDrive* env){
             if(env->entities[i].mark_as_expert == 1 || (distance_to_goal >=2.0f && env->active_agent_count == env->num_agents)){
                 expert_static_car_indices[env->expert_static_car_count] = i;
                 env->expert_static_car_count++;
+                env->entities[i].mark_as_expert = 1;
             }
         }
     }
@@ -954,22 +955,22 @@ void collision_check(GPUDrive* env, int agent_idx) {
     // spawn immunity for collisions with other agent cars as agent_idx respawns
     int is_active_agent = env->entities[agent_idx].active_agent;
     int respawned = env->entities[agent_idx].respawn_timestep != -1;
-    int exceeded_spawn_immunity_agent = env->timestep - env->entities[agent_idx].respawn_timestep >= env->spawn_immunity_timer;
-    if(collided == VEHICLE_COLLISION && is_active_agent == 1 && respawned && exceeded_spawn_immunity_agent){
+    int exceeded_spawn_immunity_agent = (env->timestep - env->entities[agent_idx].respawn_timestep) >= env->spawn_immunity_timer;
+    if(collided == VEHICLE_COLLISION && is_active_agent == 1 && respawned && !exceeded_spawn_immunity_agent){
         agent->collision_state = 0;
     }
 
     // spawn immunity for collisions with other cars who just respawned
     if(car_collided_with_index ==-1) return;
     int respawned_collided_with_car = env->entities[car_collided_with_index].respawn_timestep != -1;
-    int exceeded_spawn_immunity_collided_with_car = env->timestep - env->entities[car_collided_with_index].respawn_timestep >= env->spawn_immunity_timer;
-    int within_spawn_immunity_collided_with_car = env->timestep - env->entities[car_collided_with_index].respawn_timestep < env->spawn_immunity_timer;
-
-    if (car_collided_with_index != -1 && respawned_collided_with_car && exceeded_spawn_immunity_collided_with_car) {
-        env->entities[car_collided_with_index].collision_state = VEHICLE_COLLISION;
-    } else if (car_collided_with_index != -1 && respawned_collided_with_car && within_spawn_immunity_collided_with_car) {
+    int exceeded_spawn_immunity_collided_with_car = (env->timestep - env->entities[car_collided_with_index].respawn_timestep) >= env->spawn_immunity_timer;
+    int within_spawn_immunity_collided_with_car = (env->timestep - env->entities[car_collided_with_index].respawn_timestep) < env->spawn_immunity_timer;
+    if (respawned_collided_with_car && exceeded_spawn_immunity_collided_with_car) {
+        int f = 0;
+        //env->entities[car_collided_with_index].collision_state = VEHICLE_COLLISION;
+    } else if (respawned_collided_with_car && within_spawn_immunity_collided_with_car) {
         agent->collision_state = 0;
-    } 
+    }
 }
 
 float normalize_value(float value, float min, float max){
@@ -1155,6 +1156,7 @@ void c_step(GPUDrive* env){
 
     for(int i = 0; i < env->active_agent_count; i++){
         int agent_idx = env->active_agent_indices[i];
+        env->entities[agent_idx].collision_state = 0;
         collision_check(env, agent_idx);
         int collision_state = env->entities[agent_idx].collision_state;
         
