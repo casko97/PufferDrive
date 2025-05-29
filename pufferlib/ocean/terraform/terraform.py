@@ -13,7 +13,7 @@ class Terraform(pufferlib.PufferEnv):
             render_mode=None, log_interval=32, buf=None, seed=0):
         self.single_observation_space = gymnasium.spaces.Box(low=0, high=1,
             shape=(OBS_SIZE*OBS_SIZE + 4,), dtype=np.uint8)
-        self.single_action_space = gymnasium.spaces.MultiDiscrete([5, 5, 2, 2, 2], dtype=np.int32)
+        self.single_action_space = gymnasium.spaces.MultiDiscrete([5, 5, 3], dtype=np.int32)
         self.render_mode = render_mode
         self.num_agents = num_envs*num_agents
         self.log_interval = log_interval
