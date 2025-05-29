@@ -557,9 +557,6 @@ class TowerClimb(nn.Module):
         return action, value
 
 
-from pufferlib.ocean.impulse_wars import binding
-
-
 class ImpulseWarsLSTM(Recurrent):
     def __init__(self, env: pufferlib.PufferEnv, policy: nn.Module, input_size: int = 512, hidden_size: int = 512):
         super().__init__(env, policy, input_size, hidden_size)
@@ -587,6 +584,7 @@ class ImpulseWarsPolicy(nn.Module):
 
         self.numDrones = num_drones
         self.isTraining = is_training
+        from pufferlib.ocean.impulse_wars import binding
         self.obsInfo = SimpleNamespace(**binding.get_consts(self.numDrones))
 
         self.discreteFactors = np.array(
