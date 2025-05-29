@@ -7,13 +7,20 @@ from mettagrid.mettagrid_env import MettaGridEnv
 def env_creator(name='metta'):
     return functools.partial(make, name)
 
-def make(name, config='pufferlib/environments/metta/metta.yaml', render_mode='auto', buf=None, seed=0):
+def make(name, config='pufferlib/environments/metta/metta.yaml', render_mode='auto', buf=None, seed=0,
+         ore_reward=0.25, heart_reward=0.5, battery_reward=0.25):
     '''Crafter creation function'''
     #return MettaPuff(config, render_mode, buf)
     import mettagrid.mettagrid_env
     from omegaconf import OmegaConf
     OmegaConf.register_new_resolver("div", oc_divide, replace=True)
     cfg = OmegaConf.load(config)
+    reward_cfg = cfg['game']['agent']['rewards']
+    reward_cfg['ore.red'] = ore_reward
+    reward_cfg['ore.blue'] = ore_reward
+    reward_cfg['ore.green'] = ore_reward
+    reward_cfg['heart'] = heart_reward
+    reward_cfg['battery'] = battery_reward
     return MettaPuff(cfg, render_mode=render_mode, buf=buf)
 
 def oc_divide(a, b):
