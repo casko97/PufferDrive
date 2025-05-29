@@ -30,7 +30,7 @@ const Color PUFF_WHITE = RAYWHITE;
 const Color PUFF_BACKGROUND = BLACK;
 const Color PUFF_BACKGROUND2 = BLACK;
 
-bool droneControlledByHuman(const env *e, uint8_t i);
+bool droneControlledByHuman(const iwEnv *e, uint8_t i);
 
 const float DEFAULT_SCALE = 11.0f;
 const uint16_t DEFAULT_WIDTH = 1500;
@@ -58,7 +58,7 @@ const float droneThrusterLength = 1.5f * DRONE_RADIUS;
 const float aimGuideLength = 0.3f * DRONE_RADIUS;
 const float chargedAimGuideLength = DRONE_RADIUS;
 
-static inline b2Vec2 rayVecToB2Vec(const env *e, const Vector2 v) {
+static inline b2Vec2 rayVecToB2Vec(const iwEnv *e, const Vector2 v) {
     return (b2Vec2){.x = (v.x - e->client->halfWidth) / e->renderScale, .y = ((v.y - e->client->halfHeight - (2 * e->renderScale)) / e->renderScale)};
 }
 
@@ -178,14 +178,14 @@ const float BOUNDS_PADDING = 4.0f;
 const float MAP_MAX_X_OFFSET = 25.0f;
 const float MAP_MAX_Y_OFFSET = 10.0f;
 
-void setCamera2DZoom(env *e) {
+void setCamera2DZoom(iwEnv *e) {
     gameCamera *camera = e->client->camera;
 
     float screenHeightInWorldUnits = 2.0f * tanf((camera->camera3D.fovy * DEG2RAD) / 2.0f) * camera->camera3D.position.y;
     camera->camera2D.zoom = e->client->height / screenHeightInWorldUnits;
 }
 
-void setupEnvCamera(env *e) {
+void setupEnvCamera(iwEnv *e) {
     const float BASE_ROWS = 21.0f;
     const float scale = e->client->scale * (BASE_ROWS / e->map->rows);
     // TODO: remove this field?
@@ -221,7 +221,7 @@ void setupEnvCamera(env *e) {
     }
 }
 
-Rectangle calculatePlayersBoundingBox(const env *e) {
+Rectangle calculatePlayersBoundingBox(const iwEnv *e) {
     float minX = FLT_MAX;
     float minY = FLT_MAX;
     float maxX = -FLT_MAX;
@@ -248,7 +248,7 @@ Rectangle calculatePlayersBoundingBox(const env *e) {
     return bounds;
 }
 
-float calculateZoom(const env *e, Rectangle droneBounds) {
+float calculateZoom(const iwEnv *e, Rectangle droneBounds) {
     float boundsZoom = (droneBounds.width + droneBounds.height) * 0.5f;
     boundsZoom += max(droneBounds.width, droneBounds.height) * 0.5f;
 
@@ -260,7 +260,7 @@ float calculateZoom(const env *e, Rectangle droneBounds) {
     return zoom;
 }
 
-void updateCamera(env *e) {
+void updateCamera(iwEnv *e) {
     gameCamera *camera = e->client->camera;
 
     if (IsKeyPressed(KEY_TAB)) {
@@ -728,14 +728,14 @@ static void DrawText3D(Font font, const char *text, Vector3 position, float font
     }
 }
 
-void renderTimer(const env *e, const char *timerStr, const Color color) {
+void renderTimer(const iwEnv *e, const char *timerStr, const Color color) {
     int fontSize = 2.5 * e->client->scale;
     int textWidth = MeasureText(timerStr, fontSize);
     int posX = (e->client->width - textWidth) / 2;
     DrawText(timerStr, posX, e->client->scale, fontSize, color);
 }
 
-void renderUI(const env *e, const bool starting) {
+void renderUI(const iwEnv *e, const bool starting) {
     // render drone info
     const uint8_t fontSize = 2 * e->client->scale;
     const uint8_t xMargin = 5 * e->client->scale;
@@ -834,7 +834,7 @@ void renderUI(const env *e, const bool starting) {
 }
 
 // TODO: fix and improve
-void renderBrakeTrails(const env *e) {
+void renderBrakeTrails(const iwEnv *e) {
     MAYBE_UNUSED(e);
     // const float maxLifetime = 3.0f * e->frameRate;
     // const float radius = 0.3f * e->renderScale;
@@ -858,7 +858,7 @@ void renderBrakeTrails(const env *e) {
 }
 
 // TODO: improve
-void renderExplosions(const env *e) {
+void renderExplosions(const iwEnv *e) {
     const uint16_t maxRenderSteps = EXPLOSION_TIME * e->frameRate;
 
     CC_ArrayIter iter;
@@ -919,7 +919,7 @@ void renderExplosions(const env *e) {
 }
 
 // TODO: add bloom lines at drone level
-void renderWall(const env *e, const wallEntity *wall) {
+void renderWall(const iwEnv *e, const wallEntity *wall) {
     Color color = {0};
     Rectangle textureRec;
     switch (wall->type) {
@@ -1005,7 +1005,7 @@ void renderWall(const env *e, const wallEntity *wall) {
     rlPopMatrix();
 }
 
-void renderWeaponPickup(const env *e, const weaponPickupEntity *pickup) {
+void renderWeaponPickup(const iwEnv *e, const weaponPickupEntity *pickup) {
     if (pickup->respawnWait != 0.0f || pickup->floatingWallsTouching != 0) {
         return;
     }
@@ -1036,7 +1036,7 @@ void renderWeaponPickup(const env *e, const weaponPickupEntity *pickup) {
     DrawText3D(GetFontDefault(), weaponName, textPos, 12, 0.5f, -1.0f, false, PUFF_WHITE);
 }
 
-void renderDronePieces(env *e) {
+void renderDronePieces(iwEnv *e) {
     const float maxLifetime = e->frameRate * DRONE_PIECE_LIFETIME;
 
     CC_ArrayIter iter;
@@ -1086,7 +1086,7 @@ void renderDronePieces(env *e) {
     }
 }
 
-void renderDroneRespawnGuides(const env *e, droneEntity *drone) {
+void renderDroneRespawnGuides(const iwEnv *e, droneEntity *drone) {
     if (drone->respawnGuideLifetime == 0) {
         return;
     }
@@ -1108,14 +1108,14 @@ void renderDroneRespawnGuides(const env *e, droneEntity *drone) {
     drone->respawnGuideLifetime--;
 }
 
-b2RayResult droneAimingAt(const env *e, const droneEntity *drone) {
+b2RayResult droneAimingAt(const iwEnv *e, const droneEntity *drone) {
     const b2Vec2 rayEnd = b2MulAdd(drone->pos, 150.0f, drone->lastAim);
     const b2Vec2 translation = b2Sub(rayEnd, drone->pos);
     const b2QueryFilter filter = {.categoryBits = PROJECTILE_SHAPE, .maskBits = WALL_SHAPE | FLOATING_WALL_SHAPE | DRONE_SHAPE};
     return b2World_CastRayClosest(e->worldID, drone->pos, translation, filter);
 }
 
-void renderDroneAimGuide(const env *e, const droneEntity *drone) {
+void renderDroneAimGuide(const iwEnv *e, const droneEntity *drone) {
     // find length of laser aiming guide by where it touches the nearest shape
     const b2RayResult rayRes = droneAimingAt(e, drone);
     ASSERT(b2Shape_IsValid(rayRes.shapeId));
@@ -1139,7 +1139,7 @@ void renderDroneAimGuide(const env *e, const droneEntity *drone) {
     rlPopMatrix();
 }
 
-void renderDroneGuides(env *e, const droneEntity *drone, const bool ending) {
+void renderDroneGuides(iwEnv *e, const droneEntity *drone, const bool ending) {
     // render thruster move guide
     if (!b2VecEqual(drone->lastMove, b2Vec2_zero) && !ending) {
         const float moveMagnitude = b2Length(drone->lastMove);
@@ -1239,7 +1239,7 @@ void renderDrone(const droneEntity *drone) {
     }
 }
 
-void renderDroneAmmo(const env *e, const droneEntity *drone) {
+void renderDroneAmmo(const iwEnv *e, const droneEntity *drone) {
     Vector2 worldPos = {.x = drone->pos.x, .y = drone->pos.y};
     Vector2 screenPos = GetWorldToScreen2D(worldPos, e->client->camera->camera2D);
 
@@ -1357,7 +1357,7 @@ void renderProjectile(const projectileEntity *projectile) {
     );
 }
 
-void renderBannerText(env *e, const bool starting, const int8_t winner, const int8_t winningTeam) {
+void renderBannerText(iwEnv *e, const bool starting, const int8_t winner, const int8_t winningTeam) {
     char *winStr;
     Color color = PUFF_WHITE;
 
@@ -1378,7 +1378,7 @@ void renderBannerText(env *e, const bool starting, const int8_t winner, const in
     DrawText(winStr, posX, e->client->halfHeight, fontSize, color);
 }
 
-void applyBloom(const env *e, RenderTexture2D srcTex, RenderTexture2D dstTex, const float bloomIntensity) {
+void applyBloom(const iwEnv *e, RenderTexture2D srcTex, RenderTexture2D dstTex, const float bloomIntensity) {
     BeginTextureMode(e->client->blurSrcTexture);
     ClearBackground(BLANK);
     DrawTextureRec(srcTex.texture, (Rectangle){0.0f, 0.0f, e->client->width, -e->client->height}, Vector2Zero(), WHITE);
@@ -1420,7 +1420,7 @@ void applyBloom(const env *e, RenderTexture2D srcTex, RenderTexture2D dstTex, co
     EndTextureMode();
 }
 
-void minimalStepEnv(env *e) {
+void minimalStepEnv(iwEnv *e) {
     for (uint8_t i = 0; i < cc_array_size(e->drones); i++) {
         droneEntity *drone = safe_array_get_at(e->drones, i);
         if (drone->dead || drone->shield == NULL) {
@@ -1448,7 +1448,7 @@ void minimalStepEnv(env *e) {
     }
 }
 
-void _renderEnv(env *e, const bool starting, const bool ending, const int8_t winner, const int8_t winningTeam) {
+void _renderEnv(iwEnv *e, const bool starting, const bool ending, const int8_t winner, const int8_t winningTeam) {
     if (ending) {
         minimalStepEnv(e);
     }
@@ -1675,7 +1675,7 @@ void _renderEnv(env *e, const bool starting, const bool ending, const int8_t win
     EndDrawing();
 }
 
-void renderWait(env *e, const bool starting, const bool ending, const int8_t winner, const int8_t winningTeam, const float time) {
+void renderWait(iwEnv *e, const bool starting, const bool ending, const int8_t winner, const int8_t winningTeam, const float time) {
 #ifdef __EMSCRIPTEN__
     const double startTime = emscripten_get_now();
     while (time > (emscripten_get_now() - startTime) / 1000.0) {
@@ -1689,7 +1689,7 @@ void renderWait(env *e, const bool starting, const bool ending, const int8_t win
 #endif
 }
 
-void renderEnv(env *e, const bool starting, const bool ending, const int8_t winner, const int8_t winningTeam) {
+void renderEnv(iwEnv *e, const bool starting, const bool ending, const int8_t winner, const int8_t winningTeam) {
     if (starting) {
         renderWait(e, starting, ending, winner, winningTeam, START_READY_TIME);
     } else if (ending) {

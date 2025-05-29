@@ -35,7 +35,7 @@ from torch.utils.cpp_extension import (
     CUDA_HOME,
 )
 
-	
+
 VERSION = "2.0.6"
 
 # Build with DEBUG=1 to enable debug symbols
@@ -96,6 +96,7 @@ if DEBUG:
 else:
     extra_compile_args += [
         '-O2',
+        '-flto',
     ]
     extra_link_args += [
         '-O2',
@@ -111,6 +112,7 @@ system = platform.system()
 if system == 'Linux':
     extra_compile_args += [
         '-Wno-alloc-size-larger-than',
+        '-Wno-implicit-function-declaration',
         '-fmax-errors=3',
     ]
     extra_link_args += [
@@ -119,6 +121,9 @@ if system == 'Linux':
     download_raylib('raylib-5.5_linux_amd64', '.tar.gz')
 elif system == 'Darwin':
     extra_compile_args += [
+        '-Wno-error=int-conversion',
+        '-Wno-error=incompatible-function-pointer-types',
+        '-Wno-error=implicit-function-declaration',
     ]
     extra_link_args += [
         '-framework', 'Cocoa',
