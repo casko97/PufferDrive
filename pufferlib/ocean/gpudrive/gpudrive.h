@@ -340,23 +340,6 @@ void set_start_position(GPUDrive* env){
 
 }
 
-int valid_active_agent(GPUDrive* env, int agent_idx){
-    float cos_heading = cosf(env->entities[agent_idx].traj_heading[0]);
-    float sin_heading = sinf(env->entities[agent_idx].traj_heading[0]);
-    float goal_x = env->entities[agent_idx].goal_position_x - env->entities[agent_idx].traj_x[0];
-    float goal_y = env->entities[agent_idx].goal_position_y - env->entities[agent_idx].traj_y[0];
-    // Rotate to ego vehicle's frame
-    float rel_goal_x = goal_x*cos_heading + goal_y*sin_heading;
-    float rel_goal_y = -goal_x*sin_heading + goal_y*cos_heading;
-    float distance_to_goal = relative_distance_2d(0, 0, rel_goal_x, rel_goal_y);
-    env->entities[agent_idx].width *= 0.7f;
-    env->entities[agent_idx].length *= 0.7f;
-    if(distance_to_goal >= 2.0f && env->entities[agent_idx].mark_as_expert == 0 && env->active_agent_count < env->num_agents){
-        return distance_to_goal;
-    }
-    return 0;
-}
-
 int getGridIndex(GPUDrive* env, float x1, float y1) {
     if (env->map_corners[0] >= env->map_corners[2] || env->map_corners[1] >= env->map_corners[3]) {
         printf("Invalid grid coordinates\n");
@@ -785,6 +768,7 @@ void collision_check(GPUDrive* env, int agent_idx) {
 
     // spawn immunity for collisions with other cars who just respawned
     if(car_collided_with_index ==-1) return;
+
     int respawned_collided_with_car = env->entities[car_collided_with_index].respawn_timestep != -1;
     int exceeded_spawn_immunity_collided_with_car = (env->timestep - env->entities[car_collided_with_index].respawn_timestep) >= env->spawn_immunity_timer;
     int within_spawn_immunity_collided_with_car = (env->timestep - env->entities[car_collided_with_index].respawn_timestep) < env->spawn_immunity_timer;
@@ -794,6 +778,23 @@ void collision_check(GPUDrive* env, int agent_idx) {
     } else if (respawned_collided_with_car && within_spawn_immunity_collided_with_car) {
         agent->collision_state = 0;
     }
+}
+
+int valid_active_agent(GPUDrive* env, int agent_idx){
+    float cos_heading = cosf(env->entities[agent_idx].traj_heading[0]);
+    float sin_heading = sinf(env->entities[agent_idx].traj_heading[0]);
+    float goal_x = env->entities[agent_idx].goal_position_x - env->entities[agent_idx].traj_x[0];
+    float goal_y = env->entities[agent_idx].goal_position_y - env->entities[agent_idx].traj_y[0];
+    // Rotate to ego vehicle's frame
+    float rel_goal_x = goal_x*cos_heading + goal_y*sin_heading;
+    float rel_goal_y = -goal_x*sin_heading + goal_y*cos_heading;
+    float distance_to_goal = relative_distance_2d(0, 0, rel_goal_x, rel_goal_y);
+    env->entities[agent_idx].width *= 0.7f;
+    env->entities[agent_idx].length *= 0.7f;
+    if(distance_to_goal >= 2.0f && env->entities[agent_idx].mark_as_expert == 0 && env->active_agent_count < env->num_agents){
+        return distance_to_goal;
+    }
+    return 0;
 }
 
 void set_active_agents(GPUDrive* env){
@@ -854,11 +855,12 @@ void set_active_agents(GPUDrive* env){
         env->expert_static_car_indices[i] = expert_static_car_indices[i];
     }
     
+    set_start_position(env);
     int legal_agent_count = 0;
     int legal_trajectories[env->active_agent_count];
     int collided_agents[env->active_agent_count];
     memset(collided_agents, 0, env->active_agent_count * sizeof(int));
-    // move experts through trajectories to check collisions (TODO: move to separate thread)
+    // move experts through trajectories to check for collisions and remove as illegal agents
     for(int t = 0; t < TRAJECTORY_LENGTH; t++){
         for(int i = 0; i < env->active_agent_count; i++){
             int agent_idx = active_agent_indices[i];
@@ -888,8 +890,9 @@ void set_active_agents(GPUDrive* env){
         } 
     }
     // copy temp
-    int temp_static_indices[env->static_car_count + legal_agent_count];
-    int temp_expert_indices[env->expert_static_car_count + legal_agent_count];
+    int deleted_actives = env->active_agent_count - legal_agent_count;
+    int temp_static_indices[env->static_car_count + deleted_actives];
+    int temp_expert_indices[env->expert_static_car_count + deleted_actives];
     memcpy(temp_static_indices, env->static_car_indices, env->static_car_count * sizeof(int));
     memcpy(temp_expert_indices, env->expert_static_car_indices, env->expert_static_car_count * sizeof(int));
     // add illegal actives to statics 
@@ -922,6 +925,7 @@ void set_active_agents(GPUDrive* env){
         env->expert_static_car_indices[i] = temp_expert_indices[i];
     }
     env->timestep = 0;
+    return;
 }
 
 
