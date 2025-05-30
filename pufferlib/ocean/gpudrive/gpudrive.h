@@ -332,6 +332,7 @@ void set_start_position(GPUDrive* env){
         e->heading_x = cosf(e->heading);
         e->heading_y = sinf(e->heading);
         e->valid = e->traj_valid[0];
+        e->collision_state = 0;
     }
     //EndDrawing();
     int x = 0;
@@ -354,63 +355,6 @@ int valid_active_agent(GPUDrive* env, int agent_idx){
         return distance_to_goal;
     }
     return 0;
-}
-
-void set_active_agents(GPUDrive* env){
-    env->static_car_count = 0;
-    env->num_cars = 1;
-    env->expert_static_car_count = 0;
-    int active_agent_indices[MAX_CARS];
-    int static_car_indices[MAX_CARS];
-    int expert_static_car_indices[MAX_CARS];
-    
-    if(env->num_agents ==0){
-        env->num_agents = MAX_CARS;
-    }
-    int first_agent_id = env->num_objects-1;
-    float distance_to_goal = valid_active_agent(env, first_agent_id);
-    if(distance_to_goal){
-        env->active_agent_count = 1;
-        active_agent_indices[0] = first_agent_id;
-        env->entities[first_agent_id].active_agent = 1;
-        env->num_cars = 1;
-    } else {
-        env->active_agent_count = 0;
-        env->num_cars = 0;
-    }
-    for(int i = 0; i < env->num_objects-1 && env->num_cars < MAX_CARS; i++){
-        if(env->entities[i].type != 1) continue;
-        if(env->entities[i].traj_valid[0] != 1) continue;
-        env->num_cars++;
-        float distance_to_goal = valid_active_agent(env, i);
-        if(distance_to_goal > 0){
-            active_agent_indices[env->active_agent_count] = i;
-            env->active_agent_count++;
-            env->entities[i].active_agent = 1;
-        } else {
-            static_car_indices[env->static_car_count] = i;
-            env->static_car_count++;
-            env->entities[i].active_agent = 0;
-            if(env->entities[i].mark_as_expert == 1 || (distance_to_goal >=2.0f && env->active_agent_count == env->num_agents)){
-                expert_static_car_indices[env->expert_static_car_count] = i;
-                env->expert_static_car_count++;
-                env->entities[i].mark_as_expert = 1;
-            }
-        }
-    }
-    env->active_agent_indices = (int*)malloc(env->active_agent_count * sizeof(int));
-    env->static_car_indices = (int*)malloc(env->static_car_count * sizeof(int));
-    env->expert_static_car_indices = (int*)malloc(env->expert_static_car_count * sizeof(int));
-    for(int i=0;i<env->active_agent_count;i++){
-        env->active_agent_indices[i] = active_agent_indices[i];
-    };
-    for(int i=0;i<env->static_car_count;i++){
-        env->static_car_indices[i] = static_car_indices[i];
-        
-    }
-    for(int i=0;i<env->expert_static_car_count;i++){
-        env->expert_static_car_indices[i] = expert_static_car_indices[i];
-    }
 }
 
 int getGridIndex(GPUDrive* env, float x1, float y1) {
@@ -642,127 +586,6 @@ void set_means(GPUDrive* env) {
     
 }
 
-void init(GPUDrive* env){
-    env->human_agent_idx = 0;
-    env->timestep = 0;
-    env->entities = load_map_binary(env->map_name, env);
-    // printf("num entities: %d\n", env->num_entities);
-    env->dynamics_model = CLASSIC;
-    set_means(env);
-    set_active_agents(env);
-    set_start_position(env);
-    env->logs = (Log*)calloc(env->active_agent_count, sizeof(Log));
-    init_grid_map(env);
-    env->vision_range = 21;
-    init_neighbor_offsets(env);
-    env->neighbor_cache_indices = (int*)calloc((env->grid_cols*env->grid_rows) + 1, sizeof(int));
-    cache_neighbor_offsets(env);
-}
-
-void c_close(GPUDrive* env){
-    for(int i = 0; i < env->num_entities; i++){
-        free_entity(&env->entities[i]);
-    }
-    free(env->entities);
-    free(env->active_agent_indices);
-    free(env->logs);
-    free(env->map_corners);
-    free(env->grid_cells);
-    free(env->neighbor_offsets);
-    free(env->neighbor_cache_entities);
-    free(env->neighbor_cache_indices);
-    free(env->static_car_indices);
-    free(env->expert_static_car_indices);
-    // free(env->map_name);
-}
-
-void allocate(GPUDrive* env){
-    init(env);
-    int max_obs = 6 + 7*(MAX_CARS - 1) + 7*MAX_ROAD_SEGMENT_OBSERVATIONS;
-    // printf("max obs: %d\n", max_obs*env->active_agent_count);
-    // printf("num cars: %d\n", env->num_cars);
-    // printf("num static cars: %d\n", env->static_car_count);
-    // printf("active agent count: %d\n", env->active_agent_count);
-    // printf("num objects: %d\n", env->num_objects);
-    env->observations = (float*)calloc(env->active_agent_count*max_obs, sizeof(float));
-    env->actions = (int*)calloc(env->active_agent_count*2, sizeof(int));
-    env->rewards = (float*)calloc(env->active_agent_count, sizeof(float));
-    env->terminals= (unsigned char*)calloc(env->active_agent_count, sizeof(unsigned char));
-    // printf("allocated\n");
-}
-
-void free_allocated(GPUDrive* env){
-    free(env->observations);
-    free(env->actions);
-    free(env->rewards);
-    free(env->terminals);
-    c_close(env);
-}
-
-float clipSpeed(float speed) {
-    const float maxSpeed = MAX_SPEED;
-    if (speed > maxSpeed) return maxSpeed;
-    if (speed < -maxSpeed) return -maxSpeed;
-    return speed;
-}
-
-float normalize_heading(float heading){
-    if(heading > M_PI) heading -= 2*M_PI;
-    if(heading < -M_PI) heading += 2*M_PI;
-    return heading;
-}
-
-void move_dynamics(GPUDrive* env, int action_idx, int agent_idx){
-    if(env->dynamics_model == CLASSIC){
-        // clip acceleration & steering
-        Entity* agent = &env->entities[agent_idx];
-        // Extract action components directly from the multi-discrete action array
-        int (*action_array)[2] = (int(*)[2])env->actions;
-        int acceleration_index = action_array[action_idx][0];
-        int steering_index = action_array[action_idx][1];
-        float acceleration = ACCELERATION_VALUES[acceleration_index];
-        float steering = STEERING_VALUES[steering_index];
-
-        // Current state
-        float x = agent->x;
-        float y = agent->y;
-        float heading = agent->heading;
-        float vx = agent->vx;
-        float vy = agent->vy;
-        
-        // Calculate current speed
-        float speed = sqrtf(vx*vx + vy*vy);
-        
-        // Time step (adjust as needed)
-        const float dt = 0.1f;        
-        // Update speed with acceleration
-        speed = speed + 0.5f*acceleration*dt;
-        // if (speed < 0) speed = 0;  // Prevent going backward
-        speed = clipSpeed(speed);
-        // compute yaw rate
-        float beta = tanh(.5*tanf(steering));
-        // new heading
-        float yaw_rate = (speed*cosf(beta)*tanf(steering)) / agent->length;
-        // new velocity
-        float new_vx = speed*cosf(heading + beta);
-        float new_vy = speed*sinf(heading + beta);
-        // Update position
-        x = x + (new_vx*dt);
-        y = y + (new_vy*dt);
-        heading = heading + yaw_rate*dt;
-        // heading = normalize_heading(heading);
-        // Apply updates to the agent's state
-        agent->x = x;
-        agent->y = y;
-        agent->heading = heading;
-        agent->heading_x = cosf(heading);
-        agent->heading_y = sinf(heading);
-        agent->vx = new_vx;
-        agent->vy = new_vy;
-    }
-    return;
-}
-
 void move_expert(GPUDrive* env, int* actions, int agent_idx){
     Entity* agent = &env->entities[agent_idx];
     agent->x = agent->traj_x[env->timestep];
@@ -973,6 +796,256 @@ void collision_check(GPUDrive* env, int agent_idx) {
     }
 }
 
+void set_active_agents(GPUDrive* env){
+    env->active_agent_count = 0;
+    env->static_car_count = 0;
+    env->num_cars = 1;
+    env->expert_static_car_count = 0;
+    int active_agent_indices[MAX_CARS];
+    int static_car_indices[MAX_CARS];
+    int expert_static_car_indices[MAX_CARS];
+    
+    if(env->num_agents ==0){
+        env->num_agents = MAX_CARS;
+    }
+    int first_agent_id = env->num_objects-1;
+    float distance_to_goal = valid_active_agent(env, first_agent_id);
+    if(distance_to_goal){
+        env->active_agent_count = 1;
+        active_agent_indices[0] = first_agent_id;
+        env->entities[first_agent_id].active_agent = 1;
+        env->num_cars = 1;
+    } else {
+        env->active_agent_count = 0;
+        env->num_cars = 0;
+    }
+    for(int i = 0; i < env->num_objects-1 && env->num_cars < MAX_CARS; i++){
+        if(env->entities[i].type != 1) continue;
+        if(env->entities[i].traj_valid[0] != 1) continue;
+        env->num_cars++;
+        float distance_to_goal = valid_active_agent(env, i);
+        if(distance_to_goal > 0){
+            active_agent_indices[env->active_agent_count] = i;
+            env->active_agent_count++;
+            env->entities[i].active_agent = 1;
+        } else {
+            static_car_indices[env->static_car_count] = i;
+            env->static_car_count++;
+            env->entities[i].active_agent = 0;
+            if(env->entities[i].mark_as_expert == 1 || (distance_to_goal >=2.0f && env->active_agent_count == env->num_agents)){
+                expert_static_car_indices[env->expert_static_car_count] = i;
+                env->expert_static_car_count++;
+                env->entities[i].mark_as_expert = 1;
+            }
+        } 
+    }
+    // set up initial active agents 
+    env->active_agent_indices = (int*)malloc(env->active_agent_count * sizeof(int));
+    env->static_car_indices = (int*)malloc(env->static_car_count * sizeof(int));
+    env->expert_static_car_indices = (int*)malloc(env->expert_static_car_count * sizeof(int));
+    for(int i=0;i<env->active_agent_count;i++){
+        env->active_agent_indices[i] = active_agent_indices[i];
+    };
+    for(int i=0;i<env->static_car_count;i++){
+        env->static_car_indices[i] = static_car_indices[i];
+        
+    }
+    for(int i=0;i<env->expert_static_car_count;i++){
+        env->expert_static_car_indices[i] = expert_static_car_indices[i];
+    }
+    
+    int legal_agent_count = 0;
+    int legal_trajectories[env->active_agent_count];
+    int collided_agents[env->active_agent_count];
+    memset(collided_agents, 0, env->active_agent_count * sizeof(int));
+    // move experts through trajectories to check collisions (TODO: move to separate thread)
+    for(int t = 0; t < TRAJECTORY_LENGTH; t++){
+        for(int i = 0; i < env->active_agent_count; i++){
+            int agent_idx = active_agent_indices[i];
+            move_expert(env, env->actions, agent_idx);
+        }
+        for(int i = 0; i < env->expert_static_car_count; i++){
+            int expert_idx = expert_static_car_indices[i];
+            if(env->entities[expert_idx].x == -10000) continue;
+            move_expert(env, env->actions, expert_idx);
+        }
+        // check collisions
+        for(int i = 0; i < env->active_agent_count; i++){
+            int agent_idx = active_agent_indices[i];
+            env->entities[agent_idx].collision_state = 0;
+            collision_check(env, agent_idx);
+            if(env->entities[agent_idx].collision_state > 0){
+                collided_agents[i] = 1;
+            }
+        }
+        env->timestep++;
+    }
+
+    for(int i = 0; i< env->active_agent_count; i++){
+        if(collided_agents[i] == 0){
+            legal_trajectories[legal_agent_count] = active_agent_indices[i];
+            legal_agent_count++;
+        } 
+    }
+    // copy temp
+    int temp_static_indices[env->static_car_count + legal_agent_count];
+    int temp_expert_indices[env->expert_static_car_count + legal_agent_count];
+    memcpy(temp_static_indices, env->static_car_indices, env->static_car_count * sizeof(int));
+    memcpy(temp_expert_indices, env->expert_static_car_indices, env->expert_static_car_count * sizeof(int));
+    // add illegal actives to statics 
+    for(int i = 0; i < env->active_agent_count; i++){
+        if(collided_agents[i]){
+            int agent_idx = active_agent_indices[i];
+            temp_static_indices[env->static_car_count] = agent_idx;
+            env->static_car_count++;
+            temp_expert_indices[env->expert_static_car_count] = agent_idx;
+            env->expert_static_car_count++;
+            env->entities[agent_idx].active_agent = 0;
+            env->entities[agent_idx].mark_as_expert = 1;
+        }
+    }
+    free(env->static_car_indices);
+    free(env->active_agent_indices);
+    free(env->expert_static_car_indices);
+    env->active_agent_count = legal_agent_count;
+    env->active_agent_indices = (int*)malloc(legal_agent_count * sizeof(int));
+    env->static_car_indices = (int*)malloc(env->static_car_count * sizeof(int));
+    env->expert_static_car_indices = (int*)malloc(env->expert_static_car_count * sizeof(int));
+    for(int i=0;i<legal_agent_count;i++){
+        env->active_agent_indices[i] = legal_trajectories[i];
+    };
+    for(int i=0;i<env->static_car_count;i++){
+        env->static_car_indices[i] = temp_static_indices[i];
+        
+    }
+    for(int i=0;i<env->expert_static_car_count;i++){
+        env->expert_static_car_indices[i] = temp_expert_indices[i];
+    }
+    env->timestep = 0;
+}
+
+
+void init(GPUDrive* env){
+    env->human_agent_idx = 0;
+    env->timestep = 0;
+    env->entities = load_map_binary(env->map_name, env);
+    // printf("num entities: %d\n", env->num_entities);
+    env->dynamics_model = CLASSIC;
+    set_means(env);
+    init_grid_map(env);
+    env->vision_range = 21;
+    init_neighbor_offsets(env);
+    env->neighbor_cache_indices = (int*)calloc((env->grid_cols*env->grid_rows) + 1, sizeof(int));
+    cache_neighbor_offsets(env);
+    set_active_agents(env);
+    set_start_position(env);
+    env->logs = (Log*)calloc(env->active_agent_count, sizeof(Log));
+}
+
+void c_close(GPUDrive* env){
+    for(int i = 0; i < env->num_entities; i++){
+        free_entity(&env->entities[i]);
+    }
+    free(env->entities);
+    free(env->active_agent_indices);
+    free(env->logs);
+    free(env->map_corners);
+    free(env->grid_cells);
+    free(env->neighbor_offsets);
+    free(env->neighbor_cache_entities);
+    free(env->neighbor_cache_indices);
+    free(env->static_car_indices);
+    free(env->expert_static_car_indices);
+    // free(env->map_name);
+}
+
+void allocate(GPUDrive* env){
+    init(env);
+    int max_obs = 6 + 7*(MAX_CARS - 1) + 7*MAX_ROAD_SEGMENT_OBSERVATIONS;
+    // printf("max obs: %d\n", max_obs*env->active_agent_count);
+    // printf("num cars: %d\n", env->num_cars);
+    // printf("num static cars: %d\n", env->static_car_count);
+    // printf("active agent count: %d\n", env->active_agent_count);
+    // printf("num objects: %d\n", env->num_objects);
+    env->observations = (float*)calloc(env->active_agent_count*max_obs, sizeof(float));
+    env->actions = (int*)calloc(env->active_agent_count*2, sizeof(int));
+    env->rewards = (float*)calloc(env->active_agent_count, sizeof(float));
+    env->terminals= (unsigned char*)calloc(env->active_agent_count, sizeof(unsigned char));
+    // printf("allocated\n");
+}
+
+void free_allocated(GPUDrive* env){
+    free(env->observations);
+    free(env->actions);
+    free(env->rewards);
+    free(env->terminals);
+    c_close(env);
+}
+
+float clipSpeed(float speed) {
+    const float maxSpeed = MAX_SPEED;
+    if (speed > maxSpeed) return maxSpeed;
+    if (speed < -maxSpeed) return -maxSpeed;
+    return speed;
+}
+
+float normalize_heading(float heading){
+    if(heading > M_PI) heading -= 2*M_PI;
+    if(heading < -M_PI) heading += 2*M_PI;
+    return heading;
+}
+
+void move_dynamics(GPUDrive* env, int action_idx, int agent_idx){
+    if(env->dynamics_model == CLASSIC){
+        // clip acceleration & steering
+        Entity* agent = &env->entities[agent_idx];
+        // Extract action components directly from the multi-discrete action array
+        int (*action_array)[2] = (int(*)[2])env->actions;
+        int acceleration_index = action_array[action_idx][0];
+        int steering_index = action_array[action_idx][1];
+        float acceleration = ACCELERATION_VALUES[acceleration_index];
+        float steering = STEERING_VALUES[steering_index];
+
+        // Current state
+        float x = agent->x;
+        float y = agent->y;
+        float heading = agent->heading;
+        float vx = agent->vx;
+        float vy = agent->vy;
+        
+        // Calculate current speed
+        float speed = sqrtf(vx*vx + vy*vy);
+        
+        // Time step (adjust as needed)
+        const float dt = 0.1f;        
+        // Update speed with acceleration
+        speed = speed + 0.5f*acceleration*dt;
+        // if (speed < 0) speed = 0;  // Prevent going backward
+        speed = clipSpeed(speed);
+        // compute yaw rate
+        float beta = tanh(.5*tanf(steering));
+        // new heading
+        float yaw_rate = (speed*cosf(beta)*tanf(steering)) / agent->length;
+        // new velocity
+        float new_vx = speed*cosf(heading + beta);
+        float new_vy = speed*sinf(heading + beta);
+        // Update position
+        x = x + (new_vx*dt);
+        y = y + (new_vy*dt);
+        heading = heading + yaw_rate*dt;
+        // heading = normalize_heading(heading);
+        // Apply updates to the agent's state
+        agent->x = x;
+        agent->y = y;
+        agent->heading = heading;
+        agent->heading_x = cosf(heading);
+        agent->heading_y = sinf(heading);
+        agent->vx = new_vx;
+        agent->vy = new_vy;
+    }
+    return;
+}
+
 float normalize_value(float value, float min, float max){
     return (value - min) / (max - min);
 }
@@ -1136,6 +1209,7 @@ void c_step(GPUDrive* env){
     if(env->timestep == TRAJECTORY_LENGTH){
         add_log(env);
 	    c_reset(env);
+        return; 
     }
 
     // Move statix experts
@@ -1150,8 +1224,8 @@ void c_step(GPUDrive* env){
 	    env->logs[i].episode_length += 1;
         int agent_idx = env->active_agent_indices[i];
         env->entities[agent_idx].collision_state = 0;
-        move_dynamics(env, i, agent_idx);
-        // move_expert(env, env->actions, agent_idx);
+        //move_dynamics(env, i, agent_idx);
+        move_expert(env, env->actions, agent_idx);
     }
 
     for(int i = 0; i < env->active_agent_count; i++){
@@ -1204,9 +1278,9 @@ void c_step(GPUDrive* env){
         int agent_idx = env->active_agent_indices[i];
         int reached_goal = env->entities[agent_idx].reached_goal;
         int collision_state = env->entities[agent_idx].collision_state;
-        if(reached_goal || collision_state > 0){
+        /*if(reached_goal || collision_state > 0){
             respawn_agent(env, agent_idx);
-        }
+        }*/
     }
     compute_observations(env);
 }   

@@ -3,7 +3,7 @@ import gymnasium
 import json
 import struct
 import os
-
+import random
 import pufferlib
 from pufferlib.ocean.gpudrive import binding
 
@@ -77,38 +77,46 @@ class GPUDrive(pufferlib.PufferEnv):
         self.actions[:] = actions
         binding.vec_step(self.c_envs)
         self.tick+=1
-        if(self.tick > 0 and self.resample_frequency > 0 and self.tick % self.resample_frequency == 0):
-            binding.vec_close(self.c_envs)
-            agent_offsets, map_ids, num_envs = binding.shared(num_agents=self.num_agents, num_maps=self.num_maps)
-            env_ids = []
-            seed = np.random.randint(0, 2**32-1)
-            for i in range(num_envs):
-                cur = agent_offsets[i]
-                nxt = agent_offsets[i+1]
-                env_id = binding.env_init(
-                    self.observations[cur:nxt],
-                    self.actions[cur:nxt],
-                    self.rewards[cur:nxt],
-                    self.terminals[cur:nxt],
-                    self.truncations[cur:nxt],
-                    seed,
-                    human_agent_idx=self.human_agent_idx,
-                    reward_vehicle_collision=self.reward_vehicle_collision,
-                    reward_offroad_collision=self.reward_offroad_collision,
-                    reward_goal_post_respawn=self.reward_goal_post_respawn,
-                    reward_vehicle_collision_post_respawn=self.reward_vehicle_collision_post_respawn,
-                    spawn_immunity_timer=self.spawn_immunity_timer,
-                    map_id=map_ids[i],
-                    max_agents = nxt-cur
-                )
-                env_ids.append(env_id)
-            self.c_envs = binding.vectorize(*env_ids)
-            binding.vec_reset(self.c_envs, seed)
         info = []
         if self.tick % self.report_interval == 0:
             log = binding.vec_log(self.c_envs)
             if log:
                 info.append(log)
+        if(self.tick > 0 and self.resample_frequency > 0 and self.tick % self.resample_frequency == 0):
+            self.tick = 0
+            will_resample = 1
+            if will_resample:
+                binding.vec_close(self.c_envs)
+                agent_offsets, map_ids, num_envs = binding.shared(num_agents=self.num_agents, num_maps=self.num_maps)
+                env_ids = []
+                seed = np.random.randint(0, 2**32-1)
+                print("Resampling")
+                for i in range(num_envs):
+                    cur = agent_offsets[i]
+                    nxt = agent_offsets[i+1]
+                    env_id = binding.env_init(
+                        self.observations[cur:nxt],
+                        self.actions[cur:nxt],
+                        self.rewards[cur:nxt],
+                        self.terminals[cur:nxt],
+                        self.truncations[cur:nxt],
+                        seed,
+                        human_agent_idx=self.human_agent_idx,
+                        reward_vehicle_collision=self.reward_vehicle_collision,
+                        reward_offroad_collision=self.reward_offroad_collision,
+                        reward_goal_post_respawn=self.reward_goal_post_respawn,
+                        reward_vehicle_collision_post_respawn=self.reward_vehicle_collision_post_respawn,
+                        spawn_immunity_timer=self.spawn_immunity_timer,
+                        map_id=map_ids[i],
+                        max_agents = nxt-cur
+                    )
+                    env_ids.append(env_id)
+                self.c_envs = binding.vectorize(*env_ids)
+                '''
+                seed = np.random.randint(0, 2**32-1)
+                '''
+                binding.vec_reset(self.c_envs, seed)
+        
 
         return (self.observations, self.rewards,
             self.terminals, self.truncations, info)
