@@ -5,8 +5,15 @@ from pufferlib.ocean.tetris import binding
 
 class Tetris(pufferlib.PufferEnv):
     def __init__(
-             self, num_envs=1, n_cols=10, n_rows=10,
-            render_mode=None, log_interval=32, buf=None, seed=0):
+        self, 
+        num_envs=1, 
+        n_cols=10, 
+        n_rows=10,
+        render_mode=None, 
+        log_interval=32,
+        buf=None, 
+        seed=0
+    ):
         self.single_observation_space = gymnasium.spaces.Box(low=0, high=1,
             shape=(1 + 7 + 4 * n_cols + n_cols*n_rows,), dtype=np.float32)
         self.single_action_space = gymnasium.spaces.Discrete(4 * n_cols)
@@ -55,12 +62,12 @@ class Tetris(pufferlib.PufferEnv):
 
 if __name__ == '__main__':
     TIME = 10
-    num_envs = 1024
+    num_envs = 512
     env = Tetris(num_envs=num_envs)
     actions = [
-        env.single_action_space.sample() for _ in range(1000)
+        [env.single_action_space.sample() for _ in range(num_envs) ]for _ in range(1000)
     ]
-    obs, _ = env.reset()
+    obs, _ = env.reset(seed = np.random.randint(0,1000))
 
     import time
     start = time.time()
@@ -70,7 +77,7 @@ if __name__ == '__main__':
         action = actions[tick%1000]
         obs, _, _, _, _ = env.step(action)
         tick += 1
-        # time.sleep(1)
+        # time.sleep(0.1)
         # env.render()
 
     print('SPS:', (tick*num_envs) / (time.time() - start))

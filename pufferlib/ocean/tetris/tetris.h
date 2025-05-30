@@ -8,8 +8,11 @@
 #include "tetrominoes.h"
 
 // Rendering related
-#define HALF_LINEWIDTH 2
-#define SQUARE_SIZE 64
+#define HALF_LINEWIDTH 0.5f
+#define SQUARE_SIZE 32
+
+const int REWARDS[5] = {0, 40, 100, 300, 1200};
+const int REWARD_INVALID_ACTION = -100;
 
 typedef struct Log Log;
 struct Log {
@@ -40,7 +43,7 @@ struct Tetris {
     int* action_mask;
     int* row_is_free;
     float ep_return;
-    int current_tetrimino;
+    int current_tetromino;
 };
 
 void init(Tetris* env) {
@@ -80,23 +83,25 @@ void restore_grid(Tetris* env) {
         env->row_is_free[r] = 1;
     }
 }
-
-void draw_new_tetromino(Tetris* env) {
-    env->current_tetrimino = rand() % NUM_TETROMINOES;
+void preview_new_tetromino(Tetris* env, int target_rotation, int target_col){
     for (int r = 0; r < SIZE; r++) {
-        for (int c = 0; c < SIZE; c++) {
-            env->preview_grid[r * env->n_cols + c + env->n_cols/2] = 0;
+        for (int c = 0; c < env->n_cols; c++) {
+            env->preview_grid[r * env->n_cols + c] = 0;
         }
     }
     for (int r = 0; r < SIZE; r++) {
         for (int c = 0; c < SIZE; c++) {
-            if (TETROMINOES[env->current_tetrimino][0][r][c] == 1) {
-                env->preview_grid[r * env->n_cols + c + env->n_cols/2] = env->current_tetrimino + 1;
+            if (TETROMINOES[env->current_tetromino][target_rotation][r][c] == 1) {
+                env->preview_grid[r * env->n_cols + c + target_col] = env->current_tetromino + 1;
             }
         }
     }
 }
 
+void choose_new_tetromino(Tetris* env) {
+    env->current_tetromino = rand() % NUM_TETROMINOES;
+    preview_new_tetromino(env, 0, env->n_cols/2);
+}
 
 void free_allocated(Tetris* env) {
     free(env->actions);
@@ -114,10 +119,13 @@ void add_log(Tetris* env) {
     env->log.n += 1;
 }
 
-int is_valid_tetromino(Tetris* env, int tetrimino_idx, int col, int rotation) {
+int is_valid_tetromino(Tetris* env, int tetromino_idx, int target_col, int target_rotation) {
     int landing_row = -1;
-    for (int r = 0; r < SIZE; r++) {
-        if (env->row_is_free[r]) {
+    if (target_col + TETROMINOES_FILLS_COLUMN[tetromino_idx][target_rotation] > env->n_cols){
+        return -1;
+    }
+    for (int r = TETROMINOES_FILLS_ROW[tetromino_idx][target_rotation]; r < env->n_cols; r++) {
+        if (env->row_is_free[r]){
             landing_row = r;
         }
         else {
@@ -129,9 +137,9 @@ int is_valid_tetromino(Tetris* env, int tetrimino_idx, int col, int rotation) {
         
         for (int r = 0; r < SIZE && can_place; r++) {
             for (int c = 0; c < SIZE && can_place; c++) {
-                if (TETROMINOES[tetrimino_idx][rotation][r][c] == 1) {
+                if (TETROMINOES[tetromino_idx][target_rotation][r][c] == 1) {
                     int grid_row = test_row + r;
-                    int grid_col = col + c;
+                    int grid_col = target_col + c;
                     
                     if (grid_row >= env->n_rows || grid_col < 0 || grid_col >= env->n_cols) {
                         can_place = false;
@@ -149,31 +157,63 @@ int is_valid_tetromino(Tetris* env, int tetrimino_idx, int col, int rotation) {
             break;
         }
     }
-    
+    // TraceLog(LOG_INFO, "Target %d %d Land %d", target_col, target_rotation, landing_row);
     return landing_row;
 }
 
-void place_tetromino(Tetris* env, int tetrimino_idx, int col, int rotation, int landing_row) {
+bool is_full_row(Tetris* env, int row){
+    for (int c = 0; c < env->n_cols; c++){
+        if (env->grid[row * env->n_cols + c] == 0){
+            return false;
+        } 
+    }
+    return true;
+}
+
+void clear_row(Tetris* env, int row){
+    for (int r = row; r > 0; r--){
+        for (int c = 0; c < env->n_cols; c++){
+            env->grid[r * env->n_cols + c] = env->grid[ (r-1) * env->n_cols + c];
+        }
+    }
+    for (int c = 0; c < env->n_cols; c++){
+        env->grid[c] = 0; 
+    }
+}
+
+int place_tetromino(Tetris* env, int tetromino_idx, int col, int rotation, int landing_row) {
     for (int r = 0; r < SIZE; r++) {
         for (int c = 0; c < SIZE; c++) {
-            if (TETROMINOES[tetrimino_idx][rotation][r][c] == 1) {
+            if (TETROMINOES[tetromino_idx][rotation][r][c] == 1) {
                 int grid_row = landing_row + r;
                 int grid_col = col + c;
 
                 if (grid_row < env->n_rows && grid_col >= 0 && grid_col < env->n_cols) {
-                    env->grid[grid_row * env->n_cols + grid_col] = tetrimino_idx + 1;
+                    env->grid[grid_row * env->n_cols + grid_col] = tetromino_idx + 1;
                     env->row_is_free[grid_row] = 0;
                 }
             }
         }
     }
+    int lines_deleted = 0;
+    int row_to_check = landing_row + TETROMINOES_FILLS_ROW[tetromino_idx][rotation] - 1;
+    for (int r = 0; r < TETROMINOES_FILLS_ROW[tetromino_idx][rotation]; r++){
+        if (is_full_row(env, row_to_check)){
+            clear_row(env, row_to_check);
+            lines_deleted+=1;
+        }
+        else{
+            row_to_check-=1;
+        }
+    }
+    return lines_deleted;
 }
 
-void compute_action_mask(Tetris* env, int tetrimino_idx) {
+void compute_action_mask(Tetris* env, int tetromino_idx) {
     bool valid;
-    if (tetrimino_idx == 0){
+    if (tetromino_idx == 0){
         for (int c = 0; c < env->n_cols; c++) {
-            valid = is_valid_tetromino(env, tetrimino_idx, c, 0) > 0;
+            valid = is_valid_tetromino(env, tetromino_idx, c, 0) > -1;
             for (int rot = 0; rot < NUM_ROTATIONS; rot++) {
                 env->action_mask[rot * env->n_cols + c] = valid;
             }
@@ -183,7 +223,7 @@ void compute_action_mask(Tetris* env, int tetrimino_idx) {
     else {
         for (int c = 0; c < env->n_cols; c++) {
             for (int rot = 0; rot < NUM_ROTATIONS; rot++) {
-                valid = is_valid_tetromino(env, tetrimino_idx, c, rot) > 0;
+                valid = is_valid_tetromino(env, tetromino_idx, c, rot) > -1;
                 env->action_mask[rot * env->n_cols + c] = valid;
             }
         }
@@ -195,11 +235,11 @@ void compute_observations(Tetris* env) {
     for (int i = 0; i < NUM_TETROMINOES; i++) {
         env->observations[1+i] = 0;
     }
-    env->observations[1+env->current_tetrimino] = 1; 
+    env->observations[1+env->current_tetromino] = 1; 
     for (int i = 0; i < NUM_TETROMINOES; i++) {
         env->observations[1+i] = 0;
     }
-    env->observations[1+env->current_tetrimino] = 1; 
+    env->observations[1+env->current_tetromino] = 1; 
     for (int i = 0; i < env->n_cols*NUM_ROTATIONS; i++) {
         env->observations[1+NUM_TETROMINOES+i] = env->action_mask[i];
     }
@@ -212,26 +252,36 @@ void c_reset(Tetris* env) {
     env->score = 0.0f;
     env->ep_return = 0.0;
     env->step = 0;
-    draw_new_tetromino(env);
     restore_grid(env);
-    compute_action_mask(env, env->current_tetrimino);
+    choose_new_tetromino(env);
+    compute_action_mask(env, env->current_tetromino);
     compute_observations(env);
 }
 
 void c_step(Tetris* env) {
     env->terminals[0] = 0;
     env->rewards[0] = 0.0;
+
     int col = ((int) env->actions[0])%env->n_cols;
     int rotation = ((int) env->actions[0])/env->n_cols;
-    
+    int lines_deleted = 0;
     int landing_row = -1;
-    if (env->action_mask[rotation * env->n_cols + col]) {
-        landing_row = is_valid_tetromino(env, env->current_tetrimino, col, rotation);
-        place_tetromino(env, env->current_tetrimino, col, rotation, landing_row);
-        draw_new_tetromino(env);
-        compute_action_mask(env, env->current_tetrimino);
 
+    if (env->action_mask[rotation * env->n_cols + col]) {
+        landing_row = is_valid_tetromino(env, env->current_tetromino, col, rotation);
+        lines_deleted = place_tetromino(env, env->current_tetromino, col, rotation, landing_row);
+        choose_new_tetromino(env);
+        
+        env->score+= REWARDS[lines_deleted];
+        compute_action_mask(env, env->current_tetromino);
+        env->rewards[0] = REWARDS[lines_deleted];
+        env->ep_return+= REWARDS[lines_deleted];
     }
+    else{
+        env->rewards[0] = REWARD_INVALID_ACTION;
+        env->ep_return -= REWARD_INVALID_ACTION;
+    }
+    
     int end = true;
     for (int i = 0; i < NUM_ROTATIONS * env->n_cols; i++) {
         if (env->action_mask[i]) {
@@ -241,7 +291,7 @@ void c_step(Tetris* env) {
     }
     if (end){
         env->terminals[0] = 1;
-        env->rewards[0] = env->score;
+        add_log(env);
         c_reset(env);
     } 
     else{
@@ -256,7 +306,7 @@ struct Client {
 Client* make_client(Tetris* env) {
     Client* client = (Client*)calloc(1, sizeof(Client));
 
-    InitWindow(SQUARE_SIZE * env->n_cols, SQUARE_SIZE * (5 + env->n_rows), "PufferLib Tetris");
+    InitWindow(SQUARE_SIZE * (2 + env->n_cols), SQUARE_SIZE * (SIZE + 4 + env->n_rows), "PufferLib Tetris");
     SetTargetFPS(60);
     return client;
 }
@@ -266,9 +316,10 @@ void close_client(Client* client) {
     free(client);
 }
 
-Color BG_COLOR = (Color){100, 100, 100, 255};
-Color DASH_COLOR = (Color){170, 170, 170, 255};
-Color DASH_COLOR2 = (Color){150, 150, 150, 255};
+Color BORDER_COLOR = (Color){100, 100, 100, 255};
+Color DASH_COLOR = (Color){80, 80, 80, 255};
+Color DASH_COLOR_BRIGHT = (Color){150, 150, 150, 255};
+Color DASH_COLOR_DARK = (Color){50, 50, 50, 255};
 
 void c_render(Tetris* env) {
     if (env->client == NULL) {
@@ -284,46 +335,49 @@ void c_render(Tetris* env) {
     }
 
     BeginDrawing();
-    ClearBackground(BG_COLOR);
+    ClearBackground(BLACK);
+    int x, y;
 
-    for (int r = 0; r < SIZE; r++) {
-        for (int c = 0; c < env->n_cols; c++) {
-            int x = c * SQUARE_SIZE;
-            int y = (r + 1) * SQUARE_SIZE;
-            Color color = (env->preview_grid[r*env->n_cols + c] == 0) ? BG_COLOR : TETROMINOES_COLORS[env->preview_grid[r*env->n_cols + c] - 1];
-            DrawRectangle(
-                x + HALF_LINEWIDTH, 
-                y + HALF_LINEWIDTH,
-                SQUARE_SIZE-2*HALF_LINEWIDTH, SQUARE_SIZE-2*HALF_LINEWIDTH, color
-            );
-            DrawRectangle(
-                x - HALF_LINEWIDTH, 
-                y - HALF_LINEWIDTH,
-                SQUARE_SIZE, 2*HALF_LINEWIDTH, DASH_COLOR2
-            );
-            DrawRectangle(
-                x - HALF_LINEWIDTH, 
-                y + SQUARE_SIZE- HALF_LINEWIDTH,
-                SQUARE_SIZE, 2*HALF_LINEWIDTH, DASH_COLOR2
-            );
-            DrawRectangle(
-                x - HALF_LINEWIDTH, 
-                y - HALF_LINEWIDTH,
-                2*HALF_LINEWIDTH, + SQUARE_SIZE, DASH_COLOR2
-            );
-            DrawRectangle(
-                x + SQUARE_SIZE - HALF_LINEWIDTH, 
-                y + SQUARE_SIZE- HALF_LINEWIDTH,
-                2*HALF_LINEWIDTH, + SQUARE_SIZE, DASH_COLOR2
-            );
+    // outer grid
+    for (int r = 0; r < (SIZE + 4 + env->n_rows); r++) {
+        for (int c = 0; c < 2+env->n_cols; c++) {
+            x = c * SQUARE_SIZE;
+            y = r * SQUARE_SIZE;
+            if ((c == 0) || (c == (1+env->n_cols)) || (r == 0) || (r == 2) || (r == (SIZE + 3 + env->n_rows))){
+                DrawRectangle(
+                    x + HALF_LINEWIDTH, 
+                    y + HALF_LINEWIDTH,
+                    SQUARE_SIZE-2*HALF_LINEWIDTH, SQUARE_SIZE-2*HALF_LINEWIDTH, BORDER_COLOR
+                );
+                DrawRectangle(
+                    x - HALF_LINEWIDTH, 
+                    y - HALF_LINEWIDTH,
+                    SQUARE_SIZE, 2*HALF_LINEWIDTH, DASH_COLOR_DARK
+                );
+                DrawRectangle(
+                    x - HALF_LINEWIDTH, 
+                    y + SQUARE_SIZE- HALF_LINEWIDTH,
+                    SQUARE_SIZE, 2*HALF_LINEWIDTH, DASH_COLOR_DARK
+                );
+                DrawRectangle(
+                    x - HALF_LINEWIDTH, 
+                    y - HALF_LINEWIDTH,
+                    2*HALF_LINEWIDTH, SQUARE_SIZE, DASH_COLOR_DARK
+                );
+                DrawRectangle(
+                    x + SQUARE_SIZE - HALF_LINEWIDTH, 
+                    y - HALF_LINEWIDTH,
+                    2*HALF_LINEWIDTH, SQUARE_SIZE, DASH_COLOR_DARK
+                );
+            }
         }         
     }
-    
+    // lower grid
     for (int r = 0; r < env->n_rows; r++) {
         for (int c = 0; c < env->n_cols; c++) {
-            int x = c * SQUARE_SIZE;
-            int y = (r + SIZE + 1) * SQUARE_SIZE;
-            Color color = (env->grid[r*env->n_cols + c] == 0) ? BG_COLOR : TETROMINOES_COLORS[env->grid[r*env->n_cols + c] - 1];
+            x = (c + 1) * SQUARE_SIZE;
+            y = (SIZE + 3 + r) * SQUARE_SIZE;
+            Color color = (env->grid[r*env->n_cols + c] == 0) ? BLACK : TETROMINOES_COLORS[env->grid[r*env->n_cols + c] - 1];
             DrawRectangle(
                 x + HALF_LINEWIDTH, 
                 y + HALF_LINEWIDTH,
@@ -342,29 +396,57 @@ void c_render(Tetris* env) {
             DrawRectangle(
                 x - HALF_LINEWIDTH, 
                 y - HALF_LINEWIDTH,
-                2*HALF_LINEWIDTH, + SQUARE_SIZE, DASH_COLOR
+                2*HALF_LINEWIDTH, SQUARE_SIZE, DASH_COLOR
             );
             DrawRectangle(
                 x + SQUARE_SIZE - HALF_LINEWIDTH, 
-                y + SQUARE_SIZE- HALF_LINEWIDTH,
-                2*HALF_LINEWIDTH, + SQUARE_SIZE, DASH_COLOR
+                y - HALF_LINEWIDTH,
+                2*HALF_LINEWIDTH, SQUARE_SIZE, DASH_COLOR
             );
         }         
     }
-
+    // upper grid
+    for (int r = 0; r < SIZE; r++) {
+        for (int c = 0; c < env->n_cols; c++) {
+            x = (c + 1) * SQUARE_SIZE;
+            y = (3 + r) * SQUARE_SIZE;
+            Color color = (env->preview_grid[r*env->n_cols + c] == 0) ? BLACK : TETROMINOES_COLORS[env->preview_grid[r*env->n_cols + c] - 1];
+            DrawRectangle(
+                x + HALF_LINEWIDTH, 
+                y + HALF_LINEWIDTH,
+                SQUARE_SIZE-2*HALF_LINEWIDTH, SQUARE_SIZE-2*HALF_LINEWIDTH, color
+            );
+            DrawRectangle(
+                x - HALF_LINEWIDTH, 
+                y - HALF_LINEWIDTH,
+                SQUARE_SIZE, 2*HALF_LINEWIDTH, DASH_COLOR_BRIGHT
+            );
+            DrawRectangle(
+                x - HALF_LINEWIDTH, 
+                y + SQUARE_SIZE- HALF_LINEWIDTH,
+                SQUARE_SIZE, 2*HALF_LINEWIDTH, DASH_COLOR_BRIGHT
+            );
+            DrawRectangle(
+                x - HALF_LINEWIDTH, 
+                y - HALF_LINEWIDTH,
+                2*HALF_LINEWIDTH, SQUARE_SIZE, DASH_COLOR_BRIGHT
+            );
+            DrawRectangle(
+                x + SQUARE_SIZE - HALF_LINEWIDTH, 
+                y - HALF_LINEWIDTH,
+                2*HALF_LINEWIDTH, SQUARE_SIZE, DASH_COLOR_BRIGHT
+            );
+        }         
+    }
+    // Lower separation
     DrawRectangle(
-        0, 
-        5 * SQUARE_SIZE - HALF_LINEWIDTH,
+        SQUARE_SIZE, 
+        (SIZE + 3) * SQUARE_SIZE - HALF_LINEWIDTH,
         env->n_cols * SQUARE_SIZE, 2*HALF_LINEWIDTH, WHITE
     );
 
-    DrawRectangle(
-        0, 
-        SQUARE_SIZE - HALF_LINEWIDTH,
-        env->n_cols * SQUARE_SIZE, 2*HALF_LINEWIDTH, WHITE
-    );
     // Draw UI
-    DrawText(TextFormat("Score: %i", env->score), 16, 16, 40, (Color) {255, 160, 160, 255});
+    DrawText(TextFormat("Score: %i", env->score), SQUARE_SIZE+4, SQUARE_SIZE+4, 30, (Color) {255, 160, 160, 255});
     EndDrawing();
 
 }
