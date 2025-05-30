@@ -112,8 +112,10 @@ void perlin_noise(float* map, int width, int height,
         for (int c = 0; c < width; c++) {
             int adr = r*width + c;
             map[adr] = glob_scale * scale * (map[adr] - min_value);
-            if (map[adr] < 24.0f) {
+            if (map[adr] < 20.0f) {
                 map[adr] = 0.0f;
+            } else {
+                map[adr] -= 20.0f;
             }
         }
     }
