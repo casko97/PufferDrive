@@ -130,7 +130,7 @@ void init(Terraform* env) {
     env->map = calloc(env->size*env->size, sizeof(float));
     env->target_map = calloc(env->size*env->size, sizeof(float));
     for (int i = 0; i < env->size*env->size; i++) {
-        env->target_map[i] = 10.0f;
+        env->target_map[i] = 2.5f;
     }
     env->dozers = calloc(env->num_agents, sizeof(Dozer));
     perlin_noise(env->orig_map, env->size, env->size, 1.0/128.0, 8, 0, 0, MAX_DIRT_HEIGHT);
@@ -204,7 +204,7 @@ void c_step(Terraform* env) {
             return_added += env->returns[i] ;
         }
         float reward_per_tick = return_added / env->tick / env->num_agents;
-        if (reward_per_tick < 0.05) {
+        if (reward_per_tick < 0.01) {
             add_log(env);
             c_reset(env);
         }
@@ -224,8 +224,8 @@ void c_step(Terraform* env) {
         float cx = dozer->x + BUCKET_OFFSET*cosf(dozer->heading);
         float cy = dozer->y + BUCKET_OFFSET*sinf(dozer->heading);
 
-        for (int x = cx - 5; x < cx + 5; x++) {
-            for (int y = cy - 5; y < cy + 5; y++) {
+        for (int x = cx - 3; x < cx + 3; x++) {
+            for (int y = cy - 3; y < cy + 3; y++) {
                 if (x < 0 || x >= env->size || y < 0 || y >= env->size) {
                     continue;
                 }
@@ -243,8 +243,8 @@ void c_step(Terraform* env) {
                     }
 
                     // Load up to 1 unit of dirt
-                    float load_amount = 10.0f;
-                    if (map_height <= 10.0f) {
+                    float load_amount = 2.5f;
+                    if (map_height <= 2.5f) {
                         load_amount = map_height;
                     }
 
@@ -262,7 +262,7 @@ void c_step(Terraform* env) {
                         continue;
                     }
 
-                    float unload_amount = 10.0f;
+                    float unload_amount = 2.5f;
                     if (dozer->load < unload_amount) {
                         unload_amount = dozer->load;
                     }
@@ -278,7 +278,7 @@ void c_step(Terraform* env) {
 
                 // Reward for terraforming towards target map
                 float delta_post = fabsf(map_height - target_height);
-                float reward = 0.001*(delta_pre - delta_post);
+                float reward = 0.01*(delta_pre - delta_post);
                 env->rewards[i] += reward;
                 env->returns[i] += reward;
             }
