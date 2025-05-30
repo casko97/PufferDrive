@@ -13,6 +13,11 @@ game:
   max_steps: 1000
   recursive_map_builder: true
 
+  diversity_bonus:
+    enabled: false
+    similarity_coef: 100  # Coefficient for within-group similarity
+    diversity_coef: 100
+
   agent:
     default_item_max: 50
     freeze_duration: 0
