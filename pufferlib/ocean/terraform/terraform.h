@@ -120,7 +120,7 @@ void perlin_noise(float* map, int width, int height,
 }
 
 int map_idx(Terraform* env, float x, float y) {
-    return (int)(y*env->size) + (int)x;
+    return env->size*(int)y + (int)x;
 }
 
 void init(Terraform* env) {
@@ -316,16 +316,8 @@ void c_step(Terraform* env) {
 
         int idx = map_idx(env, dozer->x, dozer->y);
         float dozer_height = env->map[idx];
-        float dozer_x = dozer->x;
-        float dozer_y = dozer->y;
         float dst_x = dozer->x + dozer->v*cosf(dozer->heading);
         float dst_y = dozer->y + dozer->v*sinf(dozer->heading);
-
-        if (i == 0) {
-            if (dozer_height != 0.0f) {
-                printf("dozer height: %f\n", dozer_height);
-            }
-        }
 
         for (int x=(int)(dst_x-3.0f); x<=(int)(dst_x+3.0f); x++) {
             for (int y=(int)(dst_y-3.0f); y<=(int)(dst_y+3.0f); y++) {
@@ -342,9 +334,6 @@ void c_step(Terraform* env) {
 
         dozer->x += dozer->v*cosf(dozer->heading);
         dozer->y += dozer->v*sinf(dozer->heading);
-        if (i == 0 && env->map[map_idx(env, dozer->x, dozer->y)] != 0.0f) {
-            printf("dozer hit terrain: %f\n", dozer->x);
-        }
 
         if (dozer->x < 0) {
             dozer->x = 0;
@@ -516,12 +505,14 @@ struct Client {
 Client* make_client(Terraform* env) {
     Client* client = (Client*)calloc(1, sizeof(Client));
     InitWindow(1080, 720, "PufferLib Terraform");
-    SetTargetFPS(30);
+    SetTargetFPS(600);
     Camera3D camera = { 0 };
                                                        //
     camera.up = (Vector3){ 0.0f, 1.0f, 0.0f };          // Camera up vector (rotation towards target)
     camera.fovy = 45.0f;                                // Camera field-of-view Y
     camera.projection = CAMERA_PERSPECTIVE;             // Camera projection type
+    camera.position = (Vector3){ 3*env->size/4, env->size, 3*env->size/4};
+    camera.target = (Vector3){ env->size/2, 0, env->size/2-1};
     client->camera = camera;
 
     client->shader = LoadShader(
@@ -560,8 +551,8 @@ void c_render(Terraform* env) {
     float x = env->dozers[0].x;
     float y = env->dozers[0].y;
     float z = env->dozers[0].z;
-    camera->position = (Vector3){ x+30, z+100.0f, y+30 };
-    camera->target = (Vector3){ x, 0, y-1};
+    //camera->position = (Vector3){ x+30, z+100.0f, y+30 };
+    //camera->target = (Vector3){ x, 0, y-1};
  
     if (env->tick % 10 == 0) {
         update_heightmap_mesh(env->client->mesh, env->map, (Vector3){env->size, 1, env->size});
@@ -617,9 +608,9 @@ void c_render(Terraform* env) {
         }
     }
     EndMode3D();
-    DrawText(TextFormat("Dozer x: %f", x), 10, 150, 20, PUFF_WHITE);
-    DrawText(TextFormat("Dozer y: %f", y), 10, 170, 20, PUFF_WHITE);
-    DrawText(TextFormat("Dozer z: %f", z), 10, 190, 20, PUFF_WHITE);
+    //DrawText(TextFormat("Dozer x: %f", x), 10, 150, 20, PUFF_WHITE);
+    //DrawText(TextFormat("Dozer y: %f", y), 10, 170, 20, PUFF_WHITE);
+    //DrawText(TextFormat("Dozer z: %f", z), 10, 190, 20, PUFF_WHITE);
     DrawFPS(10, 10);
     EndDrawing();
 }
