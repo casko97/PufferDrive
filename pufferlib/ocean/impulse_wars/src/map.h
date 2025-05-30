@@ -343,7 +343,6 @@ mapEntry siegeMap = {
 
 // clang-format on
 
-#ifndef AUTOPXD
 mapEntry *maps[] = {
     &boringMap,
     &prototypeArenaMap,
@@ -355,9 +354,8 @@ mapEntry *maps[] = {
     &foamPitMap,
     &siegeMap,
 };
-#endif
 
-void resetMap(env *e) {
+void resetMap(iwEnv *e) {
     // if sudden death walls were placed, remove them
     if (e->suddenDeathWallsPlaced) {
         e->suddenDeathWallsPlaced = false;
@@ -414,7 +412,7 @@ void resetMap(env *e) {
     }
 }
 
-void setupMap(env *e, const uint8_t mapIdx) {
+void setupMap(iwEnv *e, const uint8_t mapIdx) {
     // reset the map if we're switching to the same map
     if (e->mapIdx == mapIdx) {
         resetMap(e);
@@ -498,7 +496,7 @@ void setupMap(env *e, const uint8_t mapIdx) {
     }
 }
 
-void computeMapBoundsAndQuadrants(env *e, mapEntry *map) {
+void computeMapBoundsAndQuadrants(iwEnv *e, mapEntry *map) {
     mapBounds bounds = {.min = {.x = FLT_MAX, .y = FLT_MAX}, .max = {.x = FLT_MIN, .y = FLT_MIN}};
     for (size_t i = 0; i < cc_array_size(e->walls); i++) {
         const wallEntity *wall = safe_array_get_at(e->walls, i);
@@ -550,8 +548,7 @@ void computeMapBoundsAndQuadrants(env *e, mapEntry *map) {
     };
 }
 
-#ifndef AUTOPXD
-bool posValidDroneSpawnPoint(const env *e, const b2Vec2 pos) {
+bool posValidDroneSpawnPoint(const iwEnv *e, const b2Vec2 pos) {
     const b2QueryFilter filter = {
         .categoryBits = DRONE_SHAPE,
         .maskBits = WALL_SHAPE | FLOATING_WALL_SHAPE,
@@ -569,9 +566,8 @@ bool posValidDroneSpawnPoint(const env *e, const b2Vec2 pos) {
 
     return true;
 }
-#endif
 
-void initMaps(env *e) {
+void initMaps(iwEnv *e) {
     for (uint8_t i = 0; i < NUM_MAPS; i++) {
         setupMap(e, i);
         mapEntry *map = maps[i];
@@ -637,7 +633,7 @@ void destroyMaps() {
     }
 }
 
-void placeRandFloatingWall(env *e, const enum entityType wallType) {
+void placeRandFloatingWall(iwEnv *e, const enum entityType wallType) {
     b2Vec2 pos;
     if (!findOpenPos(e, FLOATING_WALL_SHAPE, &pos, -1)) {
         ERROR("failed to find open position for floating wall");
@@ -646,7 +642,7 @@ void placeRandFloatingWall(env *e, const enum entityType wallType) {
     createWall(e, pos, FLOATING_WALL_THICKNESS, FLOATING_WALL_THICKNESS, cellIdx, wallType, true);
 }
 
-void placeRandFloatingWalls(env *e, const int mapIdx) {
+void placeRandFloatingWalls(iwEnv *e, const int mapIdx) {
     for (int i = 0; i < maps[mapIdx]->randFloatingStandardWalls; i++) {
         placeRandFloatingWall(e, STANDARD_WALL_ENTITY);
     }
