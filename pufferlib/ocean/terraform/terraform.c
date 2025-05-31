@@ -1,7 +1,7 @@
 #include "terraform.h"
 
 void allocate(Terraform* env) {
-    env->observations = (unsigned char*)calloc(env->num_agents*125, sizeof(unsigned char));
+    env->observations = (unsigned char*)calloc(env->num_agents*246, sizeof(unsigned char));
     env->actions = (int*)calloc(3*env->num_agents, sizeof(int));
     env->rewards = (float*)calloc(env->num_agents, sizeof(float));
     env->terminals = (unsigned char*)calloc(env->num_agents, sizeof(unsigned char));
@@ -70,8 +70,8 @@ void handle_camera_controls(Client* client) {
         };
 
         // Scale the direction vector by the zoom factor
-        direction.x = zoom_factor;
-        direction.y= zoom_factor;
+        direction.x *= zoom_factor;
+        direction.y *= zoom_factor;
         direction.z *= zoom_factor;
 
         // Update the camera position based on the scaled direction
@@ -100,12 +100,12 @@ void demo() {
         env.actions[0] = 2;
         env.actions[1] = 2;
         env.actions[2] = 0;
-        if (IsKeyDown(KEY_UP)    || IsKeyDown(KEY_W)) env.actions[0] = 4;
-        if (IsKeyDown(KEY_DOWN)  || IsKeyDown(KEY_S)) env.actions[0] = 0;
+        if (IsKeyDown(KEY_UP)    || IsKeyPressed(KEY_W)) env.actions[0] = 4;
+        if (IsKeyDown(KEY_DOWN)  || IsKeyPressed(KEY_S)) env.actions[0] = 0;
         if (IsKeyDown(KEY_LEFT)  || IsKeyDown(KEY_A)) env.actions[1] = 4;
         if (IsKeyDown(KEY_RIGHT) || IsKeyDown(KEY_D)) env.actions[1] = 0;
         if (IsKeyDown(KEY_SPACE)) env.actions[2] = 1;
-        if (IsKeyDown(KEY_LEFT_SHIFT)) {
+        if (IsKeyPressed(KEY_LEFT_SHIFT)) {
             env.actions[2] = 2;
         }
         DrawText(TextFormat("Bucket load: %f", env.dozers[0].load), 10, 80, 20, WHITE);
