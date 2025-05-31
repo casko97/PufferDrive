@@ -204,7 +204,7 @@ void c_step(Terraform* env) {
             return_added += env->returns[i] ;
         }
         float reward_per_tick = return_added / env->tick / env->num_agents;
-        if (reward_per_tick < 0.01) {
+        if (reward_per_tick < 0.025) {
             add_log(env);
             c_reset(env);
         }
