@@ -676,7 +676,9 @@ class Profile:
         if epoch % self.frequency != 0:
             return
 
-        torch.cuda.synchronize()
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+
         tick = time.time()
         if len(self.stack) != 0 and not nest:
             self.pop(tick)
@@ -691,7 +693,9 @@ class Profile:
         profile['delta'] += delta
 
     def end(self):
-        torch.cuda.synchronize()
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+
         end = time.time()
         for i in range(len(self.stack)):
             self.pop(end)
@@ -1076,7 +1080,7 @@ def load_config(env_name):
             p.read([puffer_default_config, path])
             if env_name in p['base']['env_name'].split(): break
         else:
-            raise pufferlib.APIUsageError('No config for env_name {}'.format(args.env))
+            raise pufferlib.APIUsageError('No config for env_name {}'.format(env_name))
 
     # Dynamic help menu from config
     for section in p.sections():
