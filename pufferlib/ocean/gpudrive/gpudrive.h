@@ -783,17 +783,6 @@ void collision_check(GPUDrive* env, int agent_idx) {
 int valid_active_agent(GPUDrive* env, int agent_idx){
     float cos_heading = cosf(env->entities[agent_idx].traj_heading[0]);
     float sin_heading = sinf(env->entities[agent_idx].traj_heading[0]);
-    int last_valid = 0;
-    for(int i = 0; i < TRAJECTORY_LENGTH; i++){
-        if(env->entities[agent_idx].traj_valid[i]){
-            last_valid = i;
-        }
-        else {
-            break;
-        }
-    }
-    env->entities[agent_idx].goal_position_x = env->entities[agent_idx].traj_x[last_valid];
-    env->entities[agent_idx].goal_position_y = env->entities[agent_idx].traj_y[last_valid];
     float goal_x = env->entities[agent_idx].goal_position_x - env->entities[agent_idx].traj_x[0];
     float goal_y = env->entities[agent_idx].goal_position_y - env->entities[agent_idx].traj_y[0];
     // Rotate to ego vehicle's frame
@@ -1216,7 +1205,7 @@ void c_step(GPUDrive* env){
     // Move statix experts
     for (int i = 0; i < env->expert_static_car_count; i++) {
         int expert_idx = env->expert_static_car_indices[i];
-        if(env->entities[expert_idx].x == -10000) continue;
+        if(env->entities[expert_idx].x == -10000.0f) continue;
         move_expert(env, env->actions, expert_idx);
     }
     // Process actions for all active agents
@@ -1228,7 +1217,6 @@ void c_step(GPUDrive* env){
         //move_dynamics(env, i, agent_idx);
         move_expert(env, env->actions, agent_idx);
     }
-
     for(int i = 0; i < env->active_agent_count; i++){
         int agent_idx = env->active_agent_indices[i];
         env->entities[agent_idx].collision_state = 0;
