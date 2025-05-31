@@ -206,7 +206,7 @@ void c_step(Terraform* env) {
         float reward_per_tick = return_added / env->tick / env->num_agents;
         if (reward_per_tick < 0.025) {
             add_log(env);
-            //c_reset(env);
+            c_reset(env);
         }
     }
 
@@ -318,9 +318,21 @@ void c_step(Terraform* env) {
 
         int idx = map_idx(env, dozer->x, dozer->y);
         float dozer_height = env->map[idx];
+
+        // Raytrace collision
+        for (int d=0; d<dozer->v; d++) {
+            float dst_x = dozer->x + d*cosf(dozer->heading);
+            float dst_y = dozer->y + d*sinf(dozer->heading);
+            int dst_idx = map_idx(env, dst_x, dst_y);
+            float dst_height = env->map[dst_idx];
+            if (fabsf(dozer_height - dst_height) > DOZER_STEP_HEIGHT) {
+                dozer->v = 0;
+            }
+        }
+
+        // Box collision around final destination
         float dst_x = dozer->x + dozer->v*cosf(dozer->heading);
         float dst_y = dozer->y + dozer->v*sinf(dozer->heading);
-
         for (int x=(int)(dst_x-3.0f); x<=(int)(dst_x+3.0f); x++) {
             for (int y=(int)(dst_y-3.0f); y<=(int)(dst_y+3.0f); y++) {
                 if (x < 0 || x >= env->size-1 || y < 0 || y >= env->size-1) {
