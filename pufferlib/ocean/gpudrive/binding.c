@@ -158,8 +158,8 @@ static int my_init(Env* env, PyObject* args, PyObject* kwargs) {
 
     char map_file[100];
     sprintf(map_file, "resources/gpudrive/binaries/map_%03d.bin", map_id);
-    env->map_name = map_file;
     env->num_agents = max_agents;
+    env->map_name = strdup(map_file);
     init(env);
     return 0;
 }

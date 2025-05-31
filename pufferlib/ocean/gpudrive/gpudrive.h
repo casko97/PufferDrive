@@ -783,6 +783,17 @@ void collision_check(GPUDrive* env, int agent_idx) {
 int valid_active_agent(GPUDrive* env, int agent_idx){
     float cos_heading = cosf(env->entities[agent_idx].traj_heading[0]);
     float sin_heading = sinf(env->entities[agent_idx].traj_heading[0]);
+    int last_valid = 0;
+    for(int i = 0; i < TRAJECTORY_LENGTH; i++){
+        if(env->entities[agent_idx].traj_valid[i]){
+            last_valid = i;
+        }
+        else {
+            break;
+        }
+    }
+    env->entities[agent_idx].goal_position_x = env->entities[agent_idx].traj_x[last_valid];
+    env->entities[agent_idx].goal_position_y = env->entities[agent_idx].traj_y[last_valid];
     float goal_x = env->entities[agent_idx].goal_position_x - env->entities[agent_idx].traj_x[0];
     float goal_y = env->entities[agent_idx].goal_position_y - env->entities[agent_idx].traj_y[0];
     // Rotate to ego vehicle's frame
@@ -854,7 +865,10 @@ void set_active_agents(GPUDrive* env){
     for(int i=0;i<env->expert_static_car_count;i++){
         env->expert_static_car_indices[i] = expert_static_car_indices[i];
     }
-    
+    return;
+}
+
+void remove_bad_trajectories(GPUDrive* env){
     set_start_position(env);
     int legal_agent_count = 0;
     int legal_trajectories[env->active_agent_count];
@@ -863,17 +877,17 @@ void set_active_agents(GPUDrive* env){
     // move experts through trajectories to check for collisions and remove as illegal agents
     for(int t = 0; t < TRAJECTORY_LENGTH; t++){
         for(int i = 0; i < env->active_agent_count; i++){
-            int agent_idx = active_agent_indices[i];
+            int agent_idx = env->active_agent_indices[i];
             move_expert(env, env->actions, agent_idx);
         }
         for(int i = 0; i < env->expert_static_car_count; i++){
-            int expert_idx = expert_static_car_indices[i];
+            int expert_idx = env->expert_static_car_indices[i];
             if(env->entities[expert_idx].x == -10000) continue;
             move_expert(env, env->actions, expert_idx);
         }
         // check collisions
         for(int i = 0; i < env->active_agent_count; i++){
-            int agent_idx = active_agent_indices[i];
+            int agent_idx = env->active_agent_indices[i];
             env->entities[agent_idx].collision_state = 0;
             collision_check(env, agent_idx);
             if(env->entities[agent_idx].collision_state > 0){
@@ -885,7 +899,7 @@ void set_active_agents(GPUDrive* env){
 
     for(int i = 0; i< env->active_agent_count; i++){
         if(collided_agents[i] == 0){
-            legal_trajectories[legal_agent_count] = active_agent_indices[i];
+            legal_trajectories[legal_agent_count] = env->active_agent_indices[i];
             legal_agent_count++;
         } 
     }
@@ -898,7 +912,7 @@ void set_active_agents(GPUDrive* env){
     // add illegal actives to statics 
     for(int i = 0; i < env->active_agent_count; i++){
         if(collided_agents[i]){
-            int agent_idx = active_agent_indices[i];
+            int agent_idx = env->active_agent_indices[i];
             temp_static_indices[env->static_car_count] = agent_idx;
             env->static_car_count++;
             temp_expert_indices[env->expert_static_car_count] = agent_idx;
@@ -910,25 +924,8 @@ void set_active_agents(GPUDrive* env){
     free(env->static_car_indices);
     free(env->active_agent_indices);
     free(env->expert_static_car_indices);
-    env->active_agent_count = legal_agent_count;
-    env->active_agent_indices = (int*)malloc(legal_agent_count * sizeof(int));
-    env->static_car_indices = (int*)malloc(env->static_car_count * sizeof(int));
-    env->expert_static_car_indices = (int*)malloc(env->expert_static_car_count * sizeof(int));
-    for(int i=0;i<legal_agent_count;i++){
-        env->active_agent_indices[i] = legal_trajectories[i];
-    };
-    for(int i=0;i<env->static_car_count;i++){
-        env->static_car_indices[i] = temp_static_indices[i];
-        
-    }
-    for(int i=0;i<env->expert_static_car_count;i++){
-        env->expert_static_car_indices[i] = temp_expert_indices[i];
-    }
     env->timestep = 0;
-    return;
 }
-
-
 void init(GPUDrive* env){
     env->human_agent_idx = 0;
     env->timestep = 0;
