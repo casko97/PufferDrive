@@ -206,7 +206,7 @@ void c_step(Terraform* env) {
         float reward_per_tick = return_added / env->tick / env->num_agents;
         if (reward_per_tick < 0.025) {
             add_log(env);
-            c_reset(env);
+            //c_reset(env);
         }
     }
 
@@ -507,7 +507,7 @@ struct Client {
 Client* make_client(Terraform* env) {
     Client* client = (Client*)calloc(1, sizeof(Client));
     InitWindow(1080, 720, "PufferLib Terraform");
-    SetTargetFPS(600);
+    SetTargetFPS(30);
     Camera3D camera = { 0 };
                                                        //
     camera.up = (Vector3){ 0.0f, 1.0f, 0.0f };          // Camera up vector (rotation towards target)
