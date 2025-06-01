@@ -1084,6 +1084,7 @@ def load_config(env_name):
 
     # Dynamic help menu from config
     def auto_type(value):
+        """Type inference for numeric args that use 'auto' as a default value"""
         if value == 'auto': return value
         try:
             return int(value)
