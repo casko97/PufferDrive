@@ -75,6 +75,8 @@ typedef struct Terraform {
     float* map;
     float* target_map;
     int num_agents;
+    int reset_frequency;
+    float reward_scale;
 } Terraform;
 
 float randf(float min, float max) {
@@ -201,7 +203,7 @@ void c_step(Terraform* env) {
     //printf("step\n"); 
     //printf("tick: %d\n", env->tick);
     env->tick += 1;
-    if (rand() % 8192 == 0) {
+    if (rand() % env->reset_frequency == 0) {
         add_log(env);
         c_reset(env);
     }
@@ -274,7 +276,7 @@ void c_step(Terraform* env) {
 
                 // Reward for terraforming towards target map
                 float delta_post = fabsf(map_height - target_height);
-                float reward = 0.01*(delta_pre - delta_post);
+                float reward = env->reward_scale*(delta_pre - delta_post);
                 env->rewards[i] += reward;
                 env->returns[i] += reward;
             }
