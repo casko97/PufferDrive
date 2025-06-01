@@ -1086,10 +1086,8 @@ def load_config(env_name):
     def auto_type(value):
         """Type inference for numeric args that use 'auto' as a default value"""
         if value == 'auto': return value
-        try:
-            return int(value)
-        except:
-            return float(value)
+        if value.isnumeric(): return int(value)
+        return float(value)
 
     for section in p.sections():
         for key in p[section]:
