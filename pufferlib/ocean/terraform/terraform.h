@@ -201,7 +201,7 @@ void c_step(Terraform* env) {
     //printf("step\n"); 
     //printf("tick: %d\n", env->tick);
     env->tick += 1;
-    if (rand() % 8192 == 0) {
+    if (rand() % 5550 == 0) {
         add_log(env);
         c_reset(env);
     }
