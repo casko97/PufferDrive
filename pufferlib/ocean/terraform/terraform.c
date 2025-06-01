@@ -20,7 +20,7 @@ void demo() {
     //Weights* weights = load_weights("resources/pong_weights.bin", 133764);
     //LinearLSTM* net = make_linearlstm(weights, 1, 8, 3);
 
-    Terraform env = {.size = 512, .num_agents = 8};
+    Terraform env = {.size = 512, .num_agents = 8, .reset_frequency = 8192};
     allocate(&env);
 
     c_reset(&env);
@@ -53,8 +53,10 @@ void demo() {
 
 void test_performance(int timeout) {
     Terraform env = {
-        .size = 128,
+        .size = 512,
         .num_agents = 8,
+        .reset_frequency = 8192,
+        .reward_scale = 0.01f
     };
     allocate(&env);
     c_reset(&env);
@@ -73,13 +75,13 @@ void test_performance(int timeout) {
     }
 
     int end = time(NULL);
-    float sps = num_steps / (end - start);
+    float sps = num_steps * env.num_agents / (end - start);
     printf("Test Environment SPS: %f\n", sps);
     free_allocated(&env);
 }
 
 int main() {
-    //test_performance(10);
-    demo();
+    test_performance(10);
+    //demo();
 }
 

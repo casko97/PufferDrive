@@ -153,6 +153,7 @@ void init(Terraform* env) {
     env->agent_grid_deltas = calloc(env->size*env->size*2.0, sizeof(float));
     env->agent_grid_deltas_changed = calloc(env->num_agents, sizeof(int));
     env->delta_progress = 0.0f;
+    calculate_total_delta(env);
 }
 
 void free_initialized(Terraform* env) {
@@ -186,7 +187,10 @@ void compute_all_observations(Terraform* env) {
                 }
                 int idx = (x_offset + x)*env->size + (y_offset + y);
                 env->observations[obs_idx++] = env->map[idx] * (255.0f/MAX_DIRT_HEIGHT);
-                env->observations[obs_idx++] = 127.0 + (env->target_map[idx] - env->map[idx]) * (128.0f/MAX_DIRT_HEIGHT);
+                float diff = env->target_map[idx] - env->map[idx];
+                env->observations[obs_idx++] = (1 +  (diff/(MAX_DIRT_HEIGHT*2.0f))) * 127.5f;
+                //env->observations[obs_idx++] = (unsigned char)(127.0 + (env->target_map[idx] - env->map[idx]) * (128.0f/MAX_DIRT_HEIGHT));
+
             }
         }
         Dozer* dozer = &env->dozers[i];
