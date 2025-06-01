@@ -1084,8 +1084,10 @@ def load_config(env_name):
 
     def auto_type(value):
         if value == 'auto': return value
-        if '.' in value: return float(value)
-        return int(value)
+        try:
+            return int(value)
+        except:
+            return float(value)
 
     # Dynamic help menu from config
     for section in p.sections():
