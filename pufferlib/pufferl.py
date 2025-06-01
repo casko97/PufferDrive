@@ -1082,6 +1082,7 @@ def load_config(env_name):
         else:
             raise pufferlib.APIUsageError('No config for env_name {}'.format(env_name))
 
+    # Dynamic help menu from config
     def auto_type(value):
         if value == 'auto': return value
         try:
@@ -1089,7 +1090,6 @@ def load_config(env_name):
         except:
             return float(value)
 
-    # Dynamic help menu from config
     for section in p.sections():
         for key in p[section]:
             try:
