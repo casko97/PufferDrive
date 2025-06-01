@@ -1083,8 +1083,8 @@ def load_config(env_name):
             raise pufferlib.APIUsageError('No config for env_name {}'.format(env_name))
 
     def auto_type(value):
-        if value == "auto": return value
-        if "." in value: return float(value)
+        if value == 'auto': return value
+        if '.' in value: return float(value)
         return int(value)
 
     # Dynamic help menu from config
@@ -1099,7 +1099,7 @@ def load_config(env_name):
             parser.add_argument(
                 fmt.replace('_', '-'),
                 default=value,
-                type=auto_type if value == "auto" else type(value)
+                type=auto_type if value == 'auto' else type(value)
             )
 
     parser.add_argument('-h', '--help', default=argparse.SUPPRESS,
