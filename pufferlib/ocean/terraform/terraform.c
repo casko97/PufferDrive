@@ -16,71 +16,6 @@ void free_allocated(Terraform* env) {
     free_initialized(env);
 }
 
-void handle_camera_controls(Client* client) {
-    static Vector2 prev_mouse_pos = {0};
-    static bool is_dragging = false;
-    float camera_move_speed = 0.5f;
-
-    // Handle mouse drag for camera movement
-    if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
-        prev_mouse_pos = GetMousePosition();
-        is_dragging = true;
-    }
-
-    if (IsMouseButtonReleased(MOUSE_BUTTON_LEFT)) {
-        is_dragging = false;
-    }
-
-    if (is_dragging) {
-        Vector2 current_mouse_pos = GetMousePosition();
-        Vector2 delta = {
-            -(current_mouse_pos.x - prev_mouse_pos.x) * camera_move_speed,
-            (current_mouse_pos.y - prev_mouse_pos.y) * camera_move_speed
-        };
-
-        // Apply 45-degree rotation to the movement
-        // For a -45 degree rotation (clockwise)
-        float cos45 = -0.7071f;  // cos(-45°)
-        float sin45 = 0.7071f; // sin(-45°)
-        Vector2 rotated_delta = {
-            delta.x * cos45 - delta.y * sin45,
-            delta.x * sin45 + delta.y * cos45
-        };
-
-        // Update camera position (only X and Y)
-        client->camera.position.z += rotated_delta.x;
-        client->camera.position.x += rotated_delta.y;
-
-        // Update camera target (only X and Y)
-        client->camera.target.z += rotated_delta.x;
-        client->camera.target.x += rotated_delta.y;
-
-        prev_mouse_pos = current_mouse_pos;
-    }
-
-    // Handle mouse wheel for zoom
-    float wheel = GetMouseWheelMove();
-    if (wheel != 0) {
-        float zoom_factor = 1.0f - (wheel * 0.1f);
-        // Calculate the current direction vector from target to position
-        Vector3 direction = {
-            client->camera.position.x - client->camera.target.x,
-            client->camera.position.y - client->camera.target.y,
-            client->camera.position.z - client->camera.target.z
-        };
-
-        // Scale the direction vector by the zoom factor
-        direction.x *= zoom_factor;
-        direction.y *= zoom_factor;
-        direction.z *= zoom_factor;
-
-        // Update the camera position based on the scaled direction
-        client->camera.position.x = client->camera.target.x + direction.x;
-        client->camera.position.y = client->camera.target.y + direction.y;
-        client->camera.position.z = client->camera.target.z + direction.z;
-    }
-}
-
 void demo() {
     //Weights* weights = load_weights("resources/pong_weights.bin", 133764);
     //LinearLSTM* net = make_linearlstm(weights, 1, 8, 3);
@@ -91,7 +26,6 @@ void demo() {
     c_reset(&env);
     c_render(&env);
     while (!WindowShouldClose()) {
-        handle_camera_controls(env.client);
         for (int i = 0; i < env.num_agents; i++) {
             env.actions[3*i] = 4; //rand() % 5;
             env.actions[3*i + 1] = rand() % 5;
@@ -108,7 +42,6 @@ void demo() {
         if (IsKeyPressed(KEY_LEFT_SHIFT)) {
             env.actions[2] = 2;
         }
-        DrawText(TextFormat("Bucket load: %f", env.dozers[0].load), 10, 80, 20, WHITE);
 
         c_step(&env);
         c_render(&env);
