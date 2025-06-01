@@ -861,3 +861,87 @@ class GPUDrive(nn.Module):
         action = torch.split(action, self.atn_dim, dim=1)
         value = self.value_fn(flat_hidden)
         return action, value
+
+class Tetris(nn.Module):
+    def __init__(
+        self, 
+        env, 
+        cnn_channels=16,
+        input_size=256,
+        hidden_size=128,
+        **kwargs
+    ):
+        super().__init__()
+        self.input_size = input_size
+        self.hidden_size = hidden_size
+        self.n_cols = env.n_cols
+        self.cnn_channels =  cnn_channels   
+        self.n_rows = env.n_rows
+        self.scalar_input_size = (1 + 7 * (env.deck_size - 1) + 4 * self.n_cols)
+        self.is_continuous = isinstance(env.single_action_space, pufferlib.spaces.Box)
+        self.action_vec = tuple(env.single_action_space.nvec)
+
+        self.conv_tetromino = nn.Sequential(
+            pufferlib.pytorch.layer_init(nn.Conv2d(4, cnn_channels, 3, stride=1, padding = 1)),
+            nn.ReLU(),
+            pufferlib.pytorch.layer_init(nn.Conv2d(cnn_channels, cnn_channels, 3, stride=1, padding = 1)),
+            nn.ReLU(),
+            nn.Flatten(1,-1),
+            pufferlib.pytorch.layer_init(nn.Linear(4 * 4 * cnn_channels, input_size)),
+            nn.ReLU(),
+        )
+
+        self.conv_grid = nn.Sequential(
+            pufferlib.pytorch.layer_init(nn.Conv2d(1, cnn_channels, 3, stride=1, padding = 1)),
+            nn.ReLU(),
+            pufferlib.pytorch.layer_init(nn.Conv2d(cnn_channels, cnn_channels, 3, stride=1, padding = 1)),
+            nn.ReLU(),
+            nn.Flatten(1,-1),
+            pufferlib.pytorch.layer_init(nn.Linear(cnn_channels * (self.n_rows * self.n_cols), input_size)),
+            nn.ReLU()
+        )
+
+        self.fc_scalar = nn.Sequential(
+            pufferlib.pytorch.layer_init(nn.Linear(self.scalar_input_size, input_size)),
+            nn.ReLU(),
+        )
+
+        self.proj = nn.Sequential(
+            pufferlib.pytorch.layer_init(nn.Linear(3 * input_size, hidden_size)),
+            nn.ReLU(),
+        )
+
+        self.actor = nn.Sequential(
+            pufferlib.pytorch.layer_init(nn.Linear(hidden_size, self.n_cols + 4), std = 0.01),
+        )
+
+        self.value_fn = nn.Sequential(
+            pufferlib.pytorch.layer_init(nn.Linear(hidden_size, 1)),
+            nn.ReLU(),
+        )
+
+    def forward(self, observations, state=None):
+        hidden = self.encode_observations(observations) 
+        actions, value = self.decode_actions(hidden)
+        return actions, value
+
+    def forward_train(self, x, state=None):
+        return self.forward(x, state)
+
+    def encode_observations(self, observations, state=None):
+        tetromino_info = observations[:,0:(4*16)].view(-1, 4, 4, 4).float()  # (4,4,4)
+        grid_info = observations[:,(4*16):(4*16 + self.n_cols * self.n_rows)].view(-1, 1, self.n_rows, self.n_cols).float() # (n_rows,n_cols)
+        scalar_info = observations[:, (4*16 + self.n_cols * self.n_rows):(4*16 + self.n_cols * self.n_rows + self.scalar_input_size)].float()
+
+        grid_feat = self.conv_grid(grid_info) # (I,)
+        tetromino_feat = self.conv_tetromino(tetromino_info) # (I,)
+        scalar_feat = self.fc_scalar(scalar_info) # (I,)
+
+        features = torch.cat([tetromino_feat, grid_feat,scalar_feat], dim = -1) # (3 * I)
+        features = self.proj(features) # (H,)
+        return features
+    
+    def decode_actions(self, hidden):
+        action = self.actor(hidden).split(self.action_vec, dim=1) # (4, n_cols)
+        value = self.value_fn(hidden) # (1)
+        return action, value

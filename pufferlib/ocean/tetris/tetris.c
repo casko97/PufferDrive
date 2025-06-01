@@ -13,6 +13,7 @@ void demo() {
     env.client = make_client(&env);
 
     c_reset(&env);
+    SetTargetFPS(60);
 
     while (!WindowShouldClose()) {
         env.actions[0] = 0.0;
@@ -28,7 +29,8 @@ void demo() {
             }
         }
         if (IsKeyPressed(KEY_ENTER)){
-            env.actions[0] = env.client->preview_target_col + env.n_cols * env.client->preview_target_rotation;
+            env.actions[0] = env.client->preview_target_rotation;
+            env.actions[1] = env.client->preview_target_col;
             c_step(&env);
             env.client->preview_target_rotation = 0;
             env.client->preview_target_col = env.n_cols/2;
