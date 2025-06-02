@@ -47,7 +47,6 @@ class Terraform(pufferlib.PufferEnv):
 
     def step(self, actions):
         self.tick += 1
-
         self.actions[:] = actions
         binding.vec_step(self.c_envs)
 

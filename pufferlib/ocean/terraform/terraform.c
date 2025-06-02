@@ -49,6 +49,7 @@ void demo() {
     //free_linearlstm(net);
     //free(weights);
     free_allocated(&env);
+    close_client(env.client);
 }
 
 void test_performance(int timeout) {
@@ -81,7 +82,7 @@ void test_performance(int timeout) {
 }
 
 int main() {
-    test_performance(10);
-    //demo();
+    //test_performance(10);
+    demo();
 }
 

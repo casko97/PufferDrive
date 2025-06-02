@@ -703,9 +703,9 @@ int check_aabb_collision(Entity* car1, Entity* car2) {
     return 1;  // Collision
 }
 
-void collision_check(GPUDrive* env, int agent_idx) {
+int collision_check(GPUDrive* env, int agent_idx) {
     Entity* agent = &env->entities[agent_idx];
-    if(agent->x == -10000.0f ) return;
+    if(agent->x == -10000.0f ) return -1;
     float half_length = agent->length/2.0f;
     float half_width = agent->width/2.0f;
     float cos_heading = cosf(agent->heading);
@@ -767,7 +767,8 @@ void collision_check(GPUDrive* env, int agent_idx) {
     }
 
     // spawn immunity for collisions with other cars who just respawned
-    if(car_collided_with_index ==-1) return;
+    if(collided == OFFROAD) return -1;
+    if(car_collided_with_index ==-1) return -1;
 
     int respawned_collided_with_car = env->entities[car_collided_with_index].respawn_timestep != -1;
     int exceeded_spawn_immunity_collided_with_car = (env->timestep - env->entities[car_collided_with_index].respawn_timestep) >= env->spawn_immunity_timer;
@@ -778,6 +779,8 @@ void collision_check(GPUDrive* env, int agent_idx) {
     } else if (respawned_collided_with_car && within_spawn_immunity_collided_with_car) {
         agent->collision_state = 0;
     }
+
+    return car_collided_with_index;
 }
 
 int valid_active_agent(GPUDrive* env, int agent_idx){
@@ -862,6 +865,7 @@ void remove_bad_trajectories(GPUDrive* env){
     int legal_agent_count = 0;
     int legal_trajectories[env->active_agent_count];
     int collided_agents[env->active_agent_count];
+    int collided_with_indices[env->active_agent_count];
     memset(collided_agents, 0, env->active_agent_count * sizeof(int));
     // move experts through trajectories to check for collisions and remove as illegal agents
     for(int t = 0; t < TRAJECTORY_LENGTH; t++){
@@ -878,41 +882,24 @@ void remove_bad_trajectories(GPUDrive* env){
         for(int i = 0; i < env->active_agent_count; i++){
             int agent_idx = env->active_agent_indices[i];
             env->entities[agent_idx].collision_state = 0;
-            collision_check(env, agent_idx);
+            int collided_with_index = collision_check(env, agent_idx);
             if(env->entities[agent_idx].collision_state > 0){
                 collided_agents[i] = 1;
+                collided_with_indices[i] = collided_with_index;
             }
         }
         env->timestep++;
     }
 
     for(int i = 0; i< env->active_agent_count; i++){
-        if(collided_agents[i] == 0){
-            legal_trajectories[legal_agent_count] = env->active_agent_indices[i];
-            legal_agent_count++;
-        } 
-    }
-    // copy temp
-    int deleted_actives = env->active_agent_count - legal_agent_count;
-    int temp_static_indices[env->static_car_count + deleted_actives];
-    int temp_expert_indices[env->expert_static_car_count + deleted_actives];
-    memcpy(temp_static_indices, env->static_car_indices, env->static_car_count * sizeof(int));
-    memcpy(temp_expert_indices, env->expert_static_car_indices, env->expert_static_car_count * sizeof(int));
-    // add illegal actives to statics 
-    for(int i = 0; i < env->active_agent_count; i++){
-        if(collided_agents[i]){
-            int agent_idx = env->active_agent_indices[i];
-            temp_static_indices[env->static_car_count] = agent_idx;
-            env->static_car_count++;
-            temp_expert_indices[env->expert_static_car_count] = agent_idx;
-            env->expert_static_car_count++;
-            env->entities[agent_idx].active_agent = 0;
-            env->entities[agent_idx].mark_as_expert = 1;
+        if(collided_with_indices[i] == -1) continue;
+        for(int j = 0; j < env->static_car_count; j++){
+            int static_car_idx = env->static_car_indices[j];
+            if(static_car_idx != collided_with_indices[i]) continue;
+            env->entities[static_car_idx].traj_x[0] = -10000;
+            env->entities[static_car_idx].traj_y[0] = -10000;
         }
     }
-    free(env->static_car_indices);
-    free(env->active_agent_indices);
-    free(env->expert_static_car_indices);
     env->timestep = 0;
 }
 void init(GPUDrive* env){
@@ -928,6 +915,7 @@ void init(GPUDrive* env){
     env->neighbor_cache_indices = (int*)calloc((env->grid_cols*env->grid_rows) + 1, sizeof(int));
     cache_neighbor_offsets(env);
     set_active_agents(env);
+    remove_bad_trajectories(env);
     set_start_position(env);
     env->logs = (Log*)calloc(env->active_agent_count, sizeof(Log));
 }
@@ -1243,6 +1231,7 @@ void c_step(GPUDrive* env){
             if(!env->entities[agent_idx].reached_goal_this_episode){
                 env->entities[agent_idx].collided_before_goal = 1;
             }
+            printf("agent %d collided\n", agent_idx);
         }
 
         float distance_to_goal = relative_distance_2d(

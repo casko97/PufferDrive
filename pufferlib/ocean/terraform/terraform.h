@@ -34,7 +34,7 @@ const unsigned char TARGET = 2;
 #define BUCKET_WIDTH 2.5f
 #define BUCKET_LENGTH 0.8f
 #define BUCKET_HEIGHT 1.0f
-#define SCOOP_SIZE 1
+#define SCOOP_SIZE 2
 #define VISION 5
 #define OBSERVATION_SIZE (2*VISION + 1)
 #define TOTAL_OBS (OBSERVATION_SIZE*OBSERVATION_SIZE + 4)
@@ -142,15 +142,15 @@ void calculate_total_delta(Terraform* env) {
         target_volume += env->target_map[i];
     }
     
-    // If target volume is greater than original volume, we need to scale down the target
-    if (target_volume > original_volume) {
-        float scale_factor = target_volume / original_volume;
-        for (int i = 0; i < env->size * env->size; i++) {
+    float scale_factor = target_volume / original_volume;
+    for (int i = 0; i < env->size * env->size; i++) {
+        if(env->orig_map[i] * scale_factor > MAX_DIRT_HEIGHT) {
+            env->orig_map[i] = MAX_DIRT_HEIGHT;
+        } else {
             env->orig_map[i] *= scale_factor;
         }
     }
-    
-    // Now calculate initial delta with the adjusted target
+
     for (int i = 0; i < env->size * env->size; i++) {
         float delta = fabsf(env->orig_map[i] - env->target_map[i]);
         env->initial_total_delta += delta;
@@ -163,14 +163,22 @@ void init(Terraform* env) {
     env->orig_map = calloc(env->size*env->size, sizeof(float));
     env->map = calloc(env->size*env->size, sizeof(float));
     env->target_map = calloc(env->size*env->size, sizeof(float));
-    for (int i = 0; i < env->size*env->size; i++) {
-       env->target_map[i] = 1.0f;
-    }
+    // for (int i = 0; i < env->size*env->size; i++) {
+    //    env->target_map[i] = 2.0f;
+    // }
     env->dozers = calloc(env->num_agents, sizeof(Dozer));
-    perlin_noise(env->orig_map, env->size, env->size, 1.0/(env->size / 4.0), 8, 0, 0, MAX_DIRT_HEIGHT+55);
-    // perlin_noise(env->target_map, env->size, env->size, 1.0/(env->size / 4.0), 8, env->size, env->size, MAX_DIRT_HEIGHT+55);
+    perlin_noise(env->orig_map, env->size, env->size, 1.0/(env->size / 4.0), 8, 0, 0, MAX_DIRT_HEIGHT+64);
+    perlin_noise(env->target_map, env->size, env->size, 1.0/(env->size / 4.0), 8, env->size, env->size, MAX_DIRT_HEIGHT+55);
     env->returns = calloc(env->num_agents, sizeof(float));
     calculate_total_delta(env);
+    // float total_volume = 0.0f;
+    // float target_volume = 0.0f;
+    // for (int i = 0; i < env->size*env->size; i++) {
+    //     total_volume += env->orig_map[i];
+    //     target_volume += env->target_map[i];
+    // }
+    // printf("total_volume: %f, target_volume: %f\n", total_volume, target_volume);
+
 }
 
 void free_initialized(Terraform* env) {
@@ -183,8 +191,8 @@ void free_initialized(Terraform* env) {
 
 void add_log(Terraform* env) {
     for (int i = 0; i < env->num_agents; i++) {
-        env->log.perf = env->delta_progress;
-        env->log.score = env->delta_progress;
+        env->log.perf += env->delta_progress;
+        env->log.score += env->delta_progress;
         env->log.episode_length += env->tick;
         env->log.episode_return += env->returns[i];
         env->log.n++;
@@ -193,31 +201,35 @@ void add_log(Terraform* env) {
 
 void compute_all_observations(Terraform* env) {
     int dialate = 4;
-    int obs_idx = 0;
+    int max_obs = 246;
+    unsigned char (*observations)[max_obs] = (unsigned char(*)[max_obs])env->observations; 
+
     for (int i = 0; i < env->num_agents; i++) {
+        int obs_idx = 0;
+        unsigned char* obs = &observations[i][obs_idx];
         int x_offset = env->dozers[i].x - dialate*VISION;
         int y_offset = env->dozers[i].y - dialate*VISION;
         for (int x = 0; x < 2*dialate*VISION + 1; x+=dialate) {
             for (int y = 0; y < 2*dialate*VISION + 1; y+=dialate) {
                 if(x_offset + x < 0 || x_offset + x >= env->size || y_offset + y < 0 || y_offset + y >= env->size) {
-                    env->observations[obs_idx++] = 0;
-                    env->observations[obs_idx++] = 0;
+                    obs[obs_idx++] = 0;
+                    obs[obs_idx++] = 0;
                     continue;
                 }
                 int idx = (x_offset + x)*env->size + (y_offset + y);
-                env->observations[obs_idx++] = env->map[idx] * (255.0f/MAX_DIRT_HEIGHT);
+                obs[obs_idx++] = env->map[idx] * (255.0f/MAX_DIRT_HEIGHT);
                 float diff = env->target_map[idx] - env->map[idx];
-                env->observations[obs_idx++] = (1 +  (diff/(MAX_DIRT_HEIGHT*2.0f))) * 127.5f;
+                obs[obs_idx++] = (unsigned char)((1 +  (diff/(MAX_DIRT_HEIGHT*2.0f))) * 127.5f);
                 //env->observations[obs_idx++] = (unsigned char)(127.0 + (env->target_map[idx] - env->map[idx]) * (128.0f/MAX_DIRT_HEIGHT));
 
             }
         }
         Dozer* dozer = &env->dozers[i];
-        env->observations[obs_idx++] = (255.0f*dozer->x)/env->size;
-        env->observations[obs_idx++] = (255.0f*dozer->y)/env->size;
-        env->observations[obs_idx++] = 20.0f*(dozer->v + DOZER_MAX_V);
+        obs[obs_idx++] = (255.0f*dozer->x)/env->size;
+        obs[obs_idx++] = (255.0f*dozer->y)/env->size;
+        obs[obs_idx++] = 20.0f*(dozer->v + DOZER_MAX_V);
         // This is -5?
-        env->observations[obs_idx++] = 20.0f*(dozer->heading + 2*PI);
+        obs[obs_idx++] = 20.0f*(dozer->heading + 2*PI);
     }
 }
 
@@ -591,7 +603,7 @@ Client* make_client(Terraform* env) {
     Client* client = (Client*)calloc(1, sizeof(Client));
     InitWindow(1080, 720, "PufferLib Terraform");
     SetConfigFlags(FLAG_MSAA_4X_HINT);
-    SetTargetFPS(30);
+    SetTargetFPS(300);
     Camera3D camera = { 0 };
                                                        //
     camera.up = (Vector3){ 0.0f, 1.0f, 0.0f };          // Camera up vector (rotation towards target)
@@ -638,7 +650,10 @@ Client* make_client(Terraform* env) {
 void close_client(Client* client) {
     CloseWindow();
     free(client->mesh);
+    free(client->shader_terrain_data);
+    free(client->target_mesh);
     free(client);
+    
 }
 
 void handle_camera_controls(Client* client) {
@@ -806,6 +821,7 @@ void c_render(Terraform* env) {
     //DrawText(TextFormat("Dozer x: %f", x), 10, 150, 20, PUFF_WHITE);
     DrawText(TextFormat("score: %f", env->delta_progress), 10, 170, 20, PUFF_WHITE);
     DrawText(TextFormat("load: %f", env->dozers[0].load), 10, 190, 20, PUFF_WHITE);
+    DrawText(TextFormat("Timestep: %d", env->tick), 10, 210, 20, PUFF_WHITE);
     //DrawText(TextFormat("Dozer z: %f", z), 10, 190, 20, PUFF_WHITE);
     DrawFPS(10, 10);
     EndDrawing();

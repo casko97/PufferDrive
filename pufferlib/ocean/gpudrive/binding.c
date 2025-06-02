@@ -83,12 +83,6 @@ static PyObject* my_shared(PyObject* self, PyObject* args, PyObject* kwargs) {
         GPUDrive* env = calloc(1, sizeof(GPUDrive));
         sprintf(map_file, "resources/gpudrive/binaries/map_%03d.bin", map_id);
         env->entities = load_map_binary(map_file, env);
-        set_means(env);
-        init_grid_map(env);
-        env->vision_range = 21;
-        init_neighbor_offsets(env);
-        env->neighbor_cache_indices = (int*)calloc((env->grid_cols*env->grid_rows) + 1, sizeof(int));
-        cache_neighbor_offsets(env);
         set_active_agents(env);
         // Store map_id
         PyObject* map_id_obj = PyLong_FromLong(map_id);
@@ -105,11 +99,6 @@ static PyObject* my_shared(PyObject* self, PyObject* args, PyObject* kwargs) {
         free(env->active_agent_indices);
         free(env->static_car_indices);
         free(env->expert_static_car_indices);
-        free(env->map_corners);
-        free(env->grid_cells);
-        free(env->neighbor_offsets);
-        free(env->neighbor_cache_entities);
-        free(env->neighbor_cache_indices);
         free(env);
     }
     if(total_agent_count >= num_agents){
