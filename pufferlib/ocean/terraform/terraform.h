@@ -134,10 +134,28 @@ int map_idx(Terraform* env, float x, float y) {
 void calculate_total_delta(Terraform* env) {
     env->initial_total_delta = 0.0f;
     env->current_total_delta = 0.0f;
+    // Calculate total volume in original and target maps
+    float original_volume = 0.0f;
+    float target_volume = 0.0f;
+    for (int i = 0; i < env->size * env->size; i++) {
+        original_volume += env->orig_map[i];
+        target_volume += env->target_map[i];
+    }
+    
+    // If target volume is greater than original volume, we need to scale down the target
+    if (target_volume > original_volume) {
+        float scale_factor = target_volume / original_volume;
+        for (int i = 0; i < env->size * env->size; i++) {
+            env->orig_map[i] *= scale_factor;
+        }
+    }
+    
+    // Now calculate initial delta with the adjusted target
     for (int i = 0; i < env->size * env->size; i++) {
         float delta = fabsf(env->orig_map[i] - env->target_map[i]);
         env->initial_total_delta += delta;
     }
+    
     env->current_total_delta = env->initial_total_delta;
     env->delta_progress = 0.0f;
 }
@@ -146,11 +164,11 @@ void init(Terraform* env) {
     env->map = calloc(env->size*env->size, sizeof(float));
     env->target_map = calloc(env->size*env->size, sizeof(float));
     for (int i = 0; i < env->size*env->size; i++) {
-       env->target_map[i] = 2.0f;
+       env->target_map[i] = 1.0f;
     }
     env->dozers = calloc(env->num_agents, sizeof(Dozer));
     perlin_noise(env->orig_map, env->size, env->size, 1.0/(env->size / 4.0), 8, 0, 0, MAX_DIRT_HEIGHT+55);
-    // perlin_noise(env->target_map, env->size, env->size, 1.0/(env->size / 4.0), 8, env->size, env->size, MAX_DIRT_HEIGHT+64);
+    // perlin_noise(env->target_map, env->size, env->size, 1.0/(env->size / 4.0), 8, env->size, env->size, MAX_DIRT_HEIGHT+55);
     env->returns = calloc(env->num_agents, sizeof(float));
     calculate_total_delta(env);
 }
