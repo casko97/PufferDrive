@@ -866,8 +866,8 @@ class Tetris(nn.Module):
     def __init__(
         self, 
         env, 
-        cnn_channels=16,
-        input_size=256,
+        cnn_channels=64,
+        input_size=128,
         hidden_size=128,
         **kwargs
     ):
@@ -879,15 +879,12 @@ class Tetris(nn.Module):
         self.n_rows = env.n_rows
         self.scalar_input_size = (1 + 7 * (env.deck_size - 1) + 4 * self.n_cols)
         self.is_continuous = isinstance(env.single_action_space, pufferlib.spaces.Box)
-        self.action_vec = tuple(env.single_action_space.nvec)
 
         self.conv_tetromino = nn.Sequential(
-            pufferlib.pytorch.layer_init(nn.Conv2d(4, cnn_channels, 3, stride=1, padding = 1)),
-            nn.ReLU(),
-            pufferlib.pytorch.layer_init(nn.Conv2d(cnn_channels, cnn_channels, 3, stride=1, padding = 1)),
+            pufferlib.pytorch.layer_init(nn.Conv2d(4, 4, 3, stride=1, padding = 1)),
             nn.ReLU(),
             nn.Flatten(1,-1),
-            pufferlib.pytorch.layer_init(nn.Linear(4 * 4 * cnn_channels, input_size)),
+            pufferlib.pytorch.layer_init(nn.Linear(4 * 4 * 4, input_size)),
             nn.ReLU(),
         )
 
@@ -912,7 +909,7 @@ class Tetris(nn.Module):
         )
 
         self.actor = nn.Sequential(
-            pufferlib.pytorch.layer_init(nn.Linear(hidden_size, self.n_cols + 4), std = 0.01),
+            pufferlib.pytorch.layer_init(nn.Linear(hidden_size, self.n_cols * 4), std = 0.01),
         )
 
         self.value_fn = nn.Sequential(
@@ -923,7 +920,7 @@ class Tetris(nn.Module):
     def forward(self, observations, state=None):
         hidden = self.encode_observations(observations) 
         actions, value = self.decode_actions(hidden)
-        return actions, value
+        return self.mask_actions_logits(actions, observations), value
 
     def forward_train(self, x, state=None):
         return self.forward(x, state)
@@ -942,6 +939,11 @@ class Tetris(nn.Module):
         return features
     
     def decode_actions(self, hidden):
-        action = self.actor(hidden).split(self.action_vec, dim=1) # (4, n_cols)
+        action = self.actor(hidden) # (4 * n_cols)
         value = self.value_fn(hidden) # (1)
         return action, value
+    
+    def mask_actions_logits(self, action_logits, observations):
+        action_mask = (observations[:, -(4*self.n_cols):] > -1).float()
+        masked_action_logits = action_logits + (1 - action_mask) * -1e8
+        return masked_action_logits

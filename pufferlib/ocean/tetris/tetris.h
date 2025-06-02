@@ -11,15 +11,16 @@
 
 #define HALF_LINEWIDTH 1
 #define SQUARE_SIZE 32
-#define MAX_STEPS 1000
+#define MAX_STEPS 400
 
 const int REWARDS[5] = {0, 40, 100, 300, 1200};
-const int REWARD_INVALID_ACTION = -0;
+const int REWARD_INVALID_ACTION = -100;
 
 typedef struct Log {
     float perf;
     float score;
     float episode_return;
+    float avg_combo;
     float episode_length;
     float lines_deleted;
     float n;
@@ -58,6 +59,7 @@ typedef struct Tetris {
     int score;
     int ep_return;
     int lines_deleted;
+    int combos;
 } Tetris;
 
 void init(Tetris* env) {
@@ -96,6 +98,7 @@ void add_log(Tetris* env) {
     env->log.score += env->score;
     env->log.perf += env->score;
     env->log.lines_deleted += env->lines_deleted;
+    env->log.avg_combo += env->combos > 0 ? ((float)env->lines_deleted) / ((float)env->combos) : 1.0f;
     env->log.n += 1;
 }
 
@@ -275,6 +278,7 @@ void c_reset(Tetris* env) {
     env->ep_return = 0;
     env->step = 0;
     env->lines_deleted = 0;
+    env->combos = 0;
     restore_grid(env);
     initialize_deck(env);
     compute_action_mask(env, env->current_tetromino);
@@ -283,7 +287,7 @@ void c_reset(Tetris* env) {
 
 bool is_game_done(Tetris* env){
     for (int i = 0; i < NUM_ROTATIONS * env->n_cols; i++) {
-        if (env->action_mask[i]) {
+        if (env->action_mask[i] > -1) {
             return false;
         }
     }
@@ -294,19 +298,23 @@ void c_step(Tetris* env) {
     env->terminals[0] = 0;
     env->rewards[0] = 0.0;
     env->step += 1;
-    int rotation = ((int) env->actions[0]);
-    int col = ((int) env->actions[1]);
+    int action = env->actions[0];
+    int col = action%env->n_cols;
+    int rotation = action/env->n_cols;
     int lines_deleted = 0;
     int landing_row;
 
-    if (env->action_mask[rotation * env->n_cols + col] > -1) {
+    if (env->action_mask[action] > -1) {
         landing_row = get_landing_row(env, env->current_tetromino, col, rotation);
         lines_deleted = place_tetromino(env, env->current_tetromino, col, rotation, landing_row);
     
-        env->score += REWARDS[lines_deleted];
-        env->lines_deleted += lines_deleted;
-        env->rewards[0] = REWARDS[lines_deleted];
-        env->ep_return+= REWARDS[lines_deleted];
+        if (lines_deleted>0){
+            env->score += REWARDS[lines_deleted];
+            env->lines_deleted += lines_deleted;
+            env->combos += 1;
+            env->rewards[0] = REWARDS[lines_deleted];
+            env->ep_return+= REWARDS[lines_deleted];
+        }
 
         update_deck(env);
         compute_action_mask(env, env->current_tetromino);

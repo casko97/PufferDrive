@@ -7,7 +7,7 @@ void demo() {
     Tetris env = {
         .n_rows = 10,
         .n_cols = 10,
-        .deck_size=6,
+        .deck_size=2,
     };
     allocate(&env);
     env.client = make_client(&env);
@@ -29,11 +29,11 @@ void demo() {
             }
         }
         if (IsKeyPressed(KEY_ENTER)){
-            env.actions[0] = env.client->preview_target_rotation;
-            env.actions[1] = env.client->preview_target_col;
+            env.actions[0] = env.client->preview_target_rotation * env.n_cols + env.client->preview_target_col;
             c_step(&env);
             env.client->preview_target_rotation = 0;
             env.client->preview_target_col = env.n_cols/2;
+            TraceLog(LOG_INFO, "reward: %f", env.rewards[0]);
         }
         c_render(&env);
     }

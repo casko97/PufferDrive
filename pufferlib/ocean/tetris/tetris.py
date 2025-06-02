@@ -17,7 +17,7 @@ class Tetris(pufferlib.PufferEnv):
     ):
         self.single_observation_space = gymnasium.spaces.Box(low=0, high=1,
             shape=(4 * 16 + n_cols*n_rows + 7 * (deck_size-1) + 1 + 4*n_cols ,), dtype=np.float32)
-        self.single_action_space = gymnasium.spaces.MultiDiscrete([4, n_cols])
+        self.single_action_space = gymnasium.spaces.Discrete(4 * n_cols)
         self.render_mode = render_mode
         self.log_interval = log_interval
         self.num_agents = num_envs
@@ -65,7 +65,7 @@ class Tetris(pufferlib.PufferEnv):
         binding.vec_close(self.c_envs)
 
 if __name__ == '__main__':
-    TIME = 5
+    TIME = 10
     num_envs = 512
     env = Tetris(num_envs=num_envs)
     actions = [
@@ -79,9 +79,12 @@ if __name__ == '__main__':
     
     while time.time() - start < TIME:
         action = actions[tick%1000]
+        action_mask = obs[0][-(4*env.n_cols):]
+        print("col", action[0]%10, "rot", action[0]//10,action_mask[action[0]] )
+        env.render()
+        time.sleep(1)
         obs, _, _, _, _ = env.step(action)
         tick += 1
-        # env.render()
 
     print('SPS:', (tick*num_envs) / (time.time() - start))
 
