@@ -30,7 +30,7 @@ const unsigned char TARGET = 2;
 #define BUCKET_MAX_HEIGHT 1.0f
 #define DOZER_MAX_V 2.0f
 #define DOZER_CAPACITY 200.0f
-#define BUCKET_OFFSET 5.0f
+#define BUCKET_OFFSET 2.0f
 #define BUCKET_WIDTH 2.5f
 #define BUCKET_LENGTH 0.8f
 #define BUCKET_HEIGHT 1.0f
@@ -81,6 +81,7 @@ typedef struct Terraform {
     float initial_total_delta;  
     float current_total_delta; 
     float delta_progress;
+    int* stuck_count;
 } Terraform;
 
 float randf(float min, float max) {
@@ -163,14 +164,15 @@ void init(Terraform* env) {
     env->orig_map = calloc(env->size*env->size, sizeof(float));
     env->map = calloc(env->size*env->size, sizeof(float));
     env->target_map = calloc(env->size*env->size, sizeof(float));
-    // for (int i = 0; i < env->size*env->size; i++) {
-    //    env->target_map[i] = 2.0f;
-    // }
+    for (int i = 0; i < env->size*env->size; i++) {
+       env->target_map[i] = 1;
+    }
     env->dozers = calloc(env->num_agents, sizeof(Dozer));
     perlin_noise(env->orig_map, env->size, env->size, 1.0/(env->size / 4.0), 8, 0, 0, MAX_DIRT_HEIGHT+64);
-    perlin_noise(env->target_map, env->size, env->size, 1.0/(env->size / 4.0), 8, env->size, env->size, MAX_DIRT_HEIGHT+55);
+    // perlin_noise(env->target_map, env->size, env->size, 1.0/(env->size / 4.0), 8, env->size, env->size, MAX_DIRT_HEIGHT+55);
     env->returns = calloc(env->num_agents, sizeof(float));
     calculate_total_delta(env);
+    env->stuck_count = calloc(env->num_agents, sizeof(int));
     // float total_volume = 0.0f;
     // float target_volume = 0.0f;
     // for (int i = 0; i < env->size*env->size; i++) {
@@ -240,6 +242,7 @@ void c_reset(Terraform* env) {
     env->tick = 0;
     env->current_total_delta = env->initial_total_delta;
     env->delta_progress = 0.0f;
+    memset(env->stuck_count, 0, env->num_agents*sizeof(int));
     for (int i = 0; i < env->num_agents; i++) {
         env->dozers[i] = (Dozer){0};
         do {
@@ -250,6 +253,73 @@ void c_reset(Terraform* env) {
     compute_all_observations(env);
 }
 
+void scoop_dirt(Terraform* env, int x, int y, int bucket_atn, int agent_idx, Dozer* dozer){
+    if (x < 0 || x >= env->size || y < 0 || y >= env->size) {
+        return;
+    }
+    int scoop_idx = map_idx(env, x, y);
+    float map_height = env->map[scoop_idx];
+    float target_height = env->target_map[scoop_idx];
+    float delta_pre = fabsf(map_height - target_height);
+
+    if (bucket_atn == 0) {
+        return;
+    } else if (bucket_atn == 1) { // Load
+        // Can't load while backing up
+        if (dozer->v < 0) {
+            return;
+        }
+
+        if (dozer->load >= DOZER_CAPACITY) {
+            return;
+        }
+        // Load up to 1 unit of dirt
+        float load_amount = 1.0f;
+        if (map_height <= 1.0f) {
+            load_amount = map_height;
+        }                    
+
+        // Don't overload the bucket
+        if (dozer->load + load_amount > DOZER_CAPACITY) {
+            load_amount = DOZER_CAPACITY - dozer->load;
+        }
+
+        dozer->load += load_amount;
+        env->map[scoop_idx] -= load_amount;
+        map_height -= load_amount;
+    } else if (bucket_atn == 2) { // Unload
+        // Can't unload while moving forward
+        if (dozer->v > 0) {
+            return;
+        }
+
+        if (dozer->load == 0) {
+            return;
+        }
+
+        float unload_amount = 1.0f;
+        if (dozer->load < unload_amount) {
+            unload_amount = dozer->load;
+        }
+
+        if (map_height + unload_amount > MAX_DIRT_HEIGHT) {
+            unload_amount = MAX_DIRT_HEIGHT - map_height;
+        }
+
+        dozer->load -= unload_amount;
+        env->map[scoop_idx] += unload_amount;
+        map_height += unload_amount;
+    }
+
+    // Reward for terraforming towards target map
+    float delta_post = fabsf(map_height - target_height);
+    env->current_total_delta += (delta_post - delta_pre);
+    float reward = env->reward_scale*(delta_pre - delta_post);
+    env->rewards[agent_idx] += reward;
+    env->returns[agent_idx] += reward;
+    
+}
+
 void c_step(Terraform* env) {
     //printf("step\n"); 
     //printf("tick: %d\n", env->tick);
@@ -257,6 +327,9 @@ void c_step(Terraform* env) {
 
     if (env->tick % env->reset_frequency == 0) {
         add_log(env);
+    }
+
+    if (env->delta_progress > 0.9f){
         c_reset(env);
     }
 
@@ -272,73 +345,13 @@ void c_step(Terraform* env) {
 
         float cx = dozer->x + BUCKET_OFFSET*cosf(dozer->heading);
         float cy = dozer->y + BUCKET_OFFSET*sinf(dozer->heading);
-        for (int x = cx - SCOOP_SIZE; x < cx + SCOOP_SIZE; x++) {
-            for (int y = cy - SCOOP_SIZE; y < cy + SCOOP_SIZE; y++) {
-                if (x < 0 || x >= env->size || y < 0 || y >= env->size) {
-                    continue;
-                }
-                int idx = map_idx(env, x, y);
-                float map_height = env->map[idx];
-                float target_height = env->target_map[idx];
-                float delta_pre = fabsf(map_height - target_height);
-
-                if (bucket_atn == 0) {
-                    continue;
-                } else if (bucket_atn == 1) { // Load
-                    // Can't load while backing up
-                    if (dozer->v < 0) {
-                        continue;
-                    }
-
-                    if (dozer->load >= DOZER_CAPACITY) {
-                        continue;
-                    }
-                    // Load up to 1 unit of dirt
-                    float load_amount = 1.0f;
-                    if (map_height <= 1.0f) {
-                        load_amount = map_height;
-                    }                    
-
-                    // Don't overload the bucket
-                    if (dozer->load + load_amount > DOZER_CAPACITY) {
-                        load_amount = DOZER_CAPACITY - dozer->load;
-                    }
-
-                    dozer->load += load_amount;
-                    env->map[idx] -= load_amount;
-                    map_height -= load_amount;
-                } else if (bucket_atn == 2) { // Unload
-                    // Can't unload while moving forward
-                    if (dozer->v > 0) {
-                        continue;
-                    }
-
-                    if (dozer->load == 0) {
-                        continue;
-                    }
-
-                    float unload_amount = 1.0f;
-                    if (dozer->load < unload_amount) {
-                        unload_amount = dozer->load;
-                    }
-
-                    if (map_height + unload_amount > MAX_DIRT_HEIGHT) {
-                        unload_amount = MAX_DIRT_HEIGHT - map_height;
-                    }
-
-                    dozer->load -= unload_amount;
-                    env->map[idx] += unload_amount;
-                    map_height += unload_amount;
-                }
-
-                // Reward for terraforming towards target map
-                float delta_post = fabsf(map_height - target_height);
-                env->current_total_delta += (delta_post - delta_pre);
-                float reward = env->reward_scale*(delta_pre - delta_post);
-                env->rewards[i] += reward;
-                env->returns[i] += reward;
-            }
-        }
+        scoop_dirt(env, cx, cy, bucket_atn, i, dozer);
+        // for (int x = cx - SCOOP_SIZE; x < cx + SCOOP_SIZE; x++) {
+        //     for (int y = cy - SCOOP_SIZE; y < cy + SCOOP_SIZE; y++) {
+        
+        
+        //     }
+        // }
 
         // Bucket AABB
         /*
@@ -402,6 +415,7 @@ void c_step(Terraform* env) {
                 float dst_height = env->map[dst_idx];
                 if (fabsf(dozer_height - dst_height) > DOZER_STEP_HEIGHT) {
                     dozer->v = 0;
+                    env->stuck_count[i]++;
                 }
             }
         }
@@ -423,10 +437,11 @@ void c_step(Terraform* env) {
         }
 
         // Teleportitis
-        if (rand() % 512 == 0) {
+        if (env->stuck_count[i] > 100) {
              do {
                  env->dozers[i].x = rand() % env->size;
                  env->dozers[i].y = rand() % env->size;
+                 env->stuck_count[i] = 0;
              } while (env->map[map_idx(env, env->dozers[i].x, env->dozers[i].y)] != 0.0f);
         }
  
@@ -603,7 +618,7 @@ Client* make_client(Terraform* env) {
     Client* client = (Client*)calloc(1, sizeof(Client));
     InitWindow(1080, 720, "PufferLib Terraform");
     SetConfigFlags(FLAG_MSAA_4X_HINT);
-    SetTargetFPS(300);
+    SetTargetFPS(60);
     Camera3D camera = { 0 };
                                                        //
     camera.up = (Vector3){ 0.0f, 1.0f, 0.0f };          // Camera up vector (rotation towards target)
@@ -787,6 +802,11 @@ void c_render(Terraform* env) {
     EndShaderMode();
     EndBlendMode();
     rlEnableDepthTest();   // Add this line
+    for(int i = 0; i < env->size; i++){
+        // draw grid lines
+        DrawLine3D((Vector3){i, 0, 0}, (Vector3){i, 0, env->size}, RED);
+        DrawLine3D((Vector3){0, 0, i}, (Vector3){env->size, 0, i}, RED);
+    }
     for (int i = 0; i < env->num_agents; i++) {
         Dozer* dozer = &env->dozers[i];
         int x = (int)dozer->x;
@@ -799,9 +819,9 @@ void c_render(Terraform* env) {
         rlPushMatrix();
         rlTranslatef(dozer->x, y, dozer->y);
         rlRotatef(-90.f - dozer->heading*RAD2DEG, 0, 1, 0);
-        if(i ==0 ){
-            DrawCube((Vector3){0,50,0}, 10.0f, 10.0f, 10.0f, RED);
-        }
+        // if(i ==0 ){
+        //     DrawCube((Vector3){0,50,0}, 10.0f, 10.0f, 10.0f, RED);
+        // }
         DrawModel(client->dozer, (Vector3){0, 0, 0}, 0.25f, WHITE);
         rlPopMatrix();
         // DrawCube((Vector3){dozer->x, y, dozer->y}, 1.0f, 1.0f, 1.0f, PUFF_WHITE);
