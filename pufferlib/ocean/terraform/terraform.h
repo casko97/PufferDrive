@@ -177,6 +177,8 @@ void free_initialized(Terraform* env) {
     free(env->orig_map);
     free(env->map);
     free(env->dozers);
+    free(env->returns);
+    free(env->target_map);
 }
 
 void add_log(Terraform* env) {
@@ -241,7 +243,7 @@ void c_step(Terraform* env) {
     //printf("tick: %d\n", env->tick);
     env->tick += 1;
 
-    if (rand() % env->reset_frequency == 0) {
+    if (env->tick % env->reset_frequency == 0) {
         add_log(env);
         c_reset(env);
     }
@@ -409,12 +411,12 @@ void c_step(Terraform* env) {
         }
 
         // Teleportitis
-        // if (rand() % 512 == 0) {
-        //     do {
-        //         env->dozers[i].x = rand() % env->size;
-        //         env->dozers[i].y = rand() % env->size;
-        //     } while (env->map[map_idx(env, env->dozers[i].x, env->dozers[i].y)] != 0.0f);
-        // }
+        if (rand() % 512 == 0) {
+             do {
+                 env->dozers[i].x = rand() % env->size;
+                 env->dozers[i].y = rand() % env->size;
+             } while (env->map[map_idx(env, env->dozers[i].x, env->dozers[i].y)] != 0.0f);
+        }
  
     }
     // compute delta progress
@@ -430,6 +432,7 @@ void c_step(Terraform* env) {
 }
 
 void c_close(Terraform* env) {
+    free_initialized(env);
 }
 
 Mesh* create_heightmap_mesh(float* heightMap, Vector3 size) {
