@@ -1109,6 +1109,12 @@ def load_config(env_name):
             raise pufferlib.APIUsageError('No config for env_name {}'.format(env_name))
 
     # Dynamic help menu from config
+    def auto_type(value):
+        """Type inference for numeric args that use 'auto' as a default value"""
+        if value == 'auto': return value
+        if value.isnumeric(): return int(value)
+        return float(value)
+
     for section in p.sections():
         for key in p[section]:
             try:
@@ -1117,7 +1123,11 @@ def load_config(env_name):
                 value = p[section][key]
 
             fmt = f'--{key}' if section == 'base' else f'--{section}.{key}'
-            parser.add_argument(fmt.replace('_', '-'), default=value, type=type(value))
+            parser.add_argument(
+                fmt.replace('_', '-'),
+                default=value,
+                type=auto_type if value == 'auto' else type(value)
+            )
 
     parser.add_argument('-h', '--help', default=argparse.SUPPRESS,
         action='help', help='Show this help message and exit')
