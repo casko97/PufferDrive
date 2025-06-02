@@ -842,9 +842,10 @@ def train(env_name, args=None, vecenv=None, policy=None, logger=None):
         master_port = os.environ.get('MASTER_PORT', '29500')
         local_rank = int(os.environ["LOCAL_RANK"])
         print(f"rank: {local_rank}, MASTER_ADDR={master_addr}, MASTER_PORT={master_port}")
-        torch.distributed.init_process_group(backend='gloo', world_size=world_size)
-        args['train']['device'] = local_rank
         torch.cuda.set_device(local_rank)
+        args['train']['device'] = torch.cuda.current_device()
+        torch.distributed.init_process_group(backend='nccl', world_size=world_size)
+        policy = policy.to(local_rank)
         model = torch.nn.parallel.DistributedDataParallel(
             policy, device_ids=[local_rank], output_device=local_rank
         )
