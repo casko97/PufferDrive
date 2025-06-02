@@ -34,6 +34,7 @@ const unsigned char TARGET = 2;
 #define BUCKET_WIDTH 2.5f
 #define BUCKET_LENGTH 0.8f
 #define BUCKET_HEIGHT 1.0f
+#define SCOOP_SIZE 1
 #define VISION 5
 #define OBSERVATION_SIZE (2*VISION + 1)
 #define TOTAL_OBS (OBSERVATION_SIZE*OBSERVATION_SIZE + 4)
@@ -77,10 +78,9 @@ typedef struct Terraform {
     int num_agents;
     int reset_frequency;
     float reward_scale;
-    float total_delta;
+    float initial_total_delta;  
+    float current_total_delta; 
     float delta_progress;
-    float* agent_grid_deltas;
-    int* agent_grid_deltas_changed;
 } Terraform;
 
 float randf(float min, float max) {
@@ -132,27 +132,26 @@ int map_idx(Terraform* env, float x, float y) {
 }
 
 void calculate_total_delta(Terraform* env) {
-    for(int i = 0; i < env->size*env->size; i++) {
-        float delta = fabsf(env->map[i] - env->target_map[i]);
-        if (delta > 0.1){
-            env->total_delta += 1;
-        }
+    env->initial_total_delta = 0.0f;
+    env->current_total_delta = 0.0f;
+    for (int i = 0; i < env->size * env->size; i++) {
+        float delta = fabsf(env->orig_map[i] - env->target_map[i]);
+        env->initial_total_delta += delta;
     }
+    env->current_total_delta = env->initial_total_delta;
+    env->delta_progress = 0.0f;
 }
 void init(Terraform* env) {
     env->orig_map = calloc(env->size*env->size, sizeof(float));
     env->map = calloc(env->size*env->size, sizeof(float));
     env->target_map = calloc(env->size*env->size, sizeof(float));
-    //for (int i = 0; i < env->size*env->size; i++) {
-    //    env->target_map[i] = 1.0f;
-    // }
+    for (int i = 0; i < env->size*env->size; i++) {
+       env->target_map[i] = 2.0f;
+    }
     env->dozers = calloc(env->num_agents, sizeof(Dozer));
-    perlin_noise(env->orig_map, env->size, env->size, 1.0/128.0, 8, 0, 0, MAX_DIRT_HEIGHT+64);
-    perlin_noise(env->target_map, env->size, env->size, 1.0/128.0, 8, env->size, env->size, MAX_DIRT_HEIGHT+64);
+    perlin_noise(env->orig_map, env->size, env->size, 1.0/(env->size / 4.0), 8, 0, 0, MAX_DIRT_HEIGHT+55);
+    // perlin_noise(env->target_map, env->size, env->size, 1.0/(env->size / 4.0), 8, env->size, env->size, MAX_DIRT_HEIGHT+64);
     env->returns = calloc(env->num_agents, sizeof(float));
-    env->agent_grid_deltas = calloc(env->size*env->size*2.0, sizeof(float));
-    env->agent_grid_deltas_changed = calloc(env->num_agents, sizeof(int));
-    env->delta_progress = 0.0f;
     calculate_total_delta(env);
 }
 
@@ -207,7 +206,7 @@ void c_reset(Terraform* env) {
     memset(env->observations, 0, env->num_agents*246*sizeof(unsigned char));
     memset(env->returns, 0, env->num_agents*sizeof(float));
     env->tick = 0;
-    calculate_total_delta(env);
+    env->current_total_delta = env->initial_total_delta;
     env->delta_progress = 0.0f;
     for (int i = 0; i < env->num_agents; i++) {
         env->dozers[i] = (Dozer){0};
@@ -241,9 +240,8 @@ void c_step(Terraform* env) {
 
         float cx = dozer->x + BUCKET_OFFSET*cosf(dozer->heading);
         float cy = dozer->y + BUCKET_OFFSET*sinf(dozer->heading);
-
-        for (int x = cx - 2; x < cx + 2; x++) {
-            for (int y = cy - 2; y < cy + 2; y++) {
+        for (int x = cx - SCOOP_SIZE; x < cx + SCOOP_SIZE; x++) {
+            for (int y = cy - SCOOP_SIZE; y < cy + SCOOP_SIZE; y++) {
                 if (x < 0 || x >= env->size || y < 0 || y >= env->size) {
                     continue;
                 }
@@ -260,11 +258,14 @@ void c_step(Terraform* env) {
                         continue;
                     }
 
+                    if (dozer->load >= DOZER_CAPACITY) {
+                        continue;
+                    }
                     // Load up to 1 unit of dirt
                     float load_amount = 1.0f;
                     if (map_height <= 1.0f) {
                         load_amount = map_height;
-                    }
+                    }                    
 
                     // Don't overload the bucket
                     if (dozer->load + load_amount > DOZER_CAPACITY) {
@@ -277,6 +278,10 @@ void c_step(Terraform* env) {
                 } else if (bucket_atn == 2) { // Unload
                     // Can't unload while moving forward
                     if (dozer->v > 0) {
+                        continue;
+                    }
+
+                    if (dozer->load == 0) {
                         continue;
                     }
 
@@ -296,19 +301,10 @@ void c_step(Terraform* env) {
 
                 // Reward for terraforming towards target map
                 float delta_post = fabsf(map_height - target_height);
+                env->current_total_delta += (delta_post - delta_pre);
                 float reward = env->reward_scale*(delta_pre - delta_post);
                 env->rewards[i] += reward;
                 env->returns[i] += reward;
-                if(delta_post != 0.0f) {
-                    float percent_progress = 1.0f / (1 + delta_post);
-                    env->agent_grid_deltas[idx*2] = percent_progress;
-                } else {
-                    env->agent_grid_deltas[idx*2] = 1.0f;
-                }
-                env->agent_grid_deltas[idx*2+1] += 1.0f;
-                if (env->agent_grid_deltas[idx*2+1] == 1.0f) {
-                    env->agent_grid_deltas_changed[i] = idx+1;
-                }
             }
         }
 
@@ -395,25 +391,20 @@ void c_step(Terraform* env) {
         }
 
         // Teleportitis
-        if (rand() % 512 == 0) {
-            do {
-                env->dozers[i].x = rand() % env->size;
-                env->dozers[i].y = rand() % env->size;
-            } while (env->map[map_idx(env, env->dozers[i].x, env->dozers[i].y)] != 0.0f);
-        }
+        // if (rand() % 512 == 0) {
+        //     do {
+        //         env->dozers[i].x = rand() % env->size;
+        //         env->dozers[i].y = rand() % env->size;
+        //     } while (env->map[map_idx(env, env->dozers[i].x, env->dozers[i].y)] != 0.0f);
+        // }
  
     }
     // compute delta progress
-    for (int i = 0; i < env->num_agents; i++) {
-        int changed = env->agent_grid_deltas_changed[i];
-        if (changed){
-            int changed_idx = changed-1;
-            float progress = env->agent_grid_deltas[changed_idx*2];
-            env->delta_progress += progress / (env->total_delta);
-            env->agent_grid_deltas_changed[i] = 0;
-            env->agent_grid_deltas[changed_idx*2] = 0;
-            env->agent_grid_deltas[changed_idx*2+1] = 0;
-        }
+    if (env->initial_total_delta > 0) {
+        env->delta_progress = 1.0f - (env->current_total_delta / env->initial_total_delta);
+        env->delta_progress = fmaxf(0.0f, fminf(1.0f, env->delta_progress));
+    } else {
+        env->delta_progress = 1.0f;
     }
     //printf("observations\n");
     compute_all_observations(env);
@@ -579,7 +570,7 @@ Client* make_client(Terraform* env) {
     Client* client = (Client*)calloc(1, sizeof(Client));
     InitWindow(1080, 720, "PufferLib Terraform");
     SetConfigFlags(FLAG_MSAA_4X_HINT);
-    SetTargetFPS(600);
+    SetTargetFPS(30);
     Camera3D camera = { 0 };
                                                        //
     camera.up = (Vector3){ 0.0f, 1.0f, 0.0f };          // Camera up vector (rotation towards target)
@@ -714,7 +705,8 @@ void c_render(Terraform* env) {
     //Camera3D* camera = &client->camera;
     //camera->position = (Vector3){ x+30, z+100.0f, y+30 };
     //camera->target = (Vector3){ x, 0, y-1};
- 
+    rlSetBlendFactorsSeparate(RL_SRC_ALPHA, RL_ONE_MINUS_SRC_ALPHA, RL_ONE, RL_ONE, RL_FUNC_ADD, RL_MAX);
+
     if (env->tick % 10 == 0) {
         update_heightmap_mesh(client->mesh, env->map, (Vector3){env->size, 1, env->size});
         update_heightmap_mesh(client->target_mesh, env->target_map, (Vector3){env->size, 1, env->size});
@@ -751,11 +743,14 @@ void c_render(Terraform* env) {
     BeginShaderMode(client->shader);
     DrawModel(client->model, (Vector3){0, 0, 0}, 1.0f, (Color){156, 50, 20, 255});
     EndShaderMode();
+    rlDisableDepthTest();  // Add this line
 
+    BeginBlendMode(RL_BLEND_CUSTOM_SEPARATE);  // Add this line
     BeginShaderMode(client->target_shader);
     DrawModel(client->target_model, (Vector3){0, 0, 0}, 1.0f, (Color){156, 50, 20, 255});
     EndShaderMode();
-
+    EndBlendMode();
+    rlEnableDepthTest();   // Add this line
     for (int i = 0; i < env->num_agents; i++) {
         Dozer* dozer = &env->dozers[i];
         int x = (int)dozer->x;
@@ -768,6 +763,9 @@ void c_render(Terraform* env) {
         rlPushMatrix();
         rlTranslatef(dozer->x, y, dozer->y);
         rlRotatef(-90.f - dozer->heading*RAD2DEG, 0, 1, 0);
+        if(i ==0 ){
+            DrawCube((Vector3){0,50,0}, 10.0f, 10.0f, 10.0f, RED);
+        }
         DrawModel(client->dozer, (Vector3){0, 0, 0}, 0.25f, WHITE);
         rlPopMatrix();
         // DrawCube((Vector3){dozer->x, y, dozer->y}, 1.0f, 1.0f, 1.0f, PUFF_WHITE);
@@ -785,7 +783,8 @@ void c_render(Terraform* env) {
     }
     EndMode3D();
     //DrawText(TextFormat("Dozer x: %f", x), 10, 150, 20, PUFF_WHITE);
-    //DrawText(TextFormat("Dozer y: %f", y), 10, 170, 20, PUFF_WHITE);
+    DrawText(TextFormat("score: %f", env->delta_progress), 10, 170, 20, PUFF_WHITE);
+    DrawText(TextFormat("load: %f", env->dozers[0].load), 10, 190, 20, PUFF_WHITE);
     //DrawText(TextFormat("Dozer z: %f", z), 10, 190, 20, PUFF_WHITE);
     DrawFPS(10, 10);
     EndDrawing();

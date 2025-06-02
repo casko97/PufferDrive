@@ -20,7 +20,7 @@ void demo() {
     //Weights* weights = load_weights("resources/pong_weights.bin", 133764);
     //LinearLSTM* net = make_linearlstm(weights, 1, 8, 3);
 
-    Terraform env = {.size = 512, .num_agents = 8, .reset_frequency = 8192};
+    Terraform env = {.size = 64, .num_agents = 1, .reset_frequency = 8192};
     allocate(&env);
 
     c_reset(&env);
@@ -34,11 +34,11 @@ void demo() {
         env.actions[0] = 2;
         env.actions[1] = 2;
         env.actions[2] = 0;
-        if (IsKeyDown(KEY_UP)    || IsKeyPressed(KEY_W)) env.actions[0] = 4;
-        if (IsKeyDown(KEY_DOWN)  || IsKeyPressed(KEY_S)) env.actions[0] = 0;
-        if (IsKeyDown(KEY_LEFT)  || IsKeyDown(KEY_A)) env.actions[1] = 4;
-        if (IsKeyDown(KEY_RIGHT) || IsKeyDown(KEY_D)) env.actions[1] = 0;
-        if (IsKeyDown(KEY_SPACE)) env.actions[2] = 1;
+        if (IsKeyPressed(KEY_UP)    || IsKeyPressed(KEY_W)) env.actions[0] = 4;
+        if (IsKeyPressed(KEY_DOWN)  || IsKeyPressed(KEY_S)) env.actions[0] = 0;
+        if (IsKeyDown(KEY_LEFT)  || IsKeyPressed(KEY_A)) env.actions[1] = 4;
+        if (IsKeyDown(KEY_RIGHT) || IsKeyPressed(KEY_D)) env.actions[1] = 0;
+        if (IsKeyPressed(KEY_SPACE)) env.actions[2] = 1;
         if (IsKeyPressed(KEY_LEFT_SHIFT)) {
             env.actions[2] = 2;
         }
@@ -81,7 +81,7 @@ void test_performance(int timeout) {
 }
 
 int main() {
-    test_performance(10);
-    //demo();
+    // test_performance(10);
+    demo();
 }
 

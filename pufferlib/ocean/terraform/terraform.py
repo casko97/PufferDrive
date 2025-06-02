@@ -9,7 +9,7 @@ from pufferlib.ocean.terraform import binding
 OBS_SIZE = 11
 
 class Terraform(pufferlib.PufferEnv):
-    def __init__(self, num_envs=1, num_agents=8, map_size=512,
+    def __init__(self, num_envs=1, num_agents=8, map_size=64,
             render_mode=None, log_interval=32, buf=None, seed=0, reset_frequency=8192,
                  reward_scale=0.01):
         self.single_observation_space = gymnasium.spaces.Box(low=0, high=1,
