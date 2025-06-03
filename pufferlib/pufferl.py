@@ -2,8 +2,7 @@
 # - Help menu
 # - Docs link
 #python -m torch.distributed.run --standalone --nnodes=1 --nproc-per-node=1 clean_pufferl.py --env puffer_nmmo3 --mode train
-#from torch.distributed.elastic.multiprocessing.errors import record
-#@record
+from torch.distributed.elastic.multiprocessing.errors import record
 
 import warnings
 warnings.filterwarnings('error', category=RuntimeWarning)
@@ -308,6 +307,7 @@ class PuffeRL:
         profile.end()
         return self.stats
 
+    @record
     def train(self):
         profile = self.profile
         epoch = self.epoch
