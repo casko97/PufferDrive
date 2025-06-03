@@ -327,11 +327,10 @@ void c_step(Terraform* env) {
 
     if (env->tick % env->reset_frequency == 0) {
         add_log(env);
+        c_reset(env);
+        return;
     }
 
-    if (env->delta_progress > 0.9f){
-        c_reset(env);
-    }
 
     memset(env->terminals, 0, env->num_agents*sizeof(unsigned char));
     memset(env->rewards, 0, env->num_agents*sizeof(float));
