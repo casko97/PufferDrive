@@ -19,8 +19,8 @@ void free_allocated(Terraform* env) {
 void demo() {
     //Weights* weights = load_weights("resources/pong_weights.bin", 133764);
     //LinearLSTM* net = make_linearlstm(weights, 1, 8, 3);
-
-    Terraform env = {.size = 64, .num_agents = 1, .reset_frequency = 8192};
+    srand(time(NULL));
+    Terraform env = {.size = 64, .num_agents = 1, .reset_frequency = 8192, .random_seed = rand()};
     allocate(&env);
 
     c_reset(&env);

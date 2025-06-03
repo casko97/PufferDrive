@@ -82,6 +82,7 @@ typedef struct Terraform {
     float current_total_delta; 
     float delta_progress;
     int* stuck_count;
+    int random_seed;
 } Terraform;
 
 float randf(float min, float max) {
@@ -164,12 +165,15 @@ void init(Terraform* env) {
     env->orig_map = calloc(env->size*env->size, sizeof(float));
     env->map = calloc(env->size*env->size, sizeof(float));
     env->target_map = calloc(env->size*env->size, sizeof(float));
-    for (int i = 0; i < env->size*env->size; i++) {
-       env->target_map[i] = 1;
-    }
+    // for (int i = 0; i < env->size*env->size; i++) {
+    //    env->target_map[i] = 1;
+    // }
     env->dozers = calloc(env->num_agents, sizeof(Dozer));
-    perlin_noise(env->orig_map, env->size, env->size, 1.0/(env->size / 4.0), 8, 0, 0, MAX_DIRT_HEIGHT+64);
-    // perlin_noise(env->target_map, env->size, env->size, 1.0/(env->size / 4.0), 8, env->size, env->size, MAX_DIRT_HEIGHT+55);
+    srand(env->random_seed);
+    int random_seed = rand() % env->size;
+    int random_seed_target = rand() % env->size;
+    perlin_noise(env->orig_map, env->size, env->size, 1.0/(env->size / 4.0), 8, random_seed, random_seed, MAX_DIRT_HEIGHT+55);
+    perlin_noise(env->target_map, env->size, env->size, 1.0/(env->size / 4.0), 8, random_seed_target, random_seed_target, MAX_DIRT_HEIGHT+55);
     env->returns = calloc(env->num_agents, sizeof(float));
     calculate_total_delta(env);
     env->stuck_count = calloc(env->num_agents, sizeof(int));
