@@ -20,7 +20,7 @@ void demo() {
     //Weights* weights = load_weights("resources/pong_weights.bin", 133764);
     //LinearLSTM* net = make_linearlstm(weights, 1, 8, 3);
     srand(time(NULL));
-    Terraform env = {.size = 64, .num_agents = 1, .reset_frequency = 8192, .random_seed = rand()};
+    Terraform env = {.size = 64, .num_agents = 1, .reset_frequency = 8192};
     allocate(&env);
 
     c_reset(&env);
@@ -53,11 +53,12 @@ void demo() {
 }
 
 void test_performance(int timeout) {
+    srand(time(NULL));
     Terraform env = {
-        .size = 512,
-        .num_agents = 8,
+        .size = 64,
+        .num_agents = 1,
         .reset_frequency = 8192,
-        .reward_scale = 0.01f
+        .reward_scale = 0.01f,
     };
     allocate(&env);
     c_reset(&env);
@@ -82,7 +83,7 @@ void test_performance(int timeout) {
 }
 
 int main() {
-    //test_performance(10);
-    demo();
+    test_performance(10);
+    // demo();
 }
 

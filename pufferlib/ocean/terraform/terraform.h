@@ -1,6 +1,8 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
+#include <unistd.h>
+#include <time.h>
 #include <math.h>
 #include <limits.h>
 #include <float.h>
@@ -39,6 +41,8 @@ const unsigned char TARGET = 2;
 #define OBSERVATION_SIZE (2*VISION + 1)
 #define TOTAL_OBS (OBSERVATION_SIZE*OBSERVATION_SIZE + 4)
 #define DOZER_STEP_HEIGHT 5.0f
+
+struct timespec ts;
 
 typedef struct Log Log;
 struct Log {
@@ -82,7 +86,6 @@ typedef struct Terraform {
     float current_total_delta; 
     float delta_progress;
     int* stuck_count;
-    int random_seed;
 } Terraform;
 
 float randf(float min, float max) {
@@ -169,22 +172,30 @@ void init(Terraform* env) {
     //    env->target_map[i] = 1;
     // }
     env->dozers = calloc(env->num_agents, sizeof(Dozer));
-    srand(env->random_seed);
-    int random_seed = rand() % env->size;
-    int random_seed_target = rand() % env->size;
-    perlin_noise(env->orig_map, env->size, env->size, 1.0/(env->size / 4.0), 8, random_seed, random_seed, MAX_DIRT_HEIGHT+55);
-    perlin_noise(env->target_map, env->size, env->size, 1.0/(env->size / 4.0), 8, random_seed_target, random_seed_target, MAX_DIRT_HEIGHT+55);
+    clock_gettime(CLOCK_REALTIME, &ts);
+    unsigned int base_seed = (unsigned int)(ts.tv_nsec ^ ts.tv_sec ^ getpid());
+    unsigned int seed1 = base_seed;
+    unsigned int seed2 = base_seed + 99991;
+    srand(seed1);
+    int offset_x1 = rand() % 10000;
+    int offset_y1 = rand() % 10000;
+    srand(seed2);
+    int offset_x2 = rand() % 10000;
+    int offset_y2 = rand() % 10000;
+    perlin_noise(env->orig_map, env->size, env->size, 1.0/(env->size / 4.0), 8, offset_x1, offset_y1, MAX_DIRT_HEIGHT+55);
+    perlin_noise(env->target_map, env->size, env->size, 1.0/(env->size / 4.0), 8, offset_x2, offset_y2, MAX_DIRT_HEIGHT+55);
     env->returns = calloc(env->num_agents, sizeof(float));
     calculate_total_delta(env);
     env->stuck_count = calloc(env->num_agents, sizeof(int));
-    // float total_volume = 0.0f;
-    // float target_volume = 0.0f;
-    // for (int i = 0; i < env->size*env->size; i++) {
-    //     total_volume += env->orig_map[i];
-    //     target_volume += env->target_map[i];
-    // }
-    // printf("total_volume: %f, target_volume: %f\n", total_volume, target_volume);
-
+    /*float total_volume = 0.0f;
+    float target_volume = 0.0f;
+    for (int i = 0; i < env->size*env->size; i++) {
+        total_volume += env->orig_map[i];
+        target_volume += env->target_map[i];
+    
+    }
+    printf("total_volume: %f, target_volume: %f\n", total_volume, target_volume);
+    printf("initial delta: %f\n", env->initial_total_delta);*/
 }
 
 void free_initialized(Terraform* env) {

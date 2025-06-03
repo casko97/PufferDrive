@@ -21,8 +21,6 @@ class Terraform(pufferlib.PufferEnv):
         self.reset_frequency = reset_frequency
         self.reward_scale = reward_scale
         super().__init__(buf)
-        random.seed(time.time()*seed)
-        random_seed = random.randint(0, 1000000)
         c_envs = []
         for i in range(num_envs):
             c_env = binding.env_init(
@@ -36,7 +34,6 @@ class Terraform(pufferlib.PufferEnv):
                 num_agents=num_agents,
                 reset_frequency=reset_frequency,
                 reward_scale=reward_scale,
-                random_seed=random_seed,
             )
             c_envs.append(c_env)
 
