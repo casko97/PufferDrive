@@ -230,9 +230,9 @@ class PuffeRL:
 
             profile('eval_copy', epoch)
             o = torch.as_tensor(o)
-            o_device = o.to(device, non_blocking=True)
-            r = torch.as_tensor(r).to(device, non_blocking=True)
-            d = torch.as_tensor(d).to(device, non_blocking=True)
+            o_device = o.to(device)#, non_blocking=True)
+            r = torch.as_tensor(r).to(device)#, non_blocking=True)
+            d = torch.as_tensor(d).to(device)#, non_blocking=True)
 
             profile('eval_forward', epoch)
             with torch.no_grad(), self.amp_context:
@@ -501,6 +501,10 @@ class PuffeRL:
         return path
 
     def save_checkpoint(self):
+        if torch.distributed.is_initialized():
+           if torch.distributed.get_rank() != 0:
+               return
+ 
         run_id = self.logger.run_id
         path = os.path.join(self.config['data_dir'], run_id)
         if not os.path.exists(path):
@@ -685,8 +689,8 @@ class Profile:
         if epoch % self.frequency != 0:
             return
 
-        if torch.cuda.is_available():
-            torch.cuda.synchronize()
+        #if torch.cuda.is_available():
+        #    torch.cuda.synchronize()
 
         tick = time.time()
         if len(self.stack) != 0 and not nest:
@@ -702,8 +706,8 @@ class Profile:
         profile['delta'] += delta
 
     def end(self):
-        if torch.cuda.is_available():
-            torch.cuda.synchronize()
+        #if torch.cuda.is_available():
+        #    torch.cuda.synchronize()
 
         end = time.time()
         for i in range(len(self.stack)):
@@ -732,6 +736,11 @@ class Utilization(Thread):
             mem = psutil.virtual_memory()
             self.cpu_mem.append(100*mem.active/mem.total)
             if torch.cuda.is_available():
+                # Monitoring in distributed crashes nvml
+                if torch.distributed.is_initialized():
+                   time.sleep(self.delay)
+                   continue
+
                 self.gpu_util.append(torch.cuda.utilization())
                 free, total = torch.cuda.mem_get_info()
                 self.gpu_mem.append(100*(total-free)/total)
