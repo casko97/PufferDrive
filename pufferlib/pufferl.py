@@ -57,9 +57,9 @@ class PuffeRL:
 
         # Reproducibility
         seed = config['seed']
-        random.seed(seed)
-        np.random.seed(seed)
-        torch.manual_seed(seed)
+        #random.seed(seed)
+        #np.random.seed(seed)
+        #torch.manual_seed(seed)
 
         # Vecenv info
         vecenv.async_reset(seed)
@@ -247,7 +247,7 @@ class PuffeRL:
                     state['lstm_h'] = self.lstm_h[env_id.start]
                     state['lstm_c'] = self.lstm_c[env_id.start]
 
-                logits, value = self.policy(o_device, state)
+                logits, value = self.policy.forward_eval(o_device, state)
                 action, logprob, _ = pufferlib.pytorch.sample_logits(logits)
                 r = torch.clamp(r, -1, 1)
 
@@ -362,7 +362,7 @@ class PuffeRL:
             )
 
             # TODO: Currently only returning traj shaped value as a hack
-            logits, newvalue = self.policy.forward_train(mb_obs, state)
+            logits, newvalue = self.policy(mb_obs, state)
             # TODO: Redundant actions?
             actions, newlogprob, entropy = pufferlib.pytorch.sample_logits(logits, action=mb_actions)
 
@@ -385,6 +385,7 @@ class PuffeRL:
                 config['vtrace_rho_clip'], config['vtrace_c_clip'])
             adv = mb_advantages
             adv = mb_prio * (adv - adv.mean()) / (adv.std() + 1e-8) # TODO: Norm by full batch
+            #adv = mb_prio * (adv - advantages.mean()) / (advantages.std() + 1e-8) # TODO: Norm by full batch
 
             # Losses
             pg_loss1 = -adv * ratio
@@ -482,12 +483,12 @@ class PuffeRL:
 
         if torch.distributed.is_initialized():
            if torch.distributed.get_rank() != 0:
-               self.logger.log(logs, self.global_step)
+               self.logger.log(logs, agent_steps)
                return logs
            else:
                return None
 
-        self.logger.log(logs, self.global_step)
+        self.logger.log(logs, agent_steps)
         return logs
 
     def close(self):
@@ -529,6 +530,7 @@ class PuffeRL:
             c1='[cyan]', c2='[white]', b1='[bright_cyan]', b2='[bright_white]'):
         config = self.config
         sps = dist_sum(self.sps, config['device'])
+        agent_steps = dist_sum(self.global_step, config['device'])
         if torch.distributed.is_initialized():
            if torch.distributed.get_rank() != 0:
                return
@@ -558,13 +560,13 @@ class PuffeRL:
         s = Table(box=None, expand=True)
         remaining = 'A hair past a freckle'
         if sps != 0:
-            remaining = duration((config['total_timesteps'] - self.global_step)/sps, b2, c2)
+            remaining = duration((config['total_timesteps'] - agent_steps)/sps, b2, c2)
 
         s.add_column(f"{c1}Summary", justify='left', vertical='top', width=10)
         s.add_column(f"{c1}Value", justify='right', vertical='top', width=14)
         s.add_row(f'{c2}Env', f'{b2}{config["env"]}')
         s.add_row(f'{c2}Params', abbreviate(self.model_size, b2, c2))
-        s.add_row(f'{c2}Steps', abbreviate(self.global_step, b2, c2))
+        s.add_row(f'{c2}Steps', abbreviate(agent_steps, b2, c2))
         s.add_row(f'{c2}SPS', abbreviate(sps, b2, c2))
         s.add_row(f'{c2}Epoch', f'{b2}{self.epoch}')
         s.add_row(f'{c2}Uptime', duration(self.uptime, b2, c2))
@@ -849,10 +851,10 @@ def train(env_name, args=None, vecenv=None, policy=None, logger=None):
             policy, device_ids=[local_rank], output_device=local_rank
         )
         if hasattr(policy, 'lstm'):
-            model.lstm = policy.lstm
+            #model.lstm = policy.lstm
             model.hidden_size = policy.hidden_size
 
-        model.forward_train = policy.forward_train
+        model.forward_eval = policy.forward_eval
         policy = model.to(local_rank)
 
     if args['neptune']:
