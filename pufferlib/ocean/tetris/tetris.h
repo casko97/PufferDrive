@@ -71,7 +71,7 @@ void init(Tetris* env) {
 
 void allocate(Tetris* env) {
     init(env);
-    env->observations = (float*)calloc(NUM_ROTATIONS * SIZE * SIZE + env->n_cols*env->n_rows + NUM_TETROMINOES * (env->deck_size -1) + 1 + NUM_ROTATIONS * env->n_cols, sizeof(float));
+    env->observations = (float*)calloc(env->n_cols*env->n_rows + NUM_TETROMINOES * env->deck_size + 1 + NUM_ROTATIONS * env->n_cols, sizeof(float));
     env->actions = (float*)calloc(1, sizeof(float));
     env->rewards = (float*)calloc(1, sizeof(float));
     env->terminals = (unsigned char*)calloc(1, sizeof(unsigned char));
@@ -103,34 +103,25 @@ void add_log(Tetris* env) {
 }
 
 void compute_observations(Tetris* env) {
-    // first tetromino, with the 4 possible rotations
-    for (int target_rotation = 0; target_rotation < NUM_ROTATIONS; target_rotation++){
-        for (int r = 0; r < SIZE; r++) {
-            for (int c = 0; c < SIZE; c++) {
-                env->observations[target_rotation * SIZE * SIZE + r * SIZE + c] = TETROMINOES[env->current_tetromino][target_rotation][r][c];
-            }
-        }
-    }
-    int offset = NUM_ROTATIONS * SIZE * SIZE;
     // content of the grid
     for (int i = 0; i < env->n_cols*env->n_rows; i++) {
-        env->observations[offset+i] = env->grid[i];
+        env->observations[i] = env->grid[i];
     }
 
     // other tetrominoes, one hot endoded
     int tetromino_id;
-    offset = NUM_ROTATIONS * SIZE * SIZE + env->n_cols*env->n_rows;
-    for (int j = 1; j<env->deck_size; j++){
+    int offset = env->n_cols*env->n_rows;
+    for (int j = 0; j<env->deck_size; j++){
         tetromino_id = env->tetromino_deck[(env->current_position_in_deck+j)%env->deck_size];
         for (int i = 0; i < NUM_TETROMINOES; i++) {
             env->observations[offset + j*NUM_TETROMINOES + i] = 0;
         }
         env->observations[offset + j*NUM_TETROMINOES + tetromino_id] = 1; 
     }
-    env->observations[0] = env->score;
+    env->observations[0] = env->step/MAX_STEPS;
 
     // action mask
-    offset = NUM_ROTATIONS * SIZE * SIZE + env->n_cols*env->n_rows + NUM_TETROMINOES * (env->deck_size -1) + 1;
+    offset = env->n_cols*env->n_rows + NUM_TETROMINOES * env->deck_size + 1;
     for (int i = 0; i < env->n_cols*NUM_ROTATIONS; i++) {
         env->observations[offset+i] = env->action_mask[i];
     }
@@ -162,6 +153,42 @@ void update_deck(Tetris* env) {
     env->current_tetromino = env->tetromino_deck[env->current_position_in_deck];
 }
 
+bool can_place_tetromino(Tetris* env, int tetromino_idx, int target_col, int target_rotation, int target_row) {
+    for (int r = 0; r < SIZE; r++) {
+        for (int c = 0; c < SIZE; c++) {
+            if (TETROMINOES[tetromino_idx][target_rotation][r][c] == 1) {
+                int grid_row = target_row + r;
+                int grid_col = target_col + c;
+                
+                if (grid_row >= env->n_rows || grid_col >= env->n_cols) {
+                    return false;
+                }
+                else if (env->grid[grid_row * env->n_cols + grid_col] != 0) {
+                    return false;
+                }
+            }
+        }
+    }
+    return true;
+}
+
+bool is_valid_action(Tetris* env, int tetromino_idx, int target_col, int target_rotation) {
+    if (target_col + TETROMINOES_FILLS_COLUMN[tetromino_idx][target_rotation] > env->n_cols){
+        return false;
+    }
+    if (env->row_is_free[TETROMINOES_FILLS_ROW[tetromino_idx][target_rotation] + 1]){
+        return true;
+    }
+    return can_place_tetromino(env, tetromino_idx, target_col, target_rotation, 0);
+}
+
+void compute_action_mask(Tetris* env) {
+    for (int rot = 0; rot < NUM_ROTATIONS; rot++) {
+        for (int c = 0; c < env->n_cols; c++) {
+            env->action_mask[rot * env->n_cols + c] = is_valid_action(env, env->current_tetromino, c, rot);
+        }
+    }
+}
 int get_landing_row(Tetris* env, int tetromino_idx, int target_col, int target_rotation) {
     int landing_row = -1;
     if (target_col + TETROMINOES_FILLS_COLUMN[tetromino_idx][target_rotation] > env->n_cols){
@@ -175,28 +202,11 @@ int get_landing_row(Tetris* env, int tetromino_idx, int target_col, int target_r
             break;
         }
     }
-    for (int test_row = 0; test_row < env->n_rows; test_row++) {
-        bool can_place = true;
-        
-        for (int r = 0; r < SIZE && can_place; r++) {
-            for (int c = 0; c < SIZE && can_place; c++) {
-                if (TETROMINOES[tetromino_idx][target_rotation][r][c] == 1) {
-                    int grid_row = test_row + r;
-                    int grid_col = target_col + c;
-                    
-                    if (grid_row >= env->n_rows || grid_col < 0 || grid_col >= env->n_cols) {
-                        can_place = false;
-                    }
-                    else if (env->grid[grid_row * env->n_cols + grid_col] != 0) {
-                        can_place = false;
-                    }
-                }
-            }
-        }
-        
-        if (can_place) {
+    for (int test_row = 0; test_row < env->n_rows; test_row++){
+        if (can_place_tetromino(env, tetromino_idx, target_col, target_rotation, test_row)){
             landing_row = test_row;
-        } else {
+        } 
+        else {
             break;
         }
     }
@@ -251,28 +261,6 @@ int place_tetromino(Tetris* env, int tetromino_idx, int col, int rotation, int l
     return lines_deleted;
 }
 
-void compute_action_mask(Tetris* env, int tetromino_idx) {
-    int landing_row;
-
-    if (tetromino_idx == 0){
-        for (int c = 0; c < env->n_cols; c++) {
-            landing_row = get_landing_row(env, tetromino_idx, c, 0);
-            for (int rot = 0; rot < NUM_ROTATIONS; rot++) {
-                env->action_mask[rot * env->n_cols + c] = landing_row;
-            }
-        }
-    }
-
-    else {
-        for (int c = 0; c < env->n_cols; c++) {
-            for (int rot = 0; rot < NUM_ROTATIONS; rot++) {
-                landing_row = get_landing_row(env, tetromino_idx, c, rot);
-                env->action_mask[rot * env->n_cols + c] = landing_row;
-            }
-        }
-    }
-}
-
 void c_reset(Tetris* env) {
     env->score = 0;
     env->ep_return = 0;
@@ -281,13 +269,16 @@ void c_reset(Tetris* env) {
     env->combos = 0;
     restore_grid(env);
     initialize_deck(env);
-    compute_action_mask(env, env->current_tetromino);
+    compute_action_mask(env);
     compute_observations(env);
 }
 
 bool is_game_done(Tetris* env){
-    for (int i = 0; i < NUM_ROTATIONS * env->n_cols; i++) {
-        if (env->action_mask[i] > -1) {
+    if (env->row_is_free[SIZE]) {
+        return false;
+    }
+    for (int action = 0; action < NUM_ROTATIONS * env->n_cols; action++) {
+        if (env->action_mask[action]) {
             return false;
         }
     }
@@ -304,7 +295,7 @@ void c_step(Tetris* env) {
     int lines_deleted = 0;
     int landing_row;
 
-    if (env->action_mask[action] > -1) {
+    if (env->action_mask[action]) {
         landing_row = get_landing_row(env, env->current_tetromino, col, rotation);
         lines_deleted = place_tetromino(env, env->current_tetromino, col, rotation, landing_row);
     
@@ -317,7 +308,9 @@ void c_step(Tetris* env) {
         }
 
         update_deck(env);
-        compute_action_mask(env, env->current_tetromino);
+        compute_action_mask(env);
+        compute_observations(env);
+
     }
     else{
         env->rewards[0] = REWARD_INVALID_ACTION;
@@ -332,9 +325,6 @@ void c_step(Tetris* env) {
         add_log(env);
         c_reset(env);
     }
-    else{
-        compute_observations(env);
-    };
 }
 
 

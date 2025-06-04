@@ -874,28 +874,22 @@ class Tetris(nn.Module):
         super().__init__()
         self.input_size = input_size
         self.hidden_size = hidden_size
-        self.n_cols = env.n_cols
         self.cnn_channels =  cnn_channels   
-        self.n_rows = env.n_rows
-        self.scalar_input_size = (1 + 7 * (env.deck_size - 1) + 4 * self.n_cols)
-        self.is_continuous = isinstance(env.single_action_space, pufferlib.spaces.Box)
 
-        self.conv_tetromino = nn.Sequential(
-            pufferlib.pytorch.layer_init(nn.Conv2d(4, 4, 3, stride=1, padding = 1)),
-            nn.ReLU(),
-            nn.Flatten(1,-1),
-            pufferlib.pytorch.layer_init(nn.Linear(4 * 4 * 4, input_size)),
-            nn.ReLU(),
-        )
+        self.n_cols = env.n_cols
+        self.n_rows = env.n_rows
+        self.scalar_input_size = (1 + 7 * env.deck_size)
+        self.is_continuous = isinstance(env.single_action_space, pufferlib.spaces.Box)
 
         self.conv_grid = nn.Sequential(
             pufferlib.pytorch.layer_init(nn.Conv2d(1, cnn_channels, 3, stride=1, padding = 1)),
             nn.ReLU(),
-            pufferlib.pytorch.layer_init(nn.Conv2d(cnn_channels, cnn_channels, 3, stride=1, padding = 1)),
+            pufferlib.pytorch.layer_init(nn.Conv2d(cnn_channels, cnn_channels, (3, 5), stride=(2, 1), padding = (1,2))),
             nn.ReLU(),
-            nn.Flatten(1,-1),
-            pufferlib.pytorch.layer_init(nn.Linear(cnn_channels * (self.n_rows * self.n_cols), input_size)),
-            nn.ReLU()
+            pufferlib.pytorch.layer_init(nn.Conv2d(cnn_channels, cnn_channels, (3, 5), stride=(2, 1), padding = (1,2))),
+            nn.ReLU(),
+            pufferlib.pytorch.layer_init(nn.Conv2d(cnn_channels, input_size, (3, 5), stride=(2, 1), padding = (1,2))),
+            nn.ReLU(),
         )
 
         self.fc_scalar = nn.Sequential(
@@ -909,7 +903,8 @@ class Tetris(nn.Module):
         )
 
         self.actor = nn.Sequential(
-            pufferlib.pytorch.layer_init(nn.Linear(hidden_size, self.n_cols * 4), std = 0.01),
+            pufferlib.pytorch.layer_init(nn.Linear(hidden_size, 4), std = 0.01),
+            nn.Flatten()
         )
 
         self.value_fn = nn.Sequential(
@@ -926,24 +921,25 @@ class Tetris(nn.Module):
         return self.forward(x, state)
 
     def encode_observations(self, observations, state=None):
-        tetromino_info = observations[:,0:(4*16)].view(-1, 4, 4, 4).float()  # (4,4,4)
-        grid_info = observations[:,(4*16):(4*16 + self.n_cols * self.n_rows)].view(-1, 1, self.n_rows, self.n_cols).float() # (n_rows,n_cols)
-        scalar_info = observations[:, (4*16 + self.n_cols * self.n_rows):(4*16 + self.n_cols * self.n_rows + self.scalar_input_size)].float()
+        grid_info = observations[:,0:(self.n_cols * self.n_rows)].view(-1, 1, self.n_rows, self.n_cols).float() # (1, n_rows,n_cols)
+        scalar_info = observations[:, (self.n_cols * self.n_rows):(self.n_cols * self.n_rows + self.scalar_input_size)].float()
 
-        grid_feat = self.conv_grid(grid_info) # (I,)
-        tetromino_feat = self.conv_tetromino(tetromino_info) # (I,)
+        grid_feat = self.conv_grid(grid_info) # (I, 2, n_cols,)
         scalar_feat = self.fc_scalar(scalar_info) # (I,)
-
-        features = torch.cat([tetromino_feat, grid_feat,scalar_feat], dim = -1) # (3 * I)
-        features = self.proj(features) # (H,)
+        
+        grid_feat = grid_feat.permute(0,3,2,1) # (n_cols, 2, I,)
+        grid_feat = grid_feat.reshape(-1, grid_feat.shape[1], grid_feat.shape[2] * grid_feat.shape[3]) # (n_cols, 2 * I,)
+        scalar_feat = scalar_feat.unsqueeze(1).repeat(1, self.n_cols, 1)  # (N, self.n_cols, I)
+        features = torch.cat([grid_feat, scalar_feat], dim = -1) # (n_cols, 3 * I)
+        features = self.proj(features) # (n_cols, H)
         return features
     
     def decode_actions(self, hidden):
         action = self.actor(hidden) # (4 * n_cols)
-        value = self.value_fn(hidden) # (1)
+        value = self.value_fn(hidden.sum(-2)) # (1)
         return action, value
     
     def mask_actions_logits(self, action_logits, observations):
-        action_mask = (observations[:, -(4*self.n_cols):] > -1).float()
+        action_mask = (observations[:, -(4*self.n_cols):]).float()
         masked_action_logits = action_logits + (1 - action_mask) * -1e8
         return masked_action_logits
