@@ -11,9 +11,8 @@ class School(pufferlib.PufferEnv):
             num_agents=1024, num_factories=32,
             num_resources=8, render_mode=None, log_interval=128, buf=None, seed=0):
         self.single_observation_space = gymnasium.spaces.Box(low=0, high=1,
-            shape=(3*num_resources + 7 + num_resources,), dtype=np.float32)
+            shape=(3*num_resources + 10 + num_resources,), dtype=np.float32)
         self.single_action_space = gymnasium.spaces.MultiDiscrete([9, 9, 9])
-
         self.render_mode = render_mode
         self.num_agents = num_envs*num_agents
         self.log_interval = log_interval

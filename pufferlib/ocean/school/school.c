@@ -23,8 +23,7 @@ int main() {
         .width = 1980,
         .height = 1020,
         .size_x = 1,
-        .size_y = 1,
-        .size_z = 1,
+        .size_y = 1, .size_z = 1,
         .num_agents = 1024,
         .num_factories = 32,
         .num_resources = 8,
@@ -32,7 +31,7 @@ int main() {
     init(&env);
 
     // Allocate these manually since they aren't being passed from Python
-    int num_obs = 3*env.num_resources + 7 + env.num_resources;
+    int num_obs = 3*env.num_resources + 10 + env.num_resources;
     env.observations = calloc(env.num_agents*num_obs, sizeof(float));
     env.actions = calloc(3*env.num_agents, sizeof(int));
     env.rewards = calloc(env.num_agents, sizeof(float));
@@ -45,7 +44,7 @@ int main() {
     // while(True) will break web builds
     while (!WindowShouldClose()) {
         for (int i=0; i<env.num_agents; i++) {
-            Agent* agent = &env.agents[i];
+            Entity* agent = &env.agents[i];
             int item = agent->item;
             float dx = env.observations[num_obs*i + 3*item];
             float dy = env.observations[num_obs*i + 3*item + 1];
@@ -53,6 +52,17 @@ int main() {
             env.actions[3*i] = (dx > 0.0f) ? 6 : 2;
             env.actions[3*i + 1] = (dy > 0.0f) ? 6 : 2;
             env.actions[3*i + 2] = (dz > 0.0f) ? 6 : 2;
+            //float dpitch = atan2f(dz, sqrtf(dx*dx + dy*dy));
+            //float droll = asinf(dz/sqrtf(dx*dx + dy*dy + dz*dz));
+            //env.actions[3*i] = 6;
+            //env.actions[3*i + 1] = (dpitch > 0.0f) ? 6 : 2;
+            //env.actions[3*i + 2] = (droll > 0.0f) ? 6 : 2;
+            env.actions[3*i] = rand() % 9;
+            env.actions[3*i + 1] = rand() % 9;
+            env.actions[3*i + 2] = rand() % 9;
+            //env.actions[3*i] = 4.0f;
+            //env.actions[3*i + 1] = 4.0f;
+            //env.actions[3*i + 2] = 4.0f;
         }
 
         //forward_linearlstm(net, env.observations, env.actions);

@@ -9,6 +9,8 @@
 #include <math.h>
 #include <stdio.h>
 #include "raylib.h"
+#include "raymath.h"
+#include "rlgl.h"
 
 #define MAX_SPEED 0.02f
 #define MAX_FACTORY_SPEED 0.002f
@@ -23,18 +25,16 @@ typedef struct {
 
 typedef struct {
     Camera3D camera;
+    Model ship;
 } Client;
 
 typedef struct {
-    float x;
-    float y;
-    float z;
-    float vx;
-    float vy;
-    float vz;
-    int item;
-    int episode_length;
-} Agent;
+  float w, x, y, z;
+} Quat;
+
+typedef struct {
+  float x, y, z;
+} Vec3;
 
 typedef struct {
     float x;
@@ -43,14 +43,20 @@ typedef struct {
     float vx;
     float vy;
     float vz;
+    float speed;
+    float pitch;
+    float roll;
+    Quat orientation;
+    float yaw;
     int item;
-} Factory;
+    int episode_length;
+} Entity;
 
 typedef struct {
     Log log;
     Client* client;
-    Agent* agents;
-    Factory* factories;
+    Entity* agents;
+    Entity* factories;
     float* observations;
     int* actions;
     float* rewards;
@@ -66,12 +72,105 @@ typedef struct {
 } School;
 
 void init(School* env) {
-    env->agents = calloc(env->num_agents, sizeof(Agent));
-    env->factories = calloc(env->num_factories, sizeof(Factory));
+    env->agents = calloc(env->num_agents, sizeof(Entity));
+    env->factories = calloc(env->num_factories, sizeof(Entity));
+}
+
+static inline float clampf(float v, float min, float max) {
+  if (v < min)
+    return min;
+  if (v > max)
+    return max;
+  return v;
+}
+
+static inline float rndf(float a, float b) {
+  return a + ((float)rand() / (float)RAND_MAX) * (b - a);
+}
+
+static inline int rndi(int a, int b) { return a + rand() % (b - a + 1); }
+
+static inline float dot3(Vec3 a, Vec3 b) {
+  return a.x * b.x + a.y * b.y + a.z * b.z;
+}
+
+static inline float norm3(Vec3 a) { return sqrtf(dot3(a, a)); }
+
+// In-place clamp of a vector
+static inline void clamp3(Vec3 *vec, float min, float max) {
+  vec->x = clampf(vec->x, min, max);
+  vec->y = clampf(vec->y, min, max);
+  vec->z = clampf(vec->z, min, max);
+}
+
+// In-place clamp of a vector
+static inline void clamp4(float a[4], float min, float max) {
+  a[0] = clampf(a[0], min, max);
+  a[1] = clampf(a[1], min, max);
+  a[2] = clampf(a[2], min, max);
+  a[3] = clampf(a[3], min, max);
+}
+
+static inline Quat quat_mul(Quat q1, Quat q2) {
+  Quat out;
+  out.w = q1.w * q2.w - q1.x * q2.x - q1.y * q2.y - q1.z * q2.z;
+  out.x = q1.w * q2.x + q1.x * q2.w + q1.y * q2.z - q1.z * q2.y;
+  out.y = q1.w * q2.y - q1.x * q2.z + q1.y * q2.w + q1.z * q2.x;
+  out.z = q1.w * q2.z + q1.x * q2.y - q1.y * q2.x + q1.z * q2.w;
+  return out;
+}
+
+static inline void quat_normalize(Quat *q) {
+  float n = sqrtf(q->w * q->w + q->x * q->x + q->y * q->y + q->z * q->z);
+  if (n > 0.0f) {
+    q->w /= n;
+    q->x /= n;
+    q->y /= n;
+    q->z /= n;
+  }
+}
+
+static inline Vec3 quat_rotate(Quat q, Vec3 v) {
+  Quat qv = {0.0f, v.x, v.y, v.z};
+  Quat tmp = quat_mul(q, qv);
+  Quat q_conj = {q.w, -q.x, -q.y, -q.z};
+  Quat res = quat_mul(tmp, q_conj);
+  return (Vec3){res.x, res.y, res.z};
+}
+
+static inline Quat quat_from_axis_angle(Vec3 axis, float angle) {
+    float norm = norm3(axis);
+    if (norm < 0.0001f) { // Handle zero axis
+        return (Quat){1.0f, 0.0f, 0.0f, 0.0f}; // Identity quaternion
+    }
+    Vec3 norm_axis = {axis.x / norm, axis.y / norm, axis.z / norm};
+    float s = sinf(angle / 2.0f);
+    float c = cosf(angle / 2.0f);
+    Quat q = {c, s * norm_axis.x, s * norm_axis.y, s * norm_axis.z};
+    quat_normalize(&q);
+    return q;
 }
 
 int compare_floats(const void* a, const void* b) {
     return (*(float*)a - *(float*)b) > 0;
+}
+
+float clip(float val, float min, float max) {
+    if (val < min) {
+        return min;
+    } else if (val > max) {
+        return max;
+    }
+    return val;
+}
+
+float clip_angle(float theta) {
+    if (theta < 0.0f) {
+        return theta + 2.0f*PI;
+    } else if (theta > 2.0f*PI) {
+        return theta - 2.0f*PI;
+    }
+    return theta;
 }
 
 float randf(float min, float max) {
@@ -82,16 +181,91 @@ float randi(int min, int max) {
     return min + (max - min)*(float)rand()/(float)RAND_MAX;
 }
 
+void move_basic(School* env, Entity* agent, int* actions) {
+    float d_vx = ((float)actions[0] - 4.0f)/400.0f;
+    float d_vy = ((float)actions[1] - 4.0f)/400.0f;
+    float d_vz = ((float)actions[2] - 4.0f)/400.0f;
+
+    agent->vx += d_vx;
+    agent->vy += d_vy;
+    agent->vz += d_vz;
+
+    agent->vx = clip(agent->vx, -MAX_SPEED, MAX_SPEED);
+    agent->vy = clip(agent->vy, -MAX_SPEED, MAX_SPEED);
+    agent->vz = clip(agent->vz, -MAX_SPEED, MAX_SPEED);
+
+    agent->x += agent->vx;
+    agent->y += agent->vy;
+    agent->z += agent->vz;
+
+    agent->x = clip(agent->x, -env->size_x, env->size_x);
+    agent->y = clip(agent->y, -env->size_y, env->size_y);
+    agent->z = clip(agent->z, -env->size_z, env->size_z);
+}
+
+void move_ship(School* env, Entity* agent, int* actions) {
+    // Compute deltas from actions (same as original)
+    float d_pitch = ((float)actions[0] - 4.0f) / 20.0f;
+    float d_roll = ((float)actions[1] - 4.0f) / 20.0f;
+    float d_yaw = ((float)actions[2] - 4.0f) / 20.0f;
+
+    // Update speed and clamp
+    agent->speed = MAX_SPEED;
+    agent->speed = clampf(agent->speed, 0.0f, MAX_SPEED); // Assuming MAX_SPEED is defined
+
+    // Get local axes in world coordinates for pitch and roll
+    Vec3 x_axis = quat_rotate(agent->orientation, (Vec3){1.0f, 0.0f, 0.0f}); // Pitch axis
+    Vec3 z_axis = quat_rotate(agent->orientation, (Vec3){0.0f, 0.0f, 1.0f}); // Roll axis
+    //Vec3 y_axis = quat_rotate(agent->orientation, (Vec3){0.0f, 1.0f, 0.0f}); // Yaw axis
+
+    // Create rotation quaternions
+    Quat q_pitch = quat_from_axis_angle(x_axis, d_pitch);
+    Quat q_roll = quat_from_axis_angle(z_axis, d_roll);
+    //Quat q_yaw = quat_from_axis_angle(y_axis, d_yaw);
+
+    // Update orientation: pitch, then roll (no yaw in original)
+    agent->orientation = quat_mul(agent->orientation, q_pitch);
+    agent->orientation = quat_mul(agent->orientation, q_roll);
+    //agent->orientation = quat_mul(agent->orientation, q_yaw);
+    quat_normalize(&agent->orientation);
+
+    // Optional: Limit pitch to ±90° to match clip_angle behavior
+    Vec3 forward = quat_rotate(agent->orientation, (Vec3){0.0f, 0.0f, 1.0f});
+    if (fabsf(forward.y) > 0.999f) { // Near vertical, clamp pitch
+        // Reset to max pitch (≈ ±89° to avoid singularity)
+        float sign = forward.y > 0 ? 1.0f : -1.0f;
+        Quat max_pitch = quat_from_axis_angle((Vec3){1.0f, 0.0f, 0.0f}, sign * 1.5533f); // ≈ 89°
+        agent->orientation = max_pitch;
+        quat_normalize(&agent->orientation);
+    }
+
+    // Update position (move along local z-axis)
+    forward = quat_rotate(agent->orientation, (Vec3){0.0f, 0.0f, 1.0f});
+    agent->x += agent->speed * forward.x;
+    agent->y += agent->speed * forward.y;
+    agent->z += agent->speed * forward.z;
+
+    // Just for visualization
+    agent->vx = agent->speed * forward.x;
+    agent->vy = agent->speed * forward.y;
+    agent->vz = agent->speed * forward.z;
+
+    // Clamp position to environment bounds
+    agent->x = clampf(agent->x, -env->size_x, env->size_x);
+    agent->y = clampf(agent->y, -env->size_y, env->size_y);
+    agent->z = clampf(agent->z, -env->size_z, env->size_z);
+}
+
 void compute_observations(School* env) {
     int obs_idx = 0;
     for (int a=0; a<env->num_agents; a++) {
-        Agent* agent = &env->agents[a];
+        Entity* agent = &env->agents[a];
         float dists[env->num_resources];
         for (int i=0; i<env->num_resources; i++) {
             dists[i] = 999999;
         }
         for (int f=0; f<env->num_factories; f++) {
-            Factory* factory = &env->factories[f];
+            Entity* factory = &env->factories[f];
             float dx = factory->x - agent->x;
             float dy = factory->y - agent->y;
             float dz = factory->z - agent->z;
@@ -108,6 +282,9 @@ void compute_observations(School* env) {
         env->observations[obs_idx++] = agent->vx/MAX_SPEED;
         env->observations[obs_idx++] = agent->vy/MAX_SPEED;
         env->observations[obs_idx++] = agent->vz/MAX_SPEED;
+        env->observations[obs_idx++] = agent->speed;
+        env->observations[obs_idx++] = agent->pitch;
+        env->observations[obs_idx++] = agent->roll;
         env->observations[obs_idx++] = agent->x;
         env->observations[obs_idx++] = agent->y;
         env->observations[obs_idx++] = agent->z;
@@ -124,6 +301,7 @@ void c_reset(School* env) {
         env->agents[i].x = randf(-env->size_x, env->size_x);
         env->agents[i].y = randf(-env->size_y, env->size_y);
         env->agents[i].z = randf(-env->size_z, env->size_z);
+        env->agents[i].orientation = (Quat){1.0f, 0.0f, 0.0f, 0.0f};
         env->agents[i].item = rand() % env->num_resources;
         env->agents[i].episode_length = 0;
     }
@@ -139,41 +317,15 @@ void c_reset(School* env) {
     compute_observations(env);
 }
 
-float clip(float val, float min, float max) {
-    if (val < min) {
-        return min;
-    } else if (val > max) {
-        return max;
-    }
-    return val;
-}
-
 void c_step(School* env) {
     for (int i=0; i<env->num_agents; i++) {
         env->terminals[i] = 0;
         env->rewards[i] = 0;
-        Agent* agent = &env->agents[i];
+        Entity* agent = &env->agents[i];
         agent->episode_length += 1;
 
-        float d_vx = ((float)env->actions[3*i] - 4.0f)/400.0f;
-        float d_vy = ((float)env->actions[3*i + 1] - 4.0f)/400.0f;
-        float d_vz = ((float)env->actions[3*i + 2] - 4.0f)/400.0f;
-
-        agent->vx += d_vx;
-        agent->vy += d_vy;
-        agent->vz += d_vz;
-
-        agent->vx = clip(agent->vx, -MAX_SPEED, MAX_SPEED);
-        agent->vy = clip(agent->vy, -MAX_SPEED, MAX_SPEED);
-        agent->vz = clip(agent->vz, -MAX_SPEED, MAX_SPEED);
-
-        agent->x += agent->vx;
-        agent->y += agent->vy;
-        agent->z += agent->vz;
-
-        agent->x = clip(agent->x, -env->size_x, env->size_x);
-        agent->y = clip(agent->y, -env->size_y, env->size_y);
-        agent->z = clip(agent->z, -env->size_z, env->size_z);
+        //move_basic(env, agent, env->actions + 3*i);
+        move_ship(env, agent, env->actions + 3*i);
 
         if (rand() % env->num_agents == 0) {
             env->agents[i].x = randf(-env->size_x, env->size_x);
@@ -182,7 +334,7 @@ void c_step(School* env) {
         }
 
         for (int f=0; f<env->num_factories; f++) {
-            Factory* factory = &env->factories[f];
+            Entity* factory = &env->factories[f];
             float dx = (factory->x - agent->x);
             float dy = (factory->y - agent->y);
             float dz = (factory->z - agent->z);
@@ -202,7 +354,7 @@ void c_step(School* env) {
         }
     }
     for (int f=0; f<env->num_factories; f++) {
-        Factory* factory = &env->factories[f];
+        Entity* factory = &env->factories[f];
         factory->x += factory->vx;
         factory->y += factory->vy;
         factory->z += factory->vz;
@@ -224,12 +376,12 @@ void c_step(School* env) {
 }
 
 Color COLORS[8] = {
+    (Color){0, 255, 255, 255},
     (Color){255, 0, 0, 255},
     (Color){0, 255, 0, 255},
-    (Color){0, 0, 255, 255},
     (Color){255, 255, 0, 255},
-    (Color){0, 255, 255, 255},
     (Color){255, 0, 255, 255},
+    (Color){0, 0, 255, 255},
     (Color){128, 255, 0, 255},
     (Color){255, 128, 0, 255},
 };
@@ -237,16 +389,18 @@ Color COLORS[8] = {
 // Required function. Should handle creating the client on first call
 void c_render(School* env) {
     if (env->client == NULL) {
+        SetConfigFlags(FLAG_MSAA_4X_HINT);
         InitWindow(env->width, env->height, "PufferLib School");
         SetTargetFPS(30);
         env->client = (Client*)calloc(1, sizeof(Client));
+        env->client->ship = LoadModel("glider.glb");
 
         Camera3D camera = { 0 };
                                                            //
         camera.up = (Vector3){ 0.0f, 1.0f, 0.0f };          // Camera up vector (rotation towards target)
         camera.fovy = 45.0f;                                // Camera field-of-view Y
         camera.projection = CAMERA_PERSPECTIVE;             // Camera projection type
-        camera.position = (Vector3){ 2*env->size_x, env->size_y, 2*env->size_z};
+        camera.position = (Vector3){ 3*env->size_x, 2*env->size_y, 3*env->size_z};
         camera.target = (Vector3){ 0, 0, 0};
         env->client->camera = camera;
     }
@@ -256,19 +410,70 @@ void c_render(School* env) {
         exit(0);
     }
 
+    UpdateCamera(&env->client->camera, CAMERA_ORBITAL);
     BeginDrawing();
     ClearBackground((Color){6, 24, 24, 255});
     BeginMode3D(env->client->camera);
 
         for (int f=0; f<env->num_factories; f++) {
-            Factory* factory = &env->factories[f];
-            DrawCube((Vector3){factory->x, factory->y, factory->z}, 0.01, 0.01, 0.01, COLORS[factory->item]);
+            Entity* factory = &env->factories[f];
+            DrawSphere((Vector3){factory->x, factory->y, factory->z}, 0.01, COLORS[factory->item]);
         }
 
         for (int i=0; i<env->num_agents; i++) {
-            Agent* agent = &env->agents[i];
+            Entity* agent = &env->agents[i];
+            /*
+            DrawLine3D(
+                (Vector3){agent->x, agent->y, agent->z},
+                (Vector3){agent->x + agent->vx, agent->y + agent->vy, agent->z + agent->vz},
+                COLORS[agent->item]
+            );
             DrawSphere((Vector3){agent->x, agent->y, agent->z}, 0.01, COLORS[agent->item]);
+            */
+
+            float w = agent->orientation.w, x = agent->orientation.x, y = agent->orientation.y, z = agent->orientation.z;
+            float x2 = x * x, y2 = y * y, z2 = z * z;
+            float xy = x * y, xz = x * z, yz = y * z;
+            float wx = w * x, wy = w * y, wz = w * z;
+
+            float m[16] = {
+                1 - 2 * (y2 + z2), 2 * (xy - wz), 2 * (xz + wy), agent->x,
+                2 * (xy + wz), 1 - 2 * (x2 + z2), 2 * (yz - wx), agent->y,
+                2 * (xz - wy), 2 * (yz + wx), 1 - 2 * (x2 + y2), agent->z,
+                0, 0, 0, 1
+            };
+
+            /*
+            Matrix transform = {
+                1 - 2 * (y2 + z2), 2 * (xy - wz), 2 * (xz + wy), agent->x,
+                2 * (xy + wz), 1 - 2 * (x2 + z2), 2 * (yz - wx), agent->y,
+                2 * (xz - wy), 2 * (yz + wx), 1 - 2 * (x2 + y2), agent->z,
+                0, 0, 0, 1
+            };
+            */
+            Vector3 pos = {agent->x, agent->y, agent->z};
+            Vector3 look = {agent->orientation.x, agent->orientation.y, agent->orientation.z};
+            Vector3 up = {0.0f, 1.0f, 0.0f};
+            env->client->ship.transform = MatrixLookAt(pos, look, up);
+
+            float v_norm = sqrtf(agent->vx*agent->vx + agent->vy*agent->vy + agent->vz*agent->vz);
+            float xx = agent->vx / v_norm;
+            float yy = agent->vy / v_norm;
+            float zz = agent->vz / v_norm;
+            float pitch = asinf(-yy);
+            float yaw = atan2f(xx, zz);
+
+            //Vector3 angle = {agent->pitch, agent->yaw, agent->roll};
+            Vector3 angle = {pitch, yaw, 0.0f};
+            env->client->ship.transform = MatrixRotateXYZ(angle);
+            DrawModel(env->client->ship, (Vector3){agent->x, agent->y, agent->z}, 0.01f, COLORS[agent->item]);
         }
+
+        DrawCubeWires(
+            (Vector3){0, 0, 0},
+            2*env->size_x, 2*env->size_y, 2*env->size_z,
+            (Color){0, 255, 255, 128}
+        );
 
     EndMode3D();
     EndDrawing();
