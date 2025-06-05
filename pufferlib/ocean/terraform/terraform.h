@@ -94,7 +94,7 @@ typedef struct Terraform {
     float quadrant_progress;
     float highest_quadrant_progress;
     float* quadrant_deltas;
-    int first_reset;
+    float quadrants_solved;
 } Terraform;
 
 float randf(float min, float max) {
@@ -225,7 +225,7 @@ void init(Terraform* env) {
     calculate_total_delta(env);
     env->stuck_count = calloc(env->num_agents, sizeof(int));
     env->tick = rand() % 512;
-    env->first_reset = 1;
+    env->quadrants_solved = 0.0f;
     /*float total_volume = 0.0f;
     float target_volume = 0.0f;
     for (int i = 0; i < env->size*env->size; i++) {
@@ -249,8 +249,8 @@ void free_initialized(Terraform* env) {
 
 void add_log(Terraform* env) {
     for (int i = 0; i < env->num_agents; i++) {
-        env->log.perf += env->quadrant_progress;
-        env->log.score += env->quadrant_progress;
+        env->log.perf += env->quadrants_solved;
+        env->log.score += env->quadrants_solved;
         env->log.episode_length += env->tick;
         env->log.episode_return += env->returns[i];
         env->log.n++;
@@ -282,7 +282,7 @@ void compute_all_observations(Terraform* env) {
                     continue;
                 }
 
-                int map_idx = map_y * env->size + map_x;  // ✅ row-major: y * width + x
+                int map_idx = map_y * env->size + map_x; 
 
                 obs[obs_idx] = ((float)env->map[map_idx]) / MAX_DIRT_HEIGHT;
                 float diff = ((float)(env->target_map[map_idx] - env->map[map_idx])) / (MAX_DIRT_HEIGHT * 2.0f);
@@ -329,14 +329,12 @@ void c_reset(Terraform* env) {
     memcpy(env->map, env->orig_map, env->size*env->size*sizeof(float));
     memset(env->observations, 0, env->num_agents*370*sizeof(float));
     memset(env->returns, 0, env->num_agents*sizeof(float));
-    if (!env->first_reset) {
-        env->tick = 0;
-        env->first_reset = 0;
-    }
+    env->tick = 0;
     env->current_total_delta = env->initial_total_delta;
     env->delta_progress = 0.0f;
     env->quadrant_progress = 0.0f;
     env->highest_quadrant_progress = 0.0f;
+    env->quadrants_solved = 0.0f;
     memset(env->stuck_count, 0, env->num_agents*sizeof(int));
     for (int i = 0; i < env->num_agents; i++) {
         env->dozers[i] = (Dozer){0};
@@ -433,11 +431,21 @@ float scoop_dirt(Terraform* env, int x, int y, int bucket_atn, int agent_idx, Do
     
 }
 
+void reset_quadrant(Terraform* env) {
+    for(int i = 0; i < env->num_agents; i++) {
+        env->dozers[i].target_quadrant = rand() % env->num_quadrants;
+        env->target_quadrant_delta = env->quadrant_deltas[env->dozers[i].target_quadrant];
+        env->quadrant_progress = 0.0f;
+        env->highest_quadrant_progress = 0.0f;
+    }
+    env->quadrants_solved += 1.0f;
+}
+
 void c_step(Terraform* env) {
     //printf("step\n"); 
     //printf("tick: %d\n", env->tick);
     env->tick += 1;
-    if ((env->reset_frequency && env->tick % env->reset_frequency == 0) || env->quadrant_progress == 1.0f) {
+    if ((env->reset_frequency && env->tick % env->reset_frequency == 0)) {
         add_log(env);
         c_reset(env);
         return;
@@ -469,11 +477,14 @@ void c_step(Terraform* env) {
             env->delta_progress = fmaxf(0.0f, fminf(1.0f, env->delta_progress));
             env->quadrant_progress = 1.0f - (env->target_quadrant_delta / env->quadrant_deltas[env->dozers[i].target_quadrant]);
             env->quadrant_progress = fmaxf(0.0f, fminf(1.0f, env->quadrant_progress));
-            printf("quadrant_progress: %f\n", env->quadrant_progress);
+            //printf("quadrant_progress: %f\n", env->quadrant_progress);
             if (env->quadrant_progress > env->highest_quadrant_progress) {
                 env->rewards[i] = env->reward_scale*total_change;
                 env->returns[i] = env->reward_scale*total_change;
                 env->highest_quadrant_progress = env->quadrant_progress;
+                if(env->quadrant_progress == 1.0f) {
+                    reset_quadrant(env);
+                }
             }
         } else {
             env->delta_progress = 1.0f;
@@ -984,10 +995,10 @@ void c_render(Terraform* env) {
     DrawText(TextFormat("score: %f", env->delta_progress), 10, 170, 20, PUFF_WHITE);
     DrawText(TextFormat("load: %f", env->dozers[0].load), 10, 190, 20, PUFF_WHITE);
     DrawText(TextFormat("Timestep: %d", env->tick), 10, 210, 20, PUFF_WHITE);
-    DrawText(TextFormat("Quadrant: %d", env->dozers[0].target_quadrant), 10, 230, 20, PUFF_WHITE);
-    DrawText(TextFormat("Current Quadrant: %d", env->grid_indices[map_idx(env, env->dozers[0].x, env->dozers[0].y)]), 10, 250, 20, PUFF_WHITE);
-    DrawText(TextFormat("Target Quadrant: %d", env->dozers[0].target_quadrant), 10, 270, 20, PUFF_WHITE);
-    DrawText(TextFormat("Quadrant Progress: %f", env->quadrant_progress), 10, 290, 20, PUFF_WHITE);
+    DrawText(TextFormat("Current Quadrant: %d", env->grid_indices[map_idx(env, env->dozers[0].x, env->dozers[0].y)]), 10, 230, 20, PUFF_WHITE);
+    DrawText(TextFormat("Target Quadrant: %d", env->dozers[0].target_quadrant), 10, 250, 20, PUFF_WHITE);
+    DrawText(TextFormat("Quadrant Progress: %f", env->quadrant_progress), 10, 270, 20, PUFF_WHITE);
+    DrawText(TextFormat("Quadrants Solved: %f", env->quadrants_solved), 10, 290, 20, PUFF_WHITE);
     //DrawText(TextFormat("Dozer z: %f", z), 10, 190, 20, PUFF_WHITE);
     DrawFPS(10, 10);
     EndDrawing();

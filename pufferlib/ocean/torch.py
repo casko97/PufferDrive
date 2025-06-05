@@ -161,7 +161,6 @@ class Terraform(nn.Module):
         return self.forward(x, state)
 
     def encode_observations(self, observations, state=None):
-        breakpoint()
         obs_2d = observations[:, :363].reshape(-1, 3, 11, 11).float()
         obs_1d = observations[:, 363:].reshape(-1, 7).float()
         hidden_2d = self.net_2d(obs_2d)
