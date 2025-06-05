@@ -30,7 +30,7 @@ const unsigned char TARGET = 2;
 
 #define MAX_DIRT_HEIGHT 32.0f
 #define BUCKET_MAX_HEIGHT 1.0f
-#define DOZER_MAX_V 1.0f
+#define DOZER_MAX_V 2.0f
 #define DOZER_CAPACITY 500.0f
 #define BUCKET_OFFSET 5.0f
 #define BUCKET_WIDTH 2.5f
@@ -226,15 +226,6 @@ void init(Terraform* env) {
     env->stuck_count = calloc(env->num_agents, sizeof(int));
     env->tick = rand() % 512;
     env->quadrants_solved = 0.0f;
-    /*float total_volume = 0.0f;
-    float target_volume = 0.0f;
-    for (int i = 0; i < env->size*env->size; i++) {
-        total_volume += env->orig_map[i];
-        target_volume += env->target_map[i];
-    
-    }
-    printf("total_volume: %f, target_volume: %f\n", total_volume, target_volume);
-    printf("initial delta: %f\n", env->initial_total_delta);*/
 }
 
 void free_initialized(Terraform* env) {
@@ -281,9 +272,7 @@ void compute_all_observations(Terraform* env) {
                     obs_idx++;
                     continue;
                 }
-
                 int map_idx = map_y * env->size + map_x; 
-
                 obs[obs_idx] = ((float)env->map[map_idx]) / MAX_DIRT_HEIGHT;
                 float diff = ((float)(env->target_map[map_idx] - env->map[map_idx])) / (MAX_DIRT_HEIGHT * 2.0f);
                 obs[obs_idx + channel_diff_offset] = diff;
@@ -442,15 +431,12 @@ void reset_quadrant(Terraform* env) {
 }
 
 void c_step(Terraform* env) {
-    //printf("step\n"); 
-    //printf("tick: %d\n", env->tick);
     env->tick += 1;
     if ((env->reset_frequency && env->tick % env->reset_frequency == 0)) {
         add_log(env);
         c_reset(env);
         return;
     }
-
 
     memset(env->terminals, 0, env->num_agents*sizeof(unsigned char));
     memset(env->rewards, 0, env->num_agents*sizeof(float));
@@ -476,13 +462,12 @@ void c_step(Terraform* env) {
             env->delta_progress = 1.0f - (env->current_total_delta / env->initial_total_delta);
             env->delta_progress = fmaxf(0.0f, fminf(1.0f, env->delta_progress));
             env->quadrant_progress = 1.0f - (env->target_quadrant_delta / env->quadrant_deltas[env->dozers[i].target_quadrant]);
-            env->quadrant_progress = fmaxf(0.0f, fminf(1.0f, env->quadrant_progress));
             //printf("quadrant_progress: %f\n", env->quadrant_progress);
             if (env->quadrant_progress > env->highest_quadrant_progress) {
                 env->rewards[i] = env->reward_scale*total_change;
                 env->returns[i] = env->reward_scale*total_change;
                 env->highest_quadrant_progress = env->quadrant_progress;
-                if(env->quadrant_progress == 1.0f) {
+                if(env->quadrant_progress > .99) {
                     reset_quadrant(env);
                 }
             }
@@ -577,13 +562,13 @@ void c_step(Terraform* env) {
         }
 
         // Teleportitis
-        // if (env->tick % 512 == 0) {
-        //      do {
-        //          env->dozers[i].x = rand() % env->size;
-        //          env->dozers[i].y = rand() % env->size;
-        //          env->stuck_count[i] = 0;
-        //      } while (env->map[map_idx(env, env->dozers[i].x, env->dozers[i].y)] != 0.0f);
-        // }
+        if (env->tick % 512 == 0) {
+             do {
+                 env->dozers[i].x = rand() % env->size;
+                 env->dozers[i].y = rand() % env->size;
+                 env->stuck_count[i] = 0;
+             } while (env->map[map_idx(env, env->dozers[i].x, env->dozers[i].y)] != 0.0f);
+        }
  
     }
     
