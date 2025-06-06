@@ -31,7 +31,7 @@ const unsigned char TARGET = 2;
 #define MAX_DIRT_HEIGHT 32.0f
 #define BUCKET_MAX_HEIGHT 1.0f
 #define DOZER_MAX_V 2.0f
-#define DOZER_CAPACITY 500.0f
+#define DOZER_CAPACITY 100.0f
 #define BUCKET_OFFSET 5.0f
 #define BUCKET_WIDTH 2.5f
 #define BUCKET_LENGTH 0.8f
@@ -94,7 +94,9 @@ typedef struct Terraform {
     float quadrant_progress;
     float highest_quadrant_progress;
     float* quadrant_deltas;
+    float* current_quadrant_deltas;
     float quadrants_solved;
+    int* complete_quadrants;
 } Terraform;
 
 float randf(float min, float max) {
@@ -170,7 +172,7 @@ void calculate_total_delta(Terraform* env) {
         env->initial_total_delta += delta;
         env->quadrant_deltas[env->grid_indices[i]] += delta;
     }
-    
+    memcpy(env->current_quadrant_deltas, env->quadrant_deltas, env->num_quadrants*sizeof(float));
     env->current_total_delta = env->initial_total_delta;
     env->delta_progress = 0.0f;
     env->quadrant_progress = 0.0f;
@@ -198,7 +200,8 @@ void init(Terraform* env) {
     env->grid_indices = calloc(env->size*env->size, sizeof(int));
     assign_grid_indices(env);
     env->quadrant_deltas = calloc(env->num_quadrants, sizeof(float));
-
+    env->complete_quadrants = calloc(env->num_quadrants, sizeof(int));
+    env->current_quadrant_deltas = calloc(env->num_quadrants, sizeof(float));
     for (int i = 0; i < env->size*env->size; i++) {
     //    int rand_chosen = rand() % 2; 
     //    if(rand_chosen){
@@ -236,6 +239,9 @@ void free_initialized(Terraform* env) {
     free(env->target_map);
     free(env->stuck_count);
     free(env->quadrant_deltas);
+    free(env->complete_quadrants);
+    free(env->grid_indices);
+    free(env->current_quadrant_deltas);
 }
 
 void add_log(Terraform* env) {
@@ -325,13 +331,15 @@ void c_reset(Terraform* env) {
     env->highest_quadrant_progress = 0.0f;
     env->quadrants_solved = 0.0f;
     memset(env->stuck_count, 0, env->num_agents*sizeof(int));
+    memcpy(env->current_quadrant_deltas, env->quadrant_deltas, env->num_quadrants*sizeof(float));
+    memset(env->complete_quadrants, 0, env->num_quadrants*sizeof(int));
     for (int i = 0; i < env->num_agents; i++) {
         env->dozers[i] = (Dozer){0};
         do {
             env->dozers[i].x = rand() % env->size;
             env->dozers[i].y = rand() % env->size;
             env->dozers[i].target_quadrant = rand() % env->num_quadrants;
-            env->target_quadrant_delta = env->quadrant_deltas[env->dozers[i].target_quadrant];
+            env->target_quadrant_delta = env->current_quadrant_deltas[env->dozers[i].target_quadrant];
         } while (env->map[map_idx(env, env->dozers[i].x, env->dozers[i].y)] != 0.0f);
     }
     compute_all_observations(env);
@@ -414,19 +422,28 @@ float scoop_dirt(Terraform* env, int x, int y, int bucket_atn, int agent_idx, Do
     float delta_post = fabsf(map_height - target_height);
     if(env->grid_indices[scoop_idx] == dozer->target_quadrant) {
         env->target_quadrant_delta += (delta_post - delta_pre);
-        env->current_total_delta += (delta_post - delta_pre);        
-    } 
+    } else {
+        env->current_quadrant_deltas[env->grid_indices[scoop_idx]] += (delta_post - delta_pre);
+    }
+    env->current_total_delta += (delta_post - delta_pre);        
     return -(delta_post - delta_pre);
     
 }
 
-void reset_quadrant(Terraform* env) {
-    for(int i = 0; i < env->num_agents; i++) {
-        env->dozers[i].target_quadrant = rand() % env->num_quadrants;
-        env->target_quadrant_delta = env->quadrant_deltas[env->dozers[i].target_quadrant];
-        env->quadrant_progress = 0.0f;
-        env->highest_quadrant_progress = 0.0f;
+void reset_quadrant(Terraform* env, int agent_idx) {
+    env->complete_quadrants[env->dozers[agent_idx].target_quadrant] = 1;
+    int quadrants_remaining[env->num_quadrants - (int)env->quadrants_solved];
+    int quadrant_remaining_count = 0;
+    for(int i = 0; i < env->num_quadrants; i++) {
+        if(!env->complete_quadrants[i] && env->current_quadrant_deltas[i] > 0.0f){
+            quadrants_remaining[quadrant_remaining_count] = i;
+            quadrant_remaining_count++;
+        }
     }
+    env->dozers[agent_idx].target_quadrant = quadrants_remaining[rand() % quadrant_remaining_count];
+    env->target_quadrant_delta = env->current_quadrant_deltas[env->dozers[agent_idx].target_quadrant];
+    env->quadrant_progress = 0.0f;
+    env->highest_quadrant_progress = 0.0f;
     env->quadrants_solved += 1.0f;
 }
 
@@ -461,14 +478,14 @@ void c_step(Terraform* env) {
         if (env->initial_total_delta > 0) {
             env->delta_progress = 1.0f - (env->current_total_delta / env->initial_total_delta);
             env->delta_progress = fmaxf(0.0f, fminf(1.0f, env->delta_progress));
-            env->quadrant_progress = 1.0f - (env->target_quadrant_delta / env->quadrant_deltas[env->dozers[i].target_quadrant]);
+            env->quadrant_progress = 1.0f - (env->target_quadrant_delta / env->current_quadrant_deltas[env->dozers[i].target_quadrant]);
             //printf("quadrant_progress: %f\n", env->quadrant_progress);
             if (env->quadrant_progress > env->highest_quadrant_progress) {
                 env->rewards[i] = env->reward_scale*total_change;
                 env->returns[i] = env->reward_scale*total_change;
                 env->highest_quadrant_progress = env->quadrant_progress;
                 if(env->quadrant_progress > .99) {
-                    reset_quadrant(env);
+                    reset_quadrant(env, i);
                 }
             }
         } else {
@@ -510,7 +527,6 @@ void c_step(Terraform* env) {
         if (dozer->v < -DOZER_MAX_V) {
             dozer->v = -DOZER_MAX_V;
         }
-
         int idx = map_idx(env, dozer->x, dozer->y);
         float dozer_height = env->map[idx];
 
@@ -737,7 +753,7 @@ Client* make_client(Terraform* env) {
     Client* client = (Client*)calloc(1, sizeof(Client));
     InitWindow(1080, 720, "PufferLib Terraform");
     SetConfigFlags(FLAG_MSAA_4X_HINT);
-    SetTargetFPS(60);
+    SetTargetFPS(400);
     Camera3D camera = { 0 };
                                                        //
     camera.up = (Vector3){ 0.0f, 1.0f, 0.0f };          // Camera up vector (rotation towards target)
