@@ -31,7 +31,7 @@ int main() {
     init(&env);
 
     // Allocate these manually since they aren't being passed from Python
-    int num_obs = 3*env.num_resources + 10 + env.num_resources;
+    int num_obs = 3*env.num_resources + 14 + env.num_resources;
     env.observations = calloc(env.num_agents*num_obs, sizeof(float));
     env.actions = calloc(3*env.num_agents, sizeof(int));
     env.rewards = calloc(env.num_agents, sizeof(float));
@@ -57,9 +57,9 @@ int main() {
             //env.actions[3*i] = 6;
             //env.actions[3*i + 1] = (dpitch > 0.0f) ? 6 : 2;
             //env.actions[3*i + 2] = (droll > 0.0f) ? 6 : 2;
-            env.actions[3*i] = rand() % 9;
-            env.actions[3*i + 1] = rand() % 9;
-            env.actions[3*i + 2] = rand() % 9;
+            //env.actions[3*i] = rand() % 9;
+            //env.actions[3*i + 1] = rand() % 9;
+            //env.actions[3*i + 2] = rand() % 9;
             //env.actions[3*i] = 4.0f;
             //env.actions[3*i + 1] = 4.0f;
             //env.actions[3*i + 2] = 4.0f;

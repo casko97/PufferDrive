@@ -50,6 +50,7 @@ typedef struct {
     float yaw;
     int item;
     int episode_length;
+    float episode_return;
 } Entity;
 
 typedef struct {
@@ -289,6 +290,28 @@ void compute_observations(School* env) {
         env->observations[obs_idx++] = agent->y;
         env->observations[obs_idx++] = agent->z;
         env->observations[obs_idx++] = env->rewards[a];
+
+        float min_dist = 999999;
+        int min_idx = 0;
+        for (int j=0; j<env->num_agents; j++) {
+            if (j == a) {
+                continue;
+            }
+            Entity* agent = &env->agents[j];
+            float dx = agent->x - agent->x;
+            float dy = agent->y - agent->y;
+            float dz = agent->z - agent->z;
+            float dd = dx*dx + dy*dy + dz*dz;
+            if (dd < min_dist) {
+                min_dist = dd;
+                min_idx = j;
+            }
+        }
+        Entity* other = &env->agents[min_idx];
+        env->observations[obs_idx++] = agent->x - other->x;
+        env->observations[obs_idx++] = agent->y - other->y;
+        env->observations[obs_idx++] = agent->z - other->z;
+        env->observations[obs_idx++] = (float)(agent->item == other->item);
         memset(&env->observations[obs_idx], 0, env->num_resources*sizeof(float));
         env->observations[obs_idx + agent->item] = 1.0f;
         obs_idx += env->num_resources;
@@ -333,6 +356,58 @@ void c_step(School* env) {
             env->agents[i].z = randf(-env->size_z, env->size_z);
         }
 
+        // Collision penalty
+        /*
+        float penalty = 0.0f;
+        float same_color_dist = 999999;
+        float diff_color_dist = 999999;
+        for (int j=0; j<env->num_agents; j++) {
+            if (j == i) {
+                continue;
+            }
+            Entity* other = &env->agents[j];
+            float dx = other->x - agent->x;
+            float dy = other->y - agent->y;
+            float dz = other->z - agent->z;
+            float dd = dx*dx + dy*dy + dz*dz;
+            if (other->item == agent->item && dd < same_color_dist) {
+                same_color_dist = dd;
+            } else if (other->item != agent->item && dd < diff_color_dist) {
+                diff_color_dist = dd;
+            }
+        }
+        if (agent->item == 0 && diff_color_dist < same_color_dist) {
+            env->rewards[i] -= 0.5f;
+        } else if (agent->item == 1 && diff_color_dist < same_color_dist) {
+            env->rewards[i] += 0.5f;
+        }
+        */
+
+
+        // Distance penalty
+        /*
+        float dist = (agent->x*agent->x + agent->y*agent->y + agent->z*agent->z);
+        if (dist > 0.25 && dist < 0.35) {
+            env->rewards[i] += 1.0f;
+            agent->episode_return += env->rewards[i];
+        }
+        */
+
+        //env->rewards[i] -= penalty;
+        //agent->episode_return += env->rewards[i];
+        /*
+        if (agent->episode_length > 256) {
+            env->log.perf += 1.0f;
+            env->log.score += 1.0f;
+            env->log.episode_length += agent->episode_length;
+            env->log.episode_return += agent->episode_return;
+            env->log.n++;
+            //env->rewards[i] += 1.0f;
+            agent->episode_length = 0;
+            agent->episode_return = 0;
+        }
+        */
+
         for (int f=0; f<env->num_factories; f++) {
             Entity* factory = &env->factories[f];
             float dx = (factory->x - agent->x);
@@ -348,7 +423,7 @@ void c_step(School* env) {
                 env->log.score += 1.0f;
                 env->log.episode_length += agent->episode_length;
                 env->log.n++;
-                env->rewards[i] = 1.0f;
+                env->rewards[i] += 1.0f;
                 agent->episode_length = 0;
             }
         }
@@ -393,7 +468,8 @@ void c_render(School* env) {
         InitWindow(env->width, env->height, "PufferLib School");
         SetTargetFPS(30);
         env->client = (Client*)calloc(1, sizeof(Client));
-        env->client->ship = LoadModel("glider.glb");
+        //env->client->ship = LoadModel("glider.glb");
+        env->client->ship = LoadModel("resources/puffer.glb");
 
         Camera3D camera = { 0 };
                                                            //
@@ -465,8 +541,17 @@ void c_render(School* env) {
 
             //Vector3 angle = {agent->pitch, agent->yaw, agent->roll};
             Vector3 angle = {pitch, yaw, 0.0f};
+
+            /*
+            rlPushMatrix();
+            rlTranslatef(0.0f, 0.0f, 0.0f);
+            rlRotatef(-90.0f, 0, 0, 90.0f);
+            DrawModel(env->client->ship, (Vector3){0, 0, 0}, 1.0f, WHITE);
+            rlPopMatrix();
+            */
+
             env->client->ship.transform = MatrixRotateXYZ(angle);
-            DrawModel(env->client->ship, (Vector3){agent->x, agent->y, agent->z}, 0.01f, COLORS[agent->item]);
+            DrawModel(env->client->ship, (Vector3){agent->x, agent->y, agent->z}, 3.00f, COLORS[agent->item]);
         }
 
         DrawCubeWires(

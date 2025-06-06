@@ -7,11 +7,11 @@ import pufferlib
 from pufferlib.ocean.school import binding
 
 class School(pufferlib.PufferEnv):
-    def __init__(self, num_envs=1, width=1920, height=1080, size_x=1.0, size_y=1.0, size_z=1.0,
-            num_agents=1024, num_factories=32,
+    def __init__(self, num_envs=1, width=1920, height=1080, size_x=1.0,
+            size_y=1.0, size_z=1.0, num_agents=1024, num_factories=32,
             num_resources=8, render_mode=None, log_interval=128, buf=None, seed=0):
         self.single_observation_space = gymnasium.spaces.Box(low=0, high=1,
-            shape=(3*num_resources + 10 + num_resources,), dtype=np.float32)
+            shape=(3*num_resources + 14 + num_resources,), dtype=np.float32)
         self.single_action_space = gymnasium.spaces.MultiDiscrete([9, 9, 9])
         self.render_mode = render_mode
         self.num_agents = num_envs*num_agents
