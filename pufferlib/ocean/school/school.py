@@ -19,6 +19,8 @@ class School(pufferlib.PufferEnv):
 
         if num_resources < 1 or num_resources > 8:
             raise pufferlib.APIUsageError('num_resources must be in [1, 8]')
+        if num_agents % num_resources != 0:
+            raise pufferlib.APIUsageError('num_agents must be a multiple of num_resources')
 
         super().__init__(buf)
         c_envs = []

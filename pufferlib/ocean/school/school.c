@@ -22,11 +22,12 @@ int main() {
     School env = {
         .width = 1980,
         .height = 1020,
-        .size_x = 1,
-        .size_y = 1, .size_z = 1,
+        .size_x = 2,
+        .size_y = 0.5,
+        .size_z = 1,
         .num_agents = 1024,
-        .num_factories = 32,
-        .num_resources = 8,
+        .num_factories = 4,
+        .num_resources = 4,
     };
     init(&env);
 

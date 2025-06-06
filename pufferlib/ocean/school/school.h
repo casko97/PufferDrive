@@ -12,8 +12,12 @@
 #include "raymath.h"
 #include "rlgl.h"
 
-#define MAX_SPEED 0.02f
-#define MAX_FACTORY_SPEED 0.002f
+#define MAX_SPEED 0.01f
+#define MAX_FACTORY_SPEED 0.001f
+
+#define FIGHTER 0
+#define TANK 1
+#define MOTHERSHIP 2
 
 typedef struct {
     float perf;
@@ -54,6 +58,7 @@ typedef struct {
     Quat orientation;
     float yaw;
     int item;
+    int unit;
     int target;
     int episode_length;
     float episode_return;
@@ -84,22 +89,24 @@ void init(School* env) {
 }
 
 void update_abilities(Entity* agent) {
-    agent->health = 1.0f;
-    agent->attack_damage = 0.4f;
-    agent->attack_range = 0.2f;
-
-    if (agent->item == 0) {
-        agent->max_turn = 0.75f;
-        agent->max_speed = 0.75f;
-    } else if (agent->item == 1) {
-        agent->max_turn = 1.0f;
-        agent->max_speed = 0.5f;
-    } else if (agent->item == 2) {
-        agent->max_turn = 0.5f;
+    if (agent->unit == FIGHTER) {
+        agent->health = 0.4f;
+        agent->attack_damage = 0.1f;
+        agent->attack_range = 0.15f;
+        agent->max_turn = 2.0f;
         agent->max_speed = 1.0f;
-    } else if (agent->item == 3) {
-        agent->max_turn = 1.5f;
-        agent->max_speed = 0.25f;
+    } else if (agent->unit == TANK) {
+        agent->health = 1.0f;
+        agent->attack_damage = 0.5f;
+        agent->attack_range = 0.25f;
+        agent->max_turn = 1.0f;
+        agent->max_speed = 0.75f;
+    } else if (agent->unit == MOTHERSHIP) {
+        agent->health = 10.0f;
+        agent->attack_damage = 2.0f;
+        agent->attack_range = 0.4f;
+        agent->max_turn = 0.5f;
+        agent->max_speed = 0.5f;
     }
 }
 
@@ -107,6 +114,65 @@ void respawn(School* env, Entity* agent) {
     //agent->x = randf(-env->size_x, env->size_x);
     //agent->y = randf(-env->size_y, env->size_y);
     //agent->z = randf(-env->size_z, env->size_z);
+    int team = agent->item;
+    if (agent->unit != MOTHERSHIP) {
+        int agents_per_team = env->num_agents / env->num_resources;
+        int team_mothership_idx = team*agents_per_team;
+        agent->x = env->agents[team_mothership_idx].x;
+        agent->y = env->agents[team_mothership_idx].y;
+        agent->z = env->agents[team_mothership_idx].z;
+        return;
+    }
+
+    // Find farthest corner to spawn in
+    float dists[8];
+    for (int i=0; i<8; i++) {
+        dists[i] = 999999;
+    }
+
+    float sx = env->size_x;
+    float sy = env->size_y;
+    float sz = env->size_z;
+    float xx[8] = {-sx, -sx, -sx, -sx, sx, sx, sx, sx};
+    float yy[8] = {-sy, -sy, sy, sy, -sy, -sy, sy, sy};
+    float zz[8] = {-sz, sz, -sz, sz, -sz, sz, -sz, sz};
+
+    // Distance of each corner to nearest opponent
+    for (int i=0; i<env->num_agents; i++) {
+        Entity* other = &env->agents[i];
+        int other_team = other->item;
+        if (other_team == team) {
+            continue;
+        }
+        for (int j=0; j<8; j++) {
+            float dx = other->x - xx[j];
+            float dy = other->y - yy[j];
+            float dz = other->z - zz[j];
+            float dd = dx*dx + dy*dy + dz*dz;
+            if (dd < dists[j]) {
+                dists[j] = dd;
+            }
+        }
+    }
+
+    int max_idx = 0;
+    float max_dist = 0;
+    for (int i=0; i<8; i++) {
+        if (dists[i] > max_dist) {
+            max_dist = dists[i];
+            max_idx = i;
+        }
+    }
+
+    agent->x = xx[max_idx];
+    agent->y = yy[max_idx];
+    agent->z = zz[max_idx];
+
+    //agent->x = (rand() % 2 == 0) ? -env->size_x : env->size_x;
+    //agent->y = (rand() % 2 == 0) ? -env->size_y : env->size_y;
+    //agent->z = (rand() % 2 == 0) ? -env->size_z : env->size_z;
+
+    /*
     if (agent->item == 0) {
         agent->x = -env->size_x;
         agent->y = 0.0f;
@@ -124,6 +190,7 @@ void respawn(School* env, Entity* agent) {
         agent->y = 0.0f;
         agent->z = env->size_z;
     }
+    */
 }
 
 
@@ -285,8 +352,8 @@ void move_basic(School* env, Entity* agent, int* actions) {
 
 void move_ship(School* env, Entity* agent, int* actions) {
     // Compute deltas from actions (same as original)
-    float d_pitch = agent->max_turn * ((float)actions[0] - 4.0f) / 20.0f;
-    float d_roll = agent->max_turn * ((float)actions[1] - 4.0f) / 20.0f;
+    float d_pitch = agent->max_turn * ((float)actions[0] - 4.0f) / 40.0f;
+    float d_roll = agent->max_turn * ((float)actions[1] - 4.0f) / 40.0f;
     //float d_yaw = agent->max_turn * ((float)actions[2] - 4.0f) / 20.0f;
 
     // Update speed and clamp
@@ -399,15 +466,24 @@ void compute_observations(School* env) {
 
 // Required function
 void c_reset(School* env) {
-    for (int i=0; i<env->num_agents; i++) {
-        respawn(env, &env->agents[i]);
-        env->agents[i].orientation = (Quat){1.0f, 0.0f, 0.0f, 0.0f};
-        env->agents[i].item = rand() % env->num_resources;
-        update_abilities(&env->agents[i]);
-        env->agents[i].episode_length = 0;
-        env->agents[i].target = -1;
-        env->agents[i].attack_range = 0.2f;
-        env->agents[i].attack_damage = 0.4f;
+    int agents_per_team = env->num_agents / env->num_resources;
+    for (int team=0; team<env->num_resources; team++) {
+        for (int i=0; i<agents_per_team; i++) {
+            Entity* agent = &env->agents[team*agents_per_team + i];
+            if (i == 0) {
+                agent->unit = MOTHERSHIP;
+            } else if (i % 8 == 0) {
+                agent->unit = TANK;
+            } else {
+                agent->unit = FIGHTER;
+            }
+            agent->item = team;
+            agent->orientation = (Quat){1.0f, 0.0f, 0.0f, 0.0f};
+            agent->episode_length = 0;
+            agent->target = -1;
+            update_abilities(agent);
+            respawn(env, agent);
+        }
     }
     for (int i=0; i<env->num_factories; i++) {
         env->factories[i].x = randf(-env->size_x, env->size_x);
@@ -658,7 +734,16 @@ void c_render(School* env) {
             */
 
             env->client->ship.transform = MatrixRotateXYZ(angle);
-            DrawModel(env->client->ship, (Vector3){agent->x, agent->y, agent->z}, 0.01f, COLORS[agent->item]);
+
+            float scale;
+            if (agent->unit == FIGHTER) {
+                scale = 0.01f;
+            } else if (agent->unit == TANK) {
+                scale = 0.025f;
+            } else if (agent->unit == MOTHERSHIP) {
+                scale = 0.05f;
+            }
+            DrawModel(env->client->ship, (Vector3){agent->x, agent->y, agent->z}, scale, COLORS[agent->item]);
 
             if (agent->target >= 0) {
                 Entity* target = &env->agents[agent->target];
