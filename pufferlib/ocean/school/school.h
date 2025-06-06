@@ -46,9 +46,15 @@ typedef struct {
     float speed;
     float pitch;
     float roll;
+    float health;
+    float max_turn;
+    float max_speed;
+    float attack_damage;
+    float attack_range;
     Quat orientation;
     float yaw;
     int item;
+    int target;
     int episode_length;
     float episode_return;
 } Entity;
@@ -75,6 +81,79 @@ typedef struct {
 void init(School* env) {
     env->agents = calloc(env->num_agents, sizeof(Entity));
     env->factories = calloc(env->num_factories, sizeof(Entity));
+}
+
+void update_abilities(Entity* agent) {
+    agent->health = 1.0f;
+    agent->attack_damage = 0.4f;
+    agent->attack_range = 0.2f;
+
+    if (agent->item == 0) {
+        agent->max_turn = 0.75f;
+        agent->max_speed = 0.75f;
+    } else if (agent->item == 1) {
+        agent->max_turn = 1.0f;
+        agent->max_speed = 0.5f;
+    } else if (agent->item == 2) {
+        agent->max_turn = 0.5f;
+        agent->max_speed = 1.0f;
+    } else if (agent->item == 3) {
+        agent->max_turn = 1.5f;
+        agent->max_speed = 0.25f;
+    }
+}
+
+void respawn(School* env, Entity* agent) {
+    //agent->x = randf(-env->size_x, env->size_x);
+    //agent->y = randf(-env->size_y, env->size_y);
+    //agent->z = randf(-env->size_z, env->size_z);
+    if (agent->item == 0) {
+        agent->x = -env->size_x;
+        agent->y = 0.0f;
+        agent->z = 0.0f;
+    } else if (agent->item == 1) {
+        agent->x = env->size_x;
+        agent->y = 0.0f;
+        agent->z = 0.0f;
+    } else if (agent->item == 2) {
+        agent->x = 0.0f;
+        agent->y = 0.0f;
+        agent->z = -env->size_z;
+    } else if (agent->item == 3) {
+        agent->x = 0.0f;
+        agent->y = 0.0f;
+        agent->z = env->size_z;
+    }
+}
+
+
+bool attack(Entity *agent, Entity *target) {
+    float dx = target->x - agent->x;
+    float dy = target->y - agent->y;
+    float dz = target->z - agent->z;
+    float dd = sqrtf(dx*dx + dy*dy + dz*dz);
+
+    if (dd > agent->attack_range) {
+        return false;
+    }
+
+    // Unit vec to target
+    dy /= dd;
+    dz /= dd;
+    dx /= dd;
+
+    // Unit forward vec
+    float mag = sqrtf(agent->vx*agent->vx + agent->vy*agent->vy + agent->vz*agent->vz);
+    float fx = agent->vx / mag;
+    float fy = agent->vy / mag;
+    float fz = agent->vz / mag;
+
+    // Angle to target
+    float angle = acosf(dx*fx + dy*fy + dz*fz);
+    if (angle < PI/6) {
+        return true;
+    }
+    return false;
 }
 
 static inline float clampf(float v, float min, float max) {
@@ -206,13 +285,13 @@ void move_basic(School* env, Entity* agent, int* actions) {
 
 void move_ship(School* env, Entity* agent, int* actions) {
     // Compute deltas from actions (same as original)
-    float d_pitch = ((float)actions[0] - 4.0f) / 20.0f;
-    float d_roll = ((float)actions[1] - 4.0f) / 20.0f;
-    float d_yaw = ((float)actions[2] - 4.0f) / 20.0f;
+    float d_pitch = agent->max_turn * ((float)actions[0] - 4.0f) / 20.0f;
+    float d_roll = agent->max_turn * ((float)actions[1] - 4.0f) / 20.0f;
+    //float d_yaw = agent->max_turn * ((float)actions[2] - 4.0f) / 20.0f;
 
     // Update speed and clamp
-    agent->speed = MAX_SPEED;
-    agent->speed = clampf(agent->speed, 0.0f, MAX_SPEED); // Assuming MAX_SPEED is defined
+    agent->speed = agent->max_speed * MAX_SPEED;
+    //agent->speed = clampf(agent->speed, 0.0f, agent->max_speed * MAX_SPEED); // Assuming MAX_SPEED is defined
 
     // Get local axes in world coordinates for pitch and roll
     Vec3 x_axis = quat_rotate(agent->orientation, (Vec3){1.0f, 0.0f, 0.0f}); // Pitch axis
@@ -321,12 +400,14 @@ void compute_observations(School* env) {
 // Required function
 void c_reset(School* env) {
     for (int i=0; i<env->num_agents; i++) {
-        env->agents[i].x = randf(-env->size_x, env->size_x);
-        env->agents[i].y = randf(-env->size_y, env->size_y);
-        env->agents[i].z = randf(-env->size_z, env->size_z);
+        respawn(env, &env->agents[i]);
         env->agents[i].orientation = (Quat){1.0f, 0.0f, 0.0f, 0.0f};
         env->agents[i].item = rand() % env->num_resources;
+        update_abilities(&env->agents[i]);
         env->agents[i].episode_length = 0;
+        env->agents[i].target = -1;
+        env->agents[i].attack_range = 0.2f;
+        env->agents[i].attack_damage = 0.4f;
     }
     for (int i=0; i<env->num_factories; i++) {
         env->factories[i].x = randf(-env->size_x, env->size_x);
@@ -341,19 +422,30 @@ void c_reset(School* env) {
 }
 
 void c_step(School* env) {
+    memset(env->rewards, 0, env->num_agents*sizeof(float));
+    memset(env->terminals, 0, env->num_agents*sizeof(unsigned char));
+
     for (int i=0; i<env->num_agents; i++) {
-        env->terminals[i] = 0;
-        env->rewards[i] = 0;
         Entity* agent = &env->agents[i];
         agent->episode_length += 1;
+        agent->target = -1;
+
+        if (agent->health <= 0) {
+            agent->health = 1.0f;
+            respawn(env, agent);
+
+            env->log.episode_length += agent->episode_length;
+            env->log.episode_return += agent->episode_return;
+            env->log.n++;
+            agent->episode_length = 0;
+            agent->episode_return = 0;
+        }
 
         //move_basic(env, agent, env->actions + 3*i);
         move_ship(env, agent, env->actions + 3*i);
 
         if (rand() % env->num_agents == 0) {
-            env->agents[i].x = randf(-env->size_x, env->size_x);
-            env->agents[i].y = randf(-env->size_y, env->size_y);
-            env->agents[i].z = randf(-env->size_z, env->size_z);
+            respawn(env, &env->agents[i]);
         }
 
         // Collision penalty
@@ -408,6 +500,8 @@ void c_step(School* env) {
         }
         */
 
+        // Target seeking reward
+        /*
         for (int f=0; f<env->num_factories; f++) {
             Entity* factory = &env->factories[f];
             float dx = (factory->x - agent->x);
@@ -419,6 +513,7 @@ void c_step(School* env) {
             }
             if (factory->item == agent->item) {
                 agent->item = (agent->item + 1) % env->num_resources;
+                update_abilities(agent);
                 env->log.perf += 1.0f;
                 env->log.score += 1.0f;
                 env->log.episode_length += agent->episode_length;
@@ -427,6 +522,7 @@ void c_step(School* env) {
                 agent->episode_length = 0;
             }
         }
+        */
     }
     for (int f=0; f<env->num_factories; f++) {
         Entity* factory = &env->factories[f];
@@ -447,6 +543,29 @@ void c_step(School* env) {
             factory->z = factory_z;
         }
     }
+    for (int i=0; i<env->num_agents; i++) {
+        Entity* agent = &env->agents[i];
+        for (int j=0; j<env->num_agents; j++) {
+            if (j == i) {
+                continue;
+            }
+            Entity* target = &env->agents[j];
+            if (agent->item == target->item) {
+                continue;
+            }
+            if (!attack(agent, target)) {
+                continue;
+            }
+            agent->target = j;
+            env->rewards[i] += 0.25f;
+            agent->episode_return += 0.25f;
+            //env->rewards[j] -= 0.25f;
+            target->health -= agent->attack_damage;
+            break;
+        }
+    }
+
+
     compute_observations(env);
 }
 
@@ -468,8 +587,8 @@ void c_render(School* env) {
         InitWindow(env->width, env->height, "PufferLib School");
         SetTargetFPS(30);
         env->client = (Client*)calloc(1, sizeof(Client));
-        //env->client->ship = LoadModel("glider.glb");
-        env->client->ship = LoadModel("resources/puffer.glb");
+        env->client->ship = LoadModel("glider.glb");
+        //env->client->ship = LoadModel("resources/puffer.glb");
 
         Camera3D camera = { 0 };
                                                            //
@@ -507,18 +626,6 @@ void c_render(School* env) {
             DrawSphere((Vector3){agent->x, agent->y, agent->z}, 0.01, COLORS[agent->item]);
             */
 
-            float w = agent->orientation.w, x = agent->orientation.x, y = agent->orientation.y, z = agent->orientation.z;
-            float x2 = x * x, y2 = y * y, z2 = z * z;
-            float xy = x * y, xz = x * z, yz = y * z;
-            float wx = w * x, wy = w * y, wz = w * z;
-
-            float m[16] = {
-                1 - 2 * (y2 + z2), 2 * (xy - wz), 2 * (xz + wy), agent->x,
-                2 * (xy + wz), 1 - 2 * (x2 + z2), 2 * (yz - wx), agent->y,
-                2 * (xz - wy), 2 * (yz + wx), 1 - 2 * (x2 + y2), agent->z,
-                0, 0, 0, 1
-            };
-
             /*
             Matrix transform = {
                 1 - 2 * (y2 + z2), 2 * (xy - wz), 2 * (xz + wy), agent->x,
@@ -551,7 +658,16 @@ void c_render(School* env) {
             */
 
             env->client->ship.transform = MatrixRotateXYZ(angle);
-            DrawModel(env->client->ship, (Vector3){agent->x, agent->y, agent->z}, 3.00f, COLORS[agent->item]);
+            DrawModel(env->client->ship, (Vector3){agent->x, agent->y, agent->z}, 0.01f, COLORS[agent->item]);
+
+            if (agent->target >= 0) {
+                Entity* target = &env->agents[agent->target];
+                DrawLine3D(
+                    (Vector3){agent->x, agent->y, agent->z},
+                    (Vector3){target->x, target->y, target->z},
+                    COLORS[agent->item]
+                );
+            }
         }
 
         DrawCubeWires(
