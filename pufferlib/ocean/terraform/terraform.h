@@ -432,6 +432,7 @@ float scoop_dirt(Terraform* env, int x, int y, int bucket_atn, int agent_idx, Do
 
 void reset_quadrant(Terraform* env, int agent_idx) {
     env->complete_quadrants[env->dozers[agent_idx].target_quadrant] = 1;
+    env->quadrants_solved += 1.0f;
     int quadrants_remaining[env->num_quadrants - (int)env->quadrants_solved];
     int quadrant_remaining_count = 0;
     for(int i = 0; i < env->num_quadrants; i++) {
@@ -440,16 +441,18 @@ void reset_quadrant(Terraform* env, int agent_idx) {
             quadrant_remaining_count++;
         }
     }
+    if(env->quadrants_solved == env->num_quadrants) {
+        return;
+    }
     env->dozers[agent_idx].target_quadrant = quadrants_remaining[rand() % quadrant_remaining_count];
     env->target_quadrant_delta = env->current_quadrant_deltas[env->dozers[agent_idx].target_quadrant];
     env->quadrant_progress = 0.0f;
     env->highest_quadrant_progress = 0.0f;
-    env->quadrants_solved += 1.0f;
 }
 
 void c_step(Terraform* env) {
     env->tick += 1;
-    if ((env->reset_frequency && env->tick % env->reset_frequency == 0)) {
+    if ((env->reset_frequency && env->tick % env->reset_frequency == 0) || env->quadrants_solved == env->num_quadrants) {
         add_log(env);
         c_reset(env);
         return;
