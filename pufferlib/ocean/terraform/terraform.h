@@ -32,7 +32,7 @@ const unsigned char TARGET = 2;
 #define BUCKET_MAX_HEIGHT 1.0f
 #define DOZER_MAX_V 2.0f
 #define DOZER_CAPACITY 100.0f
-#define BUCKET_OFFSET 5.0f
+#define BUCKET_OFFSET 2.0f
 #define BUCKET_WIDTH 2.5f
 #define BUCKET_LENGTH 0.8f
 #define BUCKET_HEIGHT 1.0f
@@ -203,14 +203,37 @@ void init(Terraform* env) {
     env->complete_quadrants = calloc(env->num_quadrants, sizeof(int));
     env->current_quadrant_deltas = calloc(env->num_quadrants, sizeof(float));
     for (int i = 0; i < env->size*env->size; i++) {
-    //    int rand_chosen = rand() % 2; 
-    //    if(rand_chosen){
-    //         env->target_map[i] = 2;
-    //    } else {
-    //         env->target_map[i] = 0;
-    //    }
-        env->target_map[i] = 1;
+        env->target_map[i] = 1;  // Initialize all to empty
     }
+
+    // Calculate grid dimensions for quadrants
+    const int QUADRANT_SIZE = 11;
+    const int MIN_SPACING = 3;
+    const int TOTAL_SPACE = QUADRANT_SIZE + MIN_SPACING;
+
+    // Calculate how many quadrants we can fit in each dimension
+    int num_quadrants_x = (env->size - MIN_SPACING) / TOTAL_SPACE;
+    int num_quadrants_y = (env->size - MIN_SPACING) / TOTAL_SPACE;
+
+    // Place quadrants in a grid pattern
+    // for (int grid_y = 0; grid_y < num_quadrants_y; grid_y++) {
+    //     for (int grid_x = 0; grid_x < num_quadrants_x; grid_x++) {
+    //         // Calculate starting position for this quadrant
+    //         int start_x = MIN_SPACING + grid_x * TOTAL_SPACE;
+    //         int start_y = MIN_SPACING + grid_y * TOTAL_SPACE;
+            
+    //         // Place the 11x11 quadrant
+    //         for (int y = 0; y < QUADRANT_SIZE; y++) {
+    //             for (int x = 0; x < QUADRANT_SIZE; x++) {
+    //                 int pos_x = start_x + x;
+    //                 int pos_y = start_y + y;
+    //                 if (pos_x < env->size && pos_y < env->size) {
+    //                     env->target_map[pos_y * env->size + pos_x] = 1;  // Mark as target
+    //                 }
+    //             }
+    //         }
+    //     }
+    // } 
     env->dozers = calloc(env->num_agents, sizeof(Dozer));
     clock_gettime(CLOCK_REALTIME, &ts);
     unsigned int base_seed = (unsigned int)(ts.tv_nsec ^ ts.tv_sec ^ getpid());
@@ -471,10 +494,18 @@ void c_step(Terraform* env) {
         float cx = dozer->x + BUCKET_OFFSET*cosf(dozer->heading);
         float cy = dozer->y + BUCKET_OFFSET*sinf(dozer->heading);
         float total_change = 0.0f;
-        for (int x = cx - SCOOP_SIZE; x < cx + SCOOP_SIZE; x++) {
-            for (int y = cy - SCOOP_SIZE; y < cy + SCOOP_SIZE; y++) {
-                total_change += scoop_dirt(env, x, y, bucket_atn, i, dozer);
-            }
+        // for (int x = cx - SCOOP_SIZE; x < cx + SCOOP_SIZE; x++) {
+        //     for (int y = cy - SCOOP_SIZE; y < cy + SCOOP_SIZE; y++) {
+        //         total_change += scoop_dirt(env, x, y, bucket_atn, i, dozer);
+        //     }
+        // }
+        float perp_heading = dozer->heading + PI/2.0f;
+        
+        // Scoop along a line perpendicular to heading
+        for (int offset = -SCOOP_SIZE; offset <= SCOOP_SIZE; offset++) {
+            float scoop_x = cx + offset * cosf(perp_heading);
+            float scoop_y = cy + offset * sinf(perp_heading);
+            total_change += scoop_dirt(env, (int)scoop_x, (int)scoop_y, bucket_atn, i, dozer);
         }
 
         // compute delta progress
@@ -963,28 +994,30 @@ void c_render(Terraform* env) {
         DrawModel(client->dozer, (Vector3){0, 0, 0}, 0.25f, WHITE);
         rlPopMatrix();
         // DrawCube((Vector3){dozer->x, y, dozer->y}, 1.0f, 1.0f, 1.0f, PUFF_WHITE);
-        int dialate = 1;
-        int x_offset = env->dozers[i].x - dialate*VISION;
-        int y_offset = env->dozers[i].y - dialate*VISION;
-        for (int x = 0; x < 2*dialate*VISION + 1; x+=dialate) {
-            for (int y = 0; y < 2*dialate*VISION + 1; y+=dialate) {
-                // if(x_offset + x < 0 || x_offset + x >= env->size || y_offset + y < 0 || y_offset + y >= env->size) {
-                //     continue;
-                // }
-                float obs_x = x_offset + x;
-                float obs_y = y_offset + y;
-                Color clr = PUFF_WHITE;
-                int idx = y*(2*VISION+1) + x;
-                if(env->observations[242 + idx] == 1.0f) {
-                    clr = PUFF_RED;
+        if(IsKeyDown(KEY_LEFT_CONTROL)) {
+            int dialate = 1;
+            int x_offset = env->dozers[i].x - dialate*VISION;
+            int y_offset = env->dozers[i].y - dialate*VISION;
+            for (int x = 0; x < 2*dialate*VISION + 1; x+=dialate) {
+                for (int y = 0; y < 2*dialate*VISION + 1; y+=dialate) {
+                    // if(x_offset + x < 0 || x_offset + x >= env->size || y_offset + y < 0 || y_offset + y >= env->size) {
+                    //     continue;
+                    // }
+                    float obs_x = x_offset + x;
+                    float obs_y = y_offset + y;
+                    Color clr = PUFF_WHITE;
+                    int idx = y*(2*VISION+1) + x;
+                    if(env->observations[242 + idx] == 1.0f) {
+                        clr = PUFF_RED;
+                    }
+                    DrawCube((Vector3){x_offset + x, yy, y_offset + y}, 0.5f, 0.5f, 0.5f, clr);
                 }
-                DrawCube((Vector3){x_offset + x, yy, y_offset + y}, 0.5f, 0.5f, 0.5f, clr);
             }
         }
         int step = 1;
         for (int k = 0; k < env->size; k += step) {
             for (int l = 0; l < env->size; l += step) {
-               int idx = k * env->size + l;
+            int idx = k * env->size + l;
                 Color color = RED;
                 if (env->grid_indices[idx] == env->dozers[i].target_quadrant) {
                     color = GREEN;
@@ -993,6 +1026,7 @@ void c_render(Terraform* env) {
                 }
             }
         }
+        
     }
     EndMode3D();
     //DrawText(TextFormat("Dozer x: %f", x), 10, 150, 20, PUFF_WHITE);
