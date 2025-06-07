@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <stdint.h>
 #include <stddef.h>
+#include <unistd.h>
 #include <math.h>
 #include <assert.h>
 #include <string.h>
@@ -81,6 +82,8 @@ static const int collision_offsets[25][2] = {
     {-2,  1}, {-1,  1}, {0,  1}, {1,  1}, {2,  1},  // Fourth row
     {-2,  2}, {-1,  2}, {0,  2}, {1,  2}, {2,  2}   // Bottom row
 };
+
+struct timespec ts;
 
 typedef struct GPUDrive GPUDrive;
 typedef struct Client Client;
@@ -1202,8 +1205,8 @@ void c_step(GPUDrive* env){
 	    env->logs[i].episode_length += 1;
         int agent_idx = env->active_agent_indices[i];
         env->entities[agent_idx].collision_state = 0;
-        //move_dynamics(env, i, agent_idx);
-        move_expert(env, env->actions, agent_idx);
+        move_dynamics(env, i, agent_idx);
+        //move_expert(env, env->actions, agent_idx);
     }
     for(int i = 0; i < env->active_agent_count; i++){
         int agent_idx = env->active_agent_indices[i];
@@ -1231,7 +1234,7 @@ void c_step(GPUDrive* env){
             if(!env->entities[agent_idx].reached_goal_this_episode){
                 env->entities[agent_idx].collided_before_goal = 1;
             }
-            printf("agent %d collided\n", agent_idx);
+            //printf("agent %d collided\n", agent_idx);
         }
 
         float distance_to_goal = relative_distance_2d(
@@ -1256,9 +1259,9 @@ void c_step(GPUDrive* env){
         int agent_idx = env->active_agent_indices[i];
         int reached_goal = env->entities[agent_idx].reached_goal;
         int collision_state = env->entities[agent_idx].collision_state;
-        /*if(reached_goal || collision_state > 0){
+        if(reached_goal || collision_state > 0){
             respawn_agent(env, agent_idx);
-        }*/
+        }
     }
     compute_observations(env);
 }   

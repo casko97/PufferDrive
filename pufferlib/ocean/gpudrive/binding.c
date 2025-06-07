@@ -70,7 +70,8 @@ static int my_put(Env* env, PyObject* args, PyObject* kwargs) {
 static PyObject* my_shared(PyObject* self, PyObject* args, PyObject* kwargs) {
     int num_agents = unpack(kwargs, "num_agents");
     int num_maps = unpack(kwargs, "num_maps");
-    srand(time(NULL));
+    clock_gettime(CLOCK_REALTIME, &ts);
+    srand(ts.tv_nsec);
     int total_agent_count = 0;
     int env_count = 0;
     int max_envs = num_agents;
