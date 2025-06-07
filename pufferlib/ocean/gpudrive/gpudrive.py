@@ -43,6 +43,9 @@ class GPUDrive(pufferlib.PufferEnv):
             raise FileNotFoundError(f"Required directory {binary_path} not found. Please ensure the GPUDrive maps are downloaded and installed correctly per docs.")
         agent_offsets, map_ids, num_envs = binding.shared(num_agents=num_agents, num_maps=num_maps)
         self.num_agents = num_agents
+        self.agent_offsets = agent_offsets
+        self.map_ids = map_ids
+        self.num_envs = num_envs
         super().__init__(buf=buf)
         env_ids = []
         for i in range(num_envs):
@@ -74,6 +77,7 @@ class GPUDrive(pufferlib.PufferEnv):
         return self.observations, []
 
     def step(self, actions):
+        self.terminals[:] = 0
         self.actions[:] = actions
         binding.vec_step(self.c_envs)
         self.tick+=1
@@ -88,6 +92,7 @@ class GPUDrive(pufferlib.PufferEnv):
             if will_resample:
                 binding.vec_close(self.c_envs)
                 agent_offsets, map_ids, num_envs = binding.shared(num_agents=self.num_agents, num_maps=self.num_maps)
+                print(len(dict.fromkeys(map_ids)))
                 env_ids = []
                 seed = np.random.randint(0, 2**32-1)
                 print("Resampling")
@@ -112,12 +117,9 @@ class GPUDrive(pufferlib.PufferEnv):
                     )
                     env_ids.append(env_id)
                 self.c_envs = binding.vectorize(*env_ids)
-                '''
-                seed = np.random.randint(0, 2**32-1)
-                '''
-                binding.vec_reset(self.c_envs, seed)
-        
 
+                binding.vec_reset(self.c_envs, seed)
+                self.terminals[:] = 1
         return (self.observations, self.rewards,
             self.terminals, self.truncations, info)
 
