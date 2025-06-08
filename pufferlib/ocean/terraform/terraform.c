@@ -1,7 +1,7 @@
 #include "terraform.h"
 
 void allocate(Terraform* env) {
-    env->observations = (float*)calloc(env->num_agents*370, sizeof(float));
+    env->observations = (float*)calloc(env->num_agents*491, sizeof(float));
     env->actions = (int*)calloc(3*env->num_agents, sizeof(int));
     env->rewards = (float*)calloc(env->num_agents, sizeof(float));
     env->terminals = (unsigned char*)calloc(env->num_agents, sizeof(unsigned char));
@@ -57,7 +57,7 @@ void test_performance(int timeout) {
     Terraform env = {
         .size = 64,
         .num_agents = 1,
-        .reset_frequency = 8192,
+        .reset_frequency = 512,
         .reward_scale = 0.01f,
     };
     allocate(&env);
@@ -83,7 +83,7 @@ void test_performance(int timeout) {
 }
 
 int main() {
-    test_performance(10);
-    // demo();
+    // test_performance(10);
+    demo();
 }
 
