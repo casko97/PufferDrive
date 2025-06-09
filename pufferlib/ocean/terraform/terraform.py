@@ -13,7 +13,7 @@ class Terraform(pufferlib.PufferEnv):
             render_mode=None, log_interval=32, buf=None, seed=0, reset_frequency=8192,
                  reward_scale=0.01):
         self.single_observation_space = gymnasium.spaces.Box(low=0, high=1,
-            shape=(4*OBS_SIZE*OBS_SIZE + 7,), dtype=np.float32)
+            shape=(3*OBS_SIZE*OBS_SIZE + 7,), dtype=np.float32)
         self.single_action_space = gymnasium.spaces.MultiDiscrete([5, 5, 3], dtype=np.int32)
         self.render_mode = render_mode
         self.num_agents = num_envs*num_agents
@@ -66,9 +66,9 @@ class Terraform(pufferlib.PufferEnv):
 
 if __name__ == '__main__':
     TIME = 10
-    env = Terraform(num_envs=512, num_agents=4, render_mode='human', size=11)
-    actions = np.random.randint(0, 5, 2048)
-    env.reset()
+    env = Terraform(num_envs=512, num_agents=1, render_mode='human', map_size=64, seed=0)
+    actions = np.random.randint(0, 5, (512, 3))  # Changed from the stack approach
+
 
     import time
     steps = 0
@@ -77,7 +77,7 @@ if __name__ == '__main__':
         env.step(actions)
         steps += 2048
 
-    print('Cython SPS:', steps / (time.time() - start))
+    print('SPS:', env.num_agents * steps / (time.time() - start))
 
 
 

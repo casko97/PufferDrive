@@ -32,7 +32,7 @@ const unsigned char TARGET = 2;
 #define BUCKET_MAX_HEIGHT 1.0f
 #define DOZER_MAX_V 2.0f
 #define DOZER_CAPACITY 100.0f
-#define BUCKET_OFFSET 2.0f
+#define BUCKET_OFFSET 3.0f
 #define BUCKET_WIDTH 2.5f
 #define BUCKET_LENGTH 0.8f
 #define BUCKET_HEIGHT 1.0f
@@ -135,10 +135,10 @@ void perlin_noise(float* map, int width, int height,
         for (int c = 0; c < width; c++) {
             int adr = r*width + c;
             map[adr] = glob_scale * scale * (map[adr] - min_value);
-            if (map[adr] < 64.0f) {
+            if (map[adr] < 34.0f) {
                 map[adr] = 0.0f;
             } else {
-                map[adr] -= 64.0f;
+                map[adr] -= 34.0f;
             }
         }
     }
@@ -216,7 +216,7 @@ void init(Terraform* env) {
     // int num_quadrants_x = (env->size - MIN_SPACING) / TOTAL_SPACE;
     // int num_quadrants_y = (env->size - MIN_SPACING) / TOTAL_SPACE;
 
-    // Place quadrants in a grid pattern
+    // // Place quadrants in a grid pattern
     // for (int grid_y = 0; grid_y < num_quadrants_y; grid_y++) {
     //     for (int grid_x = 0; grid_x < num_quadrants_x; grid_x++) {
     //         // Calculate starting position for this quadrant
@@ -237,8 +237,8 @@ void init(Terraform* env) {
     // } 
     env->dozers = calloc(env->num_agents, sizeof(Dozer));
     for (int i = 0; i < env->num_agents; i++) {
-        env->dozers[i].load_indices = calloc(2*SCOOP_SIZE + 1, sizeof(int));
-        for (int j = 0; j < 2*SCOOP_SIZE + 1; j++) {
+        env->dozers[i].load_indices = calloc((2*SCOOP_SIZE + 1)*(2*SCOOP_SIZE + 1), sizeof(int));
+        for (int j = 0; j < (2*SCOOP_SIZE + 1)*(2*SCOOP_SIZE + 1); j++) {
             env->dozers[i].load_indices[j] = -1;
         }
     }
@@ -252,7 +252,7 @@ void init(Terraform* env) {
     srand(seed2);
     int offset_x2 = rand() % 10000;
     int offset_y2 = rand() % 10000;
-    perlin_noise(env->orig_map, env->size, env->size, 1.0/(env->size / 4.0), 8, offset_x1, offset_y1, MAX_DIRT_HEIGHT+55);
+    perlin_noise(env->orig_map, env->size, env->size, 1.0/(env->size / 4.0), 8, offset_x1, offset_y1, MAX_DIRT_HEIGHT+20);
     // perlin_noise(env->target_map, env->size, env->size, 1.0/(env->size / 4.0), 8, offset_x2, offset_y2, MAX_DIRT_HEIGHT+55);
     env->returns = calloc(env->num_agents, sizeof(float));
     calculate_total_delta(env);
@@ -290,11 +290,10 @@ void add_log(Terraform* env) {
 
 void compute_all_observations(Terraform* env) {
     int dialate = 1;
-    int max_obs = 491;
+    int max_obs = 370;
     float (*observations)[max_obs] = (float(*)[max_obs])env->observations; 
     int channel_diff_offset = (2*VISION+1)*(2*VISION+1);
     int in_quadrant_offset = channel_diff_offset*2;
-    int load_in_target_quadrant_offset = channel_diff_offset*3;
     for (int i = 0; i < env->num_agents; i++) {
         int obs_idx = 0;
         float* obs = &observations[i][obs_idx];
@@ -309,7 +308,6 @@ void compute_all_observations(Terraform* env) {
                     obs[obs_idx] = 0;
                     obs[obs_idx + channel_diff_offset] = 0;
                     obs[obs_idx + in_quadrant_offset] = 0;
-                    obs[obs_idx + load_in_target_quadrant_offset] = 0;
                     obs_idx++;
                     continue;
                 }
@@ -318,19 +316,11 @@ void compute_all_observations(Terraform* env) {
                 float diff = ((float)(env->target_map[map_idx] - env->map[map_idx])) / (MAX_DIRT_HEIGHT * 2.0f);
                 obs[obs_idx + channel_diff_offset] = diff;
                 int in_target_quadrant = (env->grid_indices[map_idx] == env->dozers[i].target_quadrant);
-                float load_in_target_quadrant = 0;
-                for (int j = 0; j < 2*SCOOP_SIZE + 1; j++) {
-                    if (env->dozers[i].load_indices[j] != -1 && env->dozers[i].load_indices[j] == map_idx) {
-                        float val = ((env->grid_indices[env->dozers[i].load_indices[j]] == env->dozers[i].target_quadrant) + 1.0f) / 2.0f;
-                        load_in_target_quadrant = val;
-                    }
-                }
                 obs[obs_idx + in_quadrant_offset] = in_target_quadrant;
-                obs[obs_idx + load_in_target_quadrant_offset] = load_in_target_quadrant;
                 obs_idx++;
             }
         }
-        obs_idx += load_in_target_quadrant_offset;
+        obs_idx += in_quadrant_offset;
         
         Dozer* dozer = &env->dozers[i];
         obs[obs_idx++] = dozer->x / env->size;
@@ -353,8 +343,10 @@ void compute_all_observations(Terraform* env) {
         float dy = dozer->y - y;
         float goal_x = x - dozer->x;
         float goal_y = y - dozer->y;
-        float rel_goal_x = goal_x*cosf(dozer->heading) + goal_y*sinf(dozer->heading);
-        float rel_goal_y = -goal_x*sinf(dozer->heading) + goal_y*cosf(dozer->heading);
+        float cos_heading = cosf(dozer->heading);
+        float sin_heading = sinf(dozer->heading);
+        float rel_goal_x = goal_x*cos_heading + goal_y*sin_heading;
+        float rel_goal_y = -goal_x*sin_heading + goal_y*cos_heading;
         float max_dist = sqrtf(2) * env->size;
         float norm_x = rel_goal_x / max_dist;
         float norm_y = rel_goal_y / max_dist;
@@ -366,7 +358,7 @@ void compute_all_observations(Terraform* env) {
 
 void c_reset(Terraform* env) {
     memcpy(env->map, env->orig_map, env->size*env->size*sizeof(float));
-    memset(env->observations, 0, env->num_agents*491*sizeof(float));
+    memset(env->observations, 0, env->num_agents*370*sizeof(float));
     memset(env->returns, 0, env->num_agents*sizeof(float));
     env->tick = 0;
     env->current_total_delta = env->initial_total_delta;
@@ -386,7 +378,7 @@ void c_reset(Terraform* env) {
             env->dozers[i].y = rand() % env->size;
             env->dozers[i].target_quadrant = rand() % env->num_quadrants;
             env->target_quadrant_delta = env->current_quadrant_deltas[env->dozers[i].target_quadrant];
-            for (int j = 0; j < 2*SCOOP_SIZE + 1; j++) {
+            for (int j = 0; j < (2*SCOOP_SIZE + 1)*(2*SCOOP_SIZE + 1); j++) {
                 env->dozers[i].load_indices[j] = -1;
             }
         } while (env->map[map_idx(env, env->dozers[i].x, env->dozers[i].y)] != 0.0f);
@@ -517,28 +509,36 @@ void c_step(Terraform* env) {
         float cx = dozer->x + BUCKET_OFFSET*cosf(dozer->heading);
         float cy = dozer->y + BUCKET_OFFSET*sinf(dozer->heading);
         float total_change = 0.0f;
-        // for (int x = cx - SCOOP_SIZE; x < cx + SCOOP_SIZE; x++) {
-        //     for (int y = cy - SCOOP_SIZE; y < cy + SCOOP_SIZE; y++) {
-        //         total_change += scoop_dirt(env, x, y, bucket_atn, i, dozer);
-        //     }
-        // }
-        float perp_heading = dozer->heading + PI/2.0f;
-        float cos_perp = cosf(perp_heading);
-        float sin_perp = sinf(perp_heading);
-        // Scoop along a line perpendicular to heading
         int load_idx = 0;
-        for (int offset = -SCOOP_SIZE; offset <= SCOOP_SIZE; offset++) {
-            float scoop_x = cx + offset * cos_perp;
-            float scoop_y = cy + offset * sin_perp;
-            if (scoop_x < 0 || scoop_x >= env->size || scoop_y < 0 || scoop_y >= env->size) {
-                env->dozers[i].load_indices[load_idx] = -1;
+        for (int x = cx - SCOOP_SIZE; x < cx + SCOOP_SIZE; x++) {
+            for (int y = cy - SCOOP_SIZE; y < cy + SCOOP_SIZE; y++) {
+                if (x < 0 || x >= env->size || y < 0 || y >= env->size) {
+                    env->dozers[i].load_indices[load_idx] = -1;
+                    load_idx++;
+                    continue;
+                }
+                env->dozers[i].load_indices[load_idx] = map_idx(env, x, y);
                 load_idx++;
-                continue;
+                total_change += scoop_dirt(env, x, y, bucket_atn, i, dozer);
             }
-            env->dozers[i].load_indices[load_idx] = map_idx(env, scoop_x, scoop_y);
-            load_idx++;
-            total_change += scoop_dirt(env, scoop_x, scoop_y, bucket_atn, i, dozer);
         }
+        // float perp_heading = dozer->heading + PI/2.0f;
+        // float cos_perp = cosf(perp_heading);
+        // float sin_perp = sinf(perp_heading);
+        // // Scoop along a line perpendicular to heading
+        // int load_idx = 0;
+        // for (int offset = -SCOOP_SIZE; offset <= SCOOP_SIZE; offset++) {
+        //     float scoop_x = cx + offset * cos_perp;
+        //     float scoop_y = cy + offset * sin_perp;
+        //     if (scoop_x < 0 || scoop_x >= env->size || scoop_y < 0 || scoop_y >= env->size) {
+        //         env->dozers[i].load_indices[load_idx] = -1;
+        //         load_idx++;
+        //         continue;
+        //     }
+        //     env->dozers[i].load_indices[load_idx] = map_idx(env, scoop_x, scoop_y);
+        //     load_idx++;
+        //     total_change += scoop_dirt(env, scoop_x, scoop_y, bucket_atn, i, dozer);
+        // }
 
         // compute delta progress
         if (env->initial_total_delta > 0) {
@@ -644,13 +644,13 @@ void c_step(Terraform* env) {
         }
 
         // Teleportitis
-        if (env->tick % 512 == 0) {
-             do {
-                 env->dozers[i].x = rand() % env->size;
-                 env->dozers[i].y = rand() % env->size;
-                 env->stuck_count[i] = 0;
-             } while (env->map[map_idx(env, env->dozers[i].x, env->dozers[i].y)] != 0.0f);
-        }
+        // if (env->tick % 512 == 0) {
+        //      do {
+        //          env->dozers[i].x = rand() % env->size;
+        //          env->dozers[i].y = rand() % env->size;
+        //          env->stuck_count[i] = 0;
+        //      } while (env->map[map_idx(env, env->dozers[i].x, env->dozers[i].y)] != 0.0f);
+        // }
  
     }
     
@@ -1042,10 +1042,11 @@ void c_render(Terraform* env) {
                     if(env->observations[242 + idx] == 1.0f) {
                         clr = PUFF_RED;
                     }
-                    if(env->observations[363 + idx]*2.0f == 1.0f){
-                        clr = BLUE;
-                    } else if(env->observations[363 + idx]*2.0f == 2.0f){
-                        clr = GREEN;
+                    for(int j = 0; j < (2*SCOOP_SIZE + 1)*(2*SCOOP_SIZE + 1); j++) {
+                        if(env->dozers[i].load_indices[j] == map_idx(env, x_offset + x, y_offset + y)){
+                            clr = BLUE;
+                            break;
+                        }
                     }
                     DrawCube((Vector3){x_offset + x, yy, y_offset + y}, 0.5f, 0.5f, 0.5f, clr);
                 }
