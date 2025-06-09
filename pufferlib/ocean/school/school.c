@@ -42,17 +42,57 @@ int main() {
     c_reset(&env);
     c_render(&env);
 
-    // while(True) will break web builds
+    int ctrl = 0;
+
     while (!WindowShouldClose()) {
         for (int i=0; i<env.num_agents; i++) {
             Entity* agent = &env.agents[i];
             int item = agent->item;
-            float dx = env.observations[num_obs*i + 3*item];
-            float dy = env.observations[num_obs*i + 3*item + 1];
-            float dz = env.observations[num_obs*i + 3*item + 2];
-            env.actions[3*i] = (dx > 0.0f) ? 6 : 2;
-            env.actions[3*i + 1] = (dy > 0.0f) ? 6 : 2;
-            env.actions[3*i + 2] = (dz > 0.0f) ? 6 : 2;
+            float vx = env.observations[num_obs*i + 3*item];
+            float vy = env.observations[num_obs*i + 3*item + 1];
+            float vz = env.observations[num_obs*i + 3*item + 2];
+            float yaw = env.observations[num_obs*i + 3*item + 3];
+            float pitch = env.observations[num_obs*i + 3*item + 4];
+            float roll = env.observations[num_obs*i + 3*item + 5];
+            float x = env.observations[num_obs*i + 3*item + 6];
+            float y = env.observations[num_obs*i + 3*item + 7];
+            float z = env.observations[num_obs*i + 3*item + 8];
+
+            if (agent->unit == INFANTRY || agent->unit == TANK || agent->unit == ARTILLERY) {
+                env.actions[3*i] = (vx > 0.0f) ? 6 : 2;
+                env.actions[3*i + 2] = (vz > 0.0f) ? 6 : 2;
+            } else {
+                float desired_pitch = atan2f(-y, sqrt(x*x + z*z));
+                float pitch_error = desired_pitch - pitch;
+                if (pitch_error > 0) {
+                    env.actions[3*i] = 6; // pitch up
+                } else if (pitch_error < 0) {
+                    env.actions[3*i] = 2; // pitch down
+                }
+                env.actions[3*i] = 4;
+
+                env.actions[3*i + 1] = 4;
+
+                // Roll control
+                float desired_yaw = atan2f(-x, -z); // Direction to origin
+                float current_yaw = atan2f(vx, vz); // Current velocity direction
+                float yaw_error = desired_yaw - yaw;
+
+                // Normalize yaw_error to [-PI, PI]
+                if (yaw_error > PI) yaw_error -= 2*PI;
+                if (yaw_error < -PI) yaw_error += 2*PI;
+
+                //printf("%f %f\n", yaw_error, yaw);
+
+                if (yaw_error > 0.1f) {
+                    env.actions[3*i + 1] = 2; // roll left
+                } else if (yaw_error < -0.1f) {
+                    env.actions[3*i + 1] = 6; // roll right
+                } else {
+                    env.actions[3*i + 1] = 4; // neutral roll (assuming 0 is valid)
+                }
+
+            }
             //float dpitch = atan2f(dz, sqrtf(dx*dx + dy*dy));
             //float droll = asinf(dz/sqrtf(dx*dx + dy*dy + dz*dz));
             //env.actions[3*i] = 6;
@@ -65,6 +105,49 @@ int main() {
             //env.actions[3*i + 1] = 4.0f;
             //env.actions[3*i + 2] = 4.0f;
         }
+
+        if (IsKeyDown(KEY_LEFT_SHIFT)) {
+            if (IsKeyPressed(KEY_TAB)) {
+                ctrl = (ctrl + 1) % env.num_agents;
+            }
+            int i = ctrl;
+            float vx = env.observations[num_obs*i + 3*env.num_resources];
+            float vy = env.observations[num_obs*i + 3*env.num_resources + 1];
+            float vz = env.observations[num_obs*i + 3*env.num_resources + 2];
+            float x = env.observations[num_obs*i + 3*env.num_resources + 6];
+            float y = env.observations[num_obs*i + 3*env.num_resources + 7];
+            float z = env.observations[num_obs*i + 3*env.num_resources + 8];
+
+            Camera3D* camera = &(env.client->camera);
+            camera->target = (Vector3){x, y, z};
+
+            float dd = sqrtf(vx*vx + vy*vy + vz*vz);
+            float forward_x = vx / dd;
+            float forward_y = vy / dd;
+            float forward_z = vz / dd;
+
+            float dist = 0.5f;
+            camera->position = (Vector3){
+                x - dist*forward_x,
+                y - dist*forward_y + 0.5f,
+                z - dist*forward_z
+            };
+
+            env.actions[3*i] = 4;
+            if (IsKeyDown(KEY_W)) {
+                env.actions[3*i] = 6;
+            } else if (IsKeyDown(KEY_S)) {
+                env.actions[3*i] = 2;
+            }
+
+            env.actions[3*i + 1] = 4;
+            if (IsKeyDown(KEY_A)) {
+                env.actions[3*i + 1] = 6;
+            } else if (IsKeyDown(KEY_D)) {
+                env.actions[3*i + 1] = 2;
+            }
+        }
+
 
         //forward_linearlstm(net, env.observations, env.actions);
         compute_observations(&env);
