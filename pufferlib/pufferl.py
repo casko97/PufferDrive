@@ -940,7 +940,7 @@ def eval(env_name, args=None, vecenv=None, policy=None):
 
         with torch.no_grad():
             ob = torch.as_tensor(ob).to(device)
-            logits, value = policy(ob, state)
+            logits, value = policy.forward_eval(ob, state)
             action, logprob, _ = pufferlib.pytorch.sample_logits(logits)
             action = action.cpu().numpy().reshape(vecenv.action_space.shape)
 
