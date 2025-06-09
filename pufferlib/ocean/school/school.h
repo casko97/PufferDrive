@@ -14,6 +14,10 @@
 #include "rlgl.h"
 #include "simplex.h"
 
+#define RLIGHTS_IMPLEMENTATION
+#include "rlights.h"
+
+
 #if defined(PLATFORM_DESKTOP)
     #define GLSL_VERSION 330
 #else
@@ -75,12 +79,14 @@ typedef struct {
 
 typedef struct {
     Camera3D camera;
-    Model ship;
-    Model ground;
+    Light light;
+    Model models[7];
     Mesh* mesh;
     Model model;
+    Shader light_shader;
     Shader terrain_shader;
     Texture2D terrain_texture;
+    Texture2D vehicle_texture;
     int terrain_shader_loc;
     unsigned char *terrain_data;
 } Client;
@@ -480,29 +486,24 @@ void move_basic(School* env, Entity* agent, int* actions) {
 void move_ground(School* env, Entity* agent, int* actions) {
     float d_theta = -((float)actions[1] - 4.0f)/40.0f;
 
-    /*
-    Vector3 forward = quat_rotate(agent->orientation_quat, (Vector3){0, 0, -1});
-    float x = forward.x;
-    float y = forward.y;
-    float z = forward.z;
+    // Update speed and clamp
+    agent->speed = agent->max_speed * MAX_SPEED;
 
-    agent->orientation = (Vector3){
-        cosf(d_theta)*x - sinf(d_theta)*z,
-        y,
-        sinf(d_theta)*x + cosf(d_theta)*z
-    };
-    vec3_normalize(&agent->orientation);
+    Quaternion q_y = QuaternionFromAxisAngle((Vector3){0, 1, 0}, d_theta);
+    agent->orientation = QuaternionMultiply(q_y, agent->orientation);
+
+    Vector3 forward = Vector3RotateByQuaternion((Vector3){0, 0, 1}, agent->orientation);
+    forward = Vector3Normalize(forward);
 
     agent->speed = agent->max_speed * MAX_SPEED;
-    agent->vx = agent->speed * agent->orientation.x;
-    agent->vz = agent->speed * agent->orientation.z;
+    agent->vx = agent->speed * forward.x;
+    agent->vz = agent->speed * forward.z;
     agent->x += agent->vx;
     agent->z += agent->vz;
 
     agent->x = clip(agent->x, -env->size_x, env->size_x);
     agent->z = clip(agent->z, -env->size_z, env->size_z);
     agent->y = ground_height(env, agent->x, agent->z);
-    */
 }
 
 void move_ship(School* env, Entity* agent, int* actions, int i) {
@@ -556,14 +557,21 @@ void move_ship(School* env, Entity* agent, int* actions, int i) {
 
     agent->orientation = QuaternionMultiply(q, agent->orientation);
 
-    agent->x += agent->speed * forward.x;
-    agent->y += agent->speed * forward.y;
-    agent->z += agent->speed * forward.z;
+    // Jank plane physics
+    Vector3 v = {
+        agent->speed * (forward.x + local_up.x),
+        agent->speed * (forward.y + local_up.y - 1.0f),
+        agent->speed * (forward.z + local_up.z)
+    };
+
+    agent->x += v.x;
+    agent->y += v.y;
+    agent->z += v.z;
 
     // Just for visualization
-    agent->vx = agent->speed * forward.x;
-    agent->vy = agent->speed * forward.y;
-    agent->vz = agent->speed * forward.z;
+    agent->vx = v.x;
+    agent->vy = v.y;
+    agent->vz = v.z;
 
     // Clamp position to environment bounds
     agent->x = clampf(agent->x, -env->size_x, env->size_x);
@@ -689,6 +697,8 @@ void c_step(School* env) {
             float terrain_height = ground_height(env, agent->x, agent->z);
             if (agent->y < terrain_height) {
                 agent->health = 1.0f;
+                env->rewards[i] -= 1.0f;
+                agent->episode_return -= 1.0f;
                 respawn(env, agent);
                 env->log.episode_length += agent->episode_length;
                 env->log.episode_return += agent->episode_return;
@@ -989,12 +999,35 @@ void c_render(School* env) {
         SetTargetFPS(30);
         Client* client = (Client*)calloc(1, sizeof(Client));
         env->client = client;
-        client->ship = LoadModel("glider.glb");
-        client->ground = LoadModelFromMesh(GenMeshCube(1.0f, 1.0f, 1.0f));
+        client->models[DRONE] = LoadModel("resources/school/drone.glb");
+        client->models[FIGHTER] = LoadModel("resources/school/fighter.glb");
+        client->models[MOTHERSHIP] = LoadModel("resources/school/mothership.glb");
+        client->models[BOMBER] = LoadModel("resources/school/bomber.glb");
+        client->models[INFANTRY] = LoadModel("resources/school/car.glb");
+        client->models[TANK] = LoadModel("resources/school/tank.glb");
+        client->models[ARTILLERY] = LoadModel("resources/school/artillery.glb");
         //env->client->ship = LoadModel("resources/puffer.glb");
+        
+        char vsPath[256];
+        char fsPath[256];
+        sprintf(vsPath, "resources/tower_climb/shaders/gls%i/lighting.vs", GLSL_VERSION);
+        sprintf(fsPath, "resources/tower_climb/shaders/gls%i/lighting.fs", GLSL_VERSION);
+        client->light_shader = LoadShader(vsPath, fsPath);
+        client->light = CreateLight(LIGHT_DIRECTIONAL, 
+            (Vector3){ 0.0f, 10.0f, 0.0f },    // High above for top lighting
+            (Vector3){ 0.5f, -1.0f, 0.3f },    // Direction: down and slightly forward
+            (Color){ 180, 180, 190, 255 },    // Softer warm white for tops
+            client->light_shader);
 
+        for (int i = 0; i < ARTILLERY; i++) {
+            Model* m = &client->models[i];
+            for (int j = 0; j < m->materialCount; j++) {
+                //m->materials[j].maps[MATERIAL_MAP_DIFFUSE].texture = client->vehicle_texture;
+                m->materials[j].shader = client->light_shader;
+            }
+        }
+ 
         Camera3D camera = { 0 };
-                                                           //
         camera.up = (Vector3){ 0.0f, 1.0f, 0.0f };          // Camera up vector (rotation towards target)
         camera.fovy = 45.0f;                                // Camera field-of-view Y
         camera.projection = CAMERA_PERSPECTIVE;             // Camera projection type
@@ -1041,7 +1074,8 @@ void c_render(School* env) {
     }
 
     Client* client = env->client;
-    //UpdateCamera(&client->camera, CAMERA_ORBITAL);
+    UpdateCamera(&client->camera, CAMERA_ORBITAL);
+    //UpdateLightValues(client->light);
     BeginDrawing();
     ClearBackground((Color){6, 24, 24, 255});
     BeginMode3D(client->camera);
@@ -1063,36 +1097,10 @@ void c_render(School* env) {
 
             Vector3 pos = {agent->x, agent->y, agent->z};
             Matrix transform = QuaternionToMatrix(agent->orientation);
-            client->ship.transform = transform;
-            client->ground.transform = transform;
+            Model model = client->models[agent->unit];
+            model.transform = transform;
 
-            Vector3 scale;
-            Model model;
-            if (agent->unit == DRONE) {
-                scale = (Vector3){0.01f, 0.01f, 0.01f};
-                model = client->ship;
-            } else if (agent->unit == FIGHTER) {
-                scale = (Vector3){0.01f, 0.025f, 0.025f};
-                model = client->ship;
-            } else if (agent->unit == MOTHERSHIP) {
-                scale = (Vector3){0.05f, 0.05f, 0.05f};
-                model = client->ship;
-            } else if (agent->unit == BOMBER) {
-                scale = (Vector3){0.025f, 0.025f, 0.01f};
-                model = client->ship;
-            } else if (agent->unit == INFANTRY) {
-                scale = (Vector3){0.01f, 0.01f, 0.01f};
-                model = client->ground;
-            } else if (agent->unit == TANK) {
-                scale = (Vector3){0.025f, 0.025f, 0.01f};
-                model = client->ground;
-            } else if (agent->unit == ARTILLERY) {
-                scale = (Vector3){0.025f, 0.015f, 0.025f};
-                model = client->ground;
-            } else {
-                scale = (Vector3){0.05f, 0.05f, 0.05f};
-                model = client->ground;
-            }
+            Vector3 scale = (Vector3){0.01f, 0.01f, 0.01f};
             Color color = COLORS[agent->item];
             Vector3 rot = {0.0f, 1.0f, 0.0f};
             DrawModelEx(model, pos, rot, 0, scale, color);
