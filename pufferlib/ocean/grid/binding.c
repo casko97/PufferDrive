@@ -33,7 +33,7 @@ static PyObject* my_shared(PyObject* self, PyObject* args, PyObject* kwargs) {
         }
 
         float difficulty = (float)rand()/(float)(RAND_MAX);
-        create_maze_level(&env, sz, sz, difficulty, i + start_seed);
+        create_maze_level(&env, sz, sz, difficulty, start_seed + i);
         init_state(&levels[i], max_size, 1);
         get_state(&env, &levels[i]);
     }
