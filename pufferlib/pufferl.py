@@ -976,10 +976,9 @@ def sweep(args=None, env_name=None):
         total_timesteps = args['train']['total_timesteps']
         all_logs = train(env_name, args=args)
         all_logs = [e for e in all_logs if target_key in e]
-        scores = downsample_alt([log[target_key] for log in all_logs], 5)
-        costs = downsample_alt([log['uptime'] for log in all_logs], 5)
-        timesteps = downsample_alt([log['agent_steps'] for log in all_logs], 5)
-
+        scores = [all_logs[-1][target_key]]
+        costs = [all_logs[-1]['uptime']]
+        timesteps = [all_logs[-1]['agent_steps']]
         for score, cost, timestep in zip(scores, costs, timesteps):
             args['train']['total_timesteps'] = timestep
             sweep.observe(args, score, cost)
