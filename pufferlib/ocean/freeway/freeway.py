@@ -27,6 +27,7 @@ class Freeway(pufferlib.PufferEnv):
         buf=None,
         seed=0,
     ):
+        assert level < 8, "Level should be in {0, 1, 2, 3, 4, 5, 6, 7} or -1. Level -1 is a random mix of all 8 supported levels."
         self.single_observation_space = gymnasium.spaces.Box(
             low=0, high=1, shape=(34,), dtype=np.float32
         )
@@ -37,9 +38,7 @@ class Freeway(pufferlib.PufferEnv):
 
         self.single_action_space = gymnasium.spaces.Discrete(3)
 
-
         super().__init__(buf)
-        self.actions = self.actions.astype(np.float32)
 
         self.c_envs = binding.vec_init(
             self.observations,
@@ -88,8 +87,8 @@ class Freeway(pufferlib.PufferEnv):
     def close(self):
         binding.vec_close(self.c_envs)
 
-def test_performance(timeout=5, atn_cache=1024):
-    env = Freeway(num_envs=1000)
+def test_performance(timeout=60, level = 0,atn_cache=1024):
+    env = Freeway(num_envs=1024, level=level)
     env.reset()
     tick = 0
 
@@ -106,7 +105,7 @@ def test_performance(timeout=5, atn_cache=1024):
 
 def test_render(timeout=60, level = 0,atn_cache=1024):
     env = Freeway(num_envs=1, level=level)
-    env.reset(seed=10)
+    env.reset(seed=0)
     tick = 0
 
     actions = np.random.randint(0, 3, (atn_cache, env.num_agents))
@@ -115,13 +114,16 @@ def test_render(timeout=60, level = 0,atn_cache=1024):
     start = time.time()
     while time.time() - start < timeout:
         atn = actions[tick % atn_cache]
-        obs, rew, term, trunc, i = env.step(1)
+        obs, rew, term, trunc, i = env.step(atn)
         env.render()
         tick += 1
         if tick == 100:
             env.reset()
+    env.close()
+
 
 if __name__ == '__main__':
-    test_performance()
-    test_render(level = 0)
+    # test_performance()
+    for level in range(0,8):
+        test_performance(level = level, timeout=5, atn_cache=1024)
 

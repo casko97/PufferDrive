@@ -17,14 +17,15 @@
 // Gameplay related
 #define TICK_RATE 1.0f/60.0f
 #define GAME_LENGTH 136.0f // Game length in seconds
-#define TICKS_STUNT 60
-#define NUM_LANES 10
-
+#define RANDOMIZE_SPEED_FREQ 360 // How many ticks before randomize the speed of the enemies
+#define TICKS_STUNT 40
+#define PENALTY_HIT -0.01f // Penalty for hitting an enemy
 // Rendering related
 #define HALF_LINEWIDTH 2
 #define DASH_SPACING 32
 #define DASH_SIZE 32
 
+// Based on https://ale.farama.org/environments/freeway/
 typedef struct Log Log;
 struct Log {
     float perf;
@@ -52,8 +53,12 @@ struct FreewayEnemy {
     float enemy_x;
     float enemy_y;
     float enemy_initial_x;
-    float enemy_vx;
+    float enemy_vx; // velocity in pixels per second
+    int speed_randomization; // 0 for no randomization, 1 for randomization
+    int initial_speed_idx; // index of the initial speed in the speed array
+    int current_speed_idx; // index of the current speed in the speed array
     int is_enabled;
+    int lane_idx; // lane index
     int type;
     int enemy_width;
     int enemy_height;
@@ -65,8 +70,8 @@ struct Freeway {
     Client* client;
     Log log;
     float* observations;
-    float* actions;
-    float* human_actions;
+    int* actions;
+    int* human_actions;
     float* rewards;
     unsigned char* terminals;
 
@@ -98,23 +103,25 @@ struct Freeway {
     int enable_human_player;
 };
 
-void load_level(Freeway* env) {
-    int offset = env->level * NUM_LANES * MAX_ENEMIES_PER_LANE;
+void load_level(Freeway* env, int level) {
     FreewayEnemy* enemy;
     for (int lane = 0; lane < NUM_LANES; lane++) {
         for (int i = 0; i < MAX_ENEMIES_PER_LANE; i++){
             enemy = &env->enemies[lane * MAX_ENEMIES_PER_LANE + i];
-            enemy->is_enabled = ENEMIES_IS_ENABLED[offset + lane * MAX_ENEMIES_PER_LANE + i];
+            enemy->is_enabled = (i < ENEMIES_PER_LANE[level][lane]);
             enemy->enemy_x = 0.0f;
-            enemy->enemy_initial_x = ENEMIES_INITIAL_X[offset + lane * MAX_ENEMIES_PER_LANE + i] * env->width; ;
-            enemy->enemy_vx = ENEMIES_INITIAL_VX[offset/MAX_ENEMIES_PER_LANE + lane] * TICK_RATE * env->width;
+            enemy->enemy_initial_x = ENEMIES_INITIAL_X[level][lane][i] * env->width;
+            enemy->speed_randomization = SPEED_RANDOMIZATION[level];
+            enemy->initial_speed_idx = ENEMIES_INITIAL_SPEED_IDX[level][lane];
+            enemy->current_speed_idx = enemy->initial_speed_idx;
+            enemy->lane_idx = lane;
             enemy->enemy_y = (env->road_start + (env->road_end - env->road_start) * lane / (float) NUM_LANES) - env->lane_size  / 2;
-            enemy->type = ENEMIES_TYPES[offset + lane * MAX_ENEMIES_PER_LANE + i];
-            if (lane>=NUM_LANES/2){
-                enemy->enemy_vx = - enemy->enemy_vx;
-            }
+            enemy->type = ENEMIES_TYPES[level][lane];
             enemy->enemy_width = enemy->type == 0 ? env->car_width : env->truck_width;
             enemy->enemy_height = enemy->type == 0 ? env->car_height : env->truck_height;
+
+            enemy->enemy_vx = enemy->lane_idx < NUM_LANES/2 ? SPEED_VALUES[enemy->current_speed_idx] * TICK_RATE * env->width: -SPEED_VALUES[enemy->current_speed_idx] * TICK_RATE * env->width;
+
         }
     }
 }
@@ -143,14 +150,17 @@ void init(Freeway* env) {
     env->road_end = env->road_start - (NUM_LANES * env->lane_size);
     //enemies 
     env->enemies = (FreewayEnemy*)calloc(NUM_LANES*MAX_ENEMIES_PER_LANE, sizeof(FreewayEnemy));
-    env->human_actions = (float*)calloc(1, sizeof(float));
-    load_level(env);
+    env->human_actions = (int*)calloc(1, sizeof(int));
+    if ((env->level < 0) || (env->level >= NUM_LEVELS)) {
+        env->level = rand() % NUM_LEVELS;
+    }
+    load_level(env, env->level);
 }
 
 void allocate(Freeway* env) {
     init(env);
     env->observations = (float*)calloc(4 + NUM_LANES*MAX_ENEMIES_PER_LANE, sizeof(float));
-    env->actions = (float*)calloc(1, sizeof(float));
+    env->actions = (int*)calloc(1, sizeof(int));
     env->rewards = (float*)calloc(1, sizeof(float));
     env->terminals = (unsigned char*)calloc(1, sizeof(unsigned char));
 }
@@ -190,6 +200,7 @@ void compute_observations(Freeway* env) {
             enemy = &env->enemies[lane*MAX_ENEMIES_PER_LANE + i];
             if (enemy->is_enabled){
                 env->observations[4 + lane * MAX_ENEMIES_PER_LANE + i] = enemy->enemy_x / env->width;
+                env->observations[4 + lane * MAX_ENEMIES_PER_LANE + i] += (lane < NUM_LANES/2 ? enemy->enemy_height/(2 * env->width): -enemy->enemy_height/(2 * env->width));
             }
             else {
                 env->observations[4 + lane * MAX_ENEMIES_PER_LANE + i] = 0.0f;
@@ -280,6 +291,21 @@ void clip_enemy_position(Freeway* env, FreewayEnemy* enemy){
     }
 }
 
+void randomize_enemy_speed(Freeway* env) {
+    FreewayEnemy* enemy;
+    for (int lane = 0; lane < NUM_LANES; lane++) {
+        int delta_speed = (rand() % 3) - 1; // Randomly increase or decrease speed
+        for (int i = 0; i < MAX_ENEMIES_PER_LANE; i++) {
+            if (enemy->speed_randomization) {
+                enemy = &env->enemies[lane*MAX_ENEMIES_PER_LANE + i];
+                enemy->current_speed_idx = min(max(0, enemy->current_speed_idx + delta_speed), 5);
+                enemy->current_speed_idx = min(max(enemy->initial_speed_idx-2, enemy->current_speed_idx), enemy->initial_speed_idx+2);
+                enemy->enemy_vx = enemy->lane_idx < NUM_LANES/2 ? SPEED_VALUES[enemy->current_speed_idx] * TICK_RATE * env->width: -SPEED_VALUES[enemy->current_speed_idx] * TICK_RATE * env->width;
+            }
+        }
+    }
+}
+
 void move_enemies(Freeway* env) {
     FreewayEnemy* enemy;
     for (int lane = 0; lane < NUM_LANES; lane++) {
@@ -293,7 +319,7 @@ void move_enemies(Freeway* env) {
     }
 }
 
-void step_player(Freeway* env, FreewayPlayer* player, float action) {
+void step_player(Freeway* env, FreewayPlayer* player, int action) {
     float player_dy = 0.0;
 
     if (action == DOWN) {
@@ -316,12 +342,12 @@ void step_player(Freeway* env, FreewayPlayer* player, float action) {
     clip_player_position(env, player);
     
     if (player->ticks_stunts_left == 0) {
-        if (check_enemy_collisions(env, player)){
+        if (check_enemy_collisions(env, player) && player->ticks_stunts_left < TICKS_STUNT/4){
             player->hits+=1;
             player->ticks_stunts_left = TICKS_STUNT;
             if (env->use_dense_rewards){
-                env->rewards[0] -= 0.15f;
-                env->ep_return -= 0.15f;
+                env->rewards[0] += PENALTY_HIT;
+                env->ep_return += PENALTY_HIT;
             }
             if (env->difficulty == 1){
                 reset_player(env, player);
@@ -373,8 +399,8 @@ void c_reset(Freeway* env) {
 void c_step(Freeway* env) {
     env->terminals[0] = 0;
     env->rewards[0] = 0.0;
-    float ai_action = env->actions[0];
-    float human_action = env->human_actions[0];
+    int ai_action = env->actions[0];
+    int human_action = env->human_actions[0];
     env->time_left = GAME_LENGTH - env->tick*TICK_RATE;
 
     for (int i = 0; i < env->frameskip; i++) {
@@ -389,6 +415,9 @@ void c_step(Freeway* env) {
         env->terminals[0] = 1.0;
         add_log(env);
         c_reset(env);
+    }
+    if (env->tick % RANDOMIZE_SPEED_FREQ == 0) {
+        randomize_enemy_speed(env);
     }
     compute_observations(env);
 }
