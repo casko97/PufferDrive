@@ -251,15 +251,13 @@ void update_abilities(Entity* agent) {
     }
 }
 
-void respawn(School* env, Entity* agent) {
-    //agent->x = randf(-env->size_x, env->size_x);
-    //agent->y = randf(-env->size_y, env->size_y);
-    //agent->z = randf(-env->size_z, env->size_z);
+void respawn(School* env, int idx) {
+    Entity* agent = &env->agents[idx];
     int team = agent->item;
     agent->orientation = QuaternionIdentity();
-    if (agent->unit != MOTHERSHIP) {
-        int agents_per_team = env->num_agents / env->num_resources;
-        int team_mothership_idx = team*agents_per_team;
+
+    if (agent->unit == DRONE) {
+        int team_mothership_idx = 64*(idx / 64); // Hardcoded per army
         agent->x = env->agents[team_mothership_idx].x;
         agent->y = env->agents[team_mothership_idx].y;
         agent->z = env->agents[team_mothership_idx].z;
@@ -268,6 +266,19 @@ void respawn(School* env, Entity* agent) {
         }
         return;
     }
+
+    Entity* factory = &env->factories[team];
+    agent->x = factory->x;
+    agent->z = factory->z;
+    float height = ground_height(env, agent->x, agent->z);
+    if (agent->unit == INFANTRY || agent->unit == TANK || agent->unit == ARTILLERY) {
+        agent->y = height;
+    } else {
+        agent->y = clampf(height + 0.2f, -env->size_y, env->size_y);
+    }
+
+    return;
+
 
     // Find farthest corner to spawn in
     float dists[8];
@@ -635,29 +646,58 @@ void compute_observations(School* env) {
         env->observations[obs_idx++] = agent->y - other->y;
         env->observations[obs_idx++] = agent->z - other->z;
         env->observations[obs_idx++] = (float)(agent->item == other->item);
-        memset(&env->observations[obs_idx], 0, env->num_resources*sizeof(float));
-        env->observations[obs_idx + agent->item] = 1.0f;
-        obs_idx += env->num_resources;
+        // You have 4 obs here until you change resources
+        env->observations[obs_idx++] = agent->y - ground_height(env, agent->x, agent->z);
+        env->observations[obs_idx++] = 0.0f;
+        env->observations[obs_idx++] = 0.0f;
+        env->observations[obs_idx++] = 0.0f;
+        //memset(&env->observations[obs_idx], 0, env->num_resources*sizeof(float));
+        //env->observations[obs_idx + agent->item] = 1.0f;
+        //obs_idx += env->num_resources;
     }
 }
 
 // Required function
 void c_reset(School* env) {
     int agents_per_team = env->num_agents / env->num_resources;
+    for (int i=0; i<env->num_factories; i++) {
+        bool spawn = false;
+        Entity* factory = &env->factories[i];
+        while (!spawn) {
+            factory->x = randf(0.5 - env->size_x, env->size_x - 0.5);
+            factory->z = randf(0.5 - env->size_z, env->size_z - 0.5);
+            factory->y = ground_height(env, factory->x, factory->z);
+            factory->item = i % env->num_resources;
+            spawn = true;
+
+            for (int j=0; j<i; j++) {
+                Entity* other = &env->factories[j];
+                float dx = other->x - factory->x;
+                float dz = other->z - factory->z;
+                float dd = sqrtf(dx*dx + dz*dz);
+                if (dd < 1.0f) {
+                    spawn = false;
+                    break;
+                }
+            }
+        }
+    }
+
     for (int team=0; team<env->num_resources; team++) {
         for (int i=0; i<agents_per_team; i++) {
-            Entity* agent = &env->agents[team*agents_per_team + i];
-            if (i == 0) {
+            int idx = team*agents_per_team + i;
+            Entity* agent = &env->agents[idx];
+            if (i % 64 == 0) {
                 agent->unit = MOTHERSHIP;
-            } else if (i % 32 <= 4) {
+            } else if (i % 64 <= 4) {
                 agent->unit = TANK;
-            } else if (i % 32 <= 8) {
+            } else if (i % 64 <= 6) {
                 agent->unit = ARTILLERY;
-            } else if (i % 32 <= 12) {
+            } else if (i % 64 <= 10) {
                 agent->unit = BOMBER;
-            } else if (i % 32 <= 16) {
+            } else if (i % 64 <= 14) {
                 agent->unit = FIGHTER;
-            } else if (i % 32 <= 26) {
+            } else if (i % 64 <= 32) {
                 agent->unit = INFANTRY;
             } else {
                 agent->unit = DRONE;
@@ -668,15 +708,8 @@ void c_reset(School* env) {
             agent->episode_length = 0;
             agent->target = -1;
             update_abilities(agent);
-            respawn(env, agent);
+            respawn(env, idx);
         }
-    }
-    for (int i=0; i<env->num_factories; i++) {
-        Entity* factory = &env->factories[i];
-        factory->x = randf(-env->size_x, env->size_x);
-        factory->y = randf(-env->size_y, env->size_y);
-        factory->z = randf(-env->size_z, env->size_z);
-        factory->item = i % env->num_resources;
     }
     compute_observations(env);
 }
@@ -692,7 +725,7 @@ void c_step(School* env) {
 
         if (agent->health <= 0) {
             agent->health = 1.0f;
-            respawn(env, agent);
+            respawn(env, i);
 
             env->log.episode_length += agent->episode_length;
             env->log.episode_return += agent->episode_return;
@@ -706,7 +739,7 @@ void c_step(School* env) {
                 agent->health = 1.0f;
                 env->rewards[i] -= 1.0f;
                 agent->episode_return -= 1.0f;
-                respawn(env, agent);
+                respawn(env, i);
                 env->log.episode_length += agent->episode_length;
                 env->log.episode_return += agent->episode_return;
                 env->log.n++;
@@ -723,7 +756,7 @@ void c_step(School* env) {
         }
 
         if (rand() % env->num_agents == 0) {
-            respawn(env, &env->agents[i]);
+            respawn(env, i);
         }
 
         // Collision penalty
@@ -1110,6 +1143,22 @@ void c_render(School* env) {
             model.transform = transform;
 
             Vector3 scale = (Vector3){0.01f, 0.01f, 0.01f};
+            if (agent->unit == DRONE) {
+                scale = (Vector3){0.01f, 0.01f, 0.01f};
+            } else if (agent->unit == MOTHERSHIP) {
+                scale = (Vector3){0.03f, 0.03f, 0.03f};
+            } else if (agent->unit == FIGHTER) {
+                scale = (Vector3){0.015f, 0.015f, 0.015f};
+            } else if (agent->unit == BOMBER) {
+                scale = (Vector3){0.015f, 0.015f, 0.015f};
+            } else if (agent->unit == INFANTRY) {
+                scale = (Vector3){0.005f, 0.005f, 0.005f};
+            } else if (agent->unit == TANK) {
+                scale = (Vector3){0.01f, 0.01f, 0.01f};
+            } else if (agent->unit == ARTILLERY) {
+                scale = (Vector3){0.02f, 0.02f, 0.02f};
+            }
+
             Color color = COLORS[agent->item];
             Vector3 rot = {0.0f, 1.0f, 0.0f};
             DrawModelEx(model, pos, rot, 0, scale, color);
