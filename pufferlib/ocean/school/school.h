@@ -200,7 +200,7 @@ void init(School* env) {
     env->terrain_width = 256*env->size_x;
     env->terrain_height = 256*env->size_z;
     env->terrain = calloc(env->terrain_width*env->terrain_height, sizeof(float));
-    perlin_noise(env->terrain, env->terrain_width, env->terrain_height, 1.0/2048.0, 8, 0, 0, 128);
+    perlin_noise(env->terrain, env->terrain_width, env->terrain_height, 1.0/2048.0, 8, 0, 0, 256);
 }
 
 void update_abilities(Entity* agent) {
@@ -366,6 +366,9 @@ bool attack_ground(Entity *agent, Entity *target) {
         return false;
     }
     if (target->unit == BOMBER) {
+        return false;
+    }
+    if (target->unit == DRONE) {
         return false;
     }
 
@@ -663,7 +666,7 @@ void c_reset(School* env) {
                 float dx = other->x - base->x;
                 float dz = other->z - base->z;
                 float dd = sqrtf(dx*dx + dz*dz);
-                if (dd < 1.0f) {
+                if (dd < 2.0f) {
                     spawn = false;
                     break;
                 }
@@ -716,7 +719,7 @@ void c_step(School* env) {
         float reward = 0.0f;
         if (agent->health <= 0) {
             done = true;
-            reward = -1.0f;
+            reward = 0.0f;
         } else if (agent->unit == DRONE || agent->unit == FIGHTER || agent->unit == BOMBER || agent->unit == MOTHERSHIP) {
             // Crash into terrain
             float terrain_height = ground_height(env, agent->x, agent->z);
@@ -733,6 +736,7 @@ void c_step(School* env) {
             agent->episode_return += reward;
             env->rewards[i] = reward;
             env->terminals[i] = 1;
+            env->log.score = (1.0f - collision) * env->log.episode_return;
             env->log.episode_length += agent->episode_length;
             env->log.episode_return += agent->episode_return;
             env->log.collision_rate += collision;
@@ -746,11 +750,6 @@ void c_step(School* env) {
             move_ground(env, agent, env->actions + 3*i);
         } else {
             move_ship(env, agent, env->actions + 3*i, i);
-        }
-
-        if (rand() % env->num_agents == 0) {
-            update_abilities(agent);
-            respawn(env, i);
         }
     }
 
@@ -785,6 +784,9 @@ void c_step(School* env) {
         }
     }
 
+    if (rand() % 9000 == 0) {
+        c_reset(env);
+    }
 
     compute_observations(env);
 }
