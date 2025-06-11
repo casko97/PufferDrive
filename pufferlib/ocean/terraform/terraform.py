@@ -66,9 +66,9 @@ class Terraform(pufferlib.PufferEnv):
 
 if __name__ == '__main__':
     TIME = 10
-    env = Terraform(num_envs=512, num_agents=4, render_mode='human', size=11)
-    actions = np.random.randint(0, 5, 2048)
-    env.reset()
+    env = Terraform(num_envs=512, num_agents=1, render_mode='human', map_size=64, seed=0)
+    actions = np.random.randint(0, 5, (512, 3))  # Changed from the stack approach
+
 
     import time
     steps = 0
@@ -77,7 +77,7 @@ if __name__ == '__main__':
         env.step(actions)
         steps += 2048
 
-    print('Cython SPS:', steps / (time.time() - start))
+    print('SPS:', env.num_agents * steps / (time.time() - start))
 
 
 
