@@ -262,7 +262,6 @@ void init(Terraform* env) {
     env->stuck_count = calloc(env->num_agents, sizeof(int));
     env->tick = rand() % 512;
     env->quadrants_solved = 0.0f;
-    printf("num quadrants: %d\n", env->num_quadrants);
 }
 
 void free_initialized(Terraform* env) {
@@ -323,7 +322,7 @@ void compute_all_observations(Terraform* env) {
                 float in_target_quadrant = (env->grid_indices[map_idx] == env->dozers[i].target_quadrant) ? 1.0f : 0.0f;
                 if(env->complete_quadrants[env->grid_indices[map_idx]]) {
                     quadrant_state = 0.66f;
-                } else if(env->in_progress_quadrants[env->grid_indices[map_idx]] && !in_target_quadrant) {
+                } else if(env->in_progress_quadrants[env->grid_indices[map_idx]*(env->num_agents+1)] && !in_target_quadrant) {
                     quadrant_state = 0.33f;
                 } else {
                     quadrant_state = in_target_quadrant;
@@ -388,14 +387,15 @@ void c_reset(Terraform* env) {
         do {
             env->dozers[i].x = rand() % env->size;
             env->dozers[i].y = rand() % env->size;
-            env->dozers[i].target_quadrant = rand() % env->num_quadrants;
-            env->dozers[i].target_quadrant_delta = env->current_quadrant_deltas[env->dozers[i].target_quadrant];
-            env->in_progress_quadrants[env->dozers[i].target_quadrant*(env->num_agents+1)] = i+1;
-            env->in_progress_quadrants[env->dozers[i].target_quadrant*(env->num_agents+1)+env->num_agents]+=1;
-            for (int j = 0; j < (2*SCOOP_SIZE + 1)*(2*SCOOP_SIZE + 1); j++) {
-                env->dozers[i].load_indices[j] = -1;
-            }
         } while (env->map[map_idx(env, env->dozers[i].x, env->dozers[i].y)] != 0.0f);
+        env->dozers[i].target_quadrant = rand() % env->num_quadrants;
+        env->dozers[i].target_quadrant_delta = env->current_quadrant_deltas[env->dozers[i].target_quadrant];
+        int agent_count_in_progress_in_quadrant = env->in_progress_quadrants[env->dozers[i].target_quadrant*(env->num_agents+1)+env->num_agents];
+        env->in_progress_quadrants[env->dozers[i].target_quadrant*(env->num_agents+1)+agent_count_in_progress_in_quadrant] = i+1;
+        env->in_progress_quadrants[env->dozers[i].target_quadrant*(env->num_agents+1)+env->num_agents]+=1;
+        for (int j = 0; j < (2*SCOOP_SIZE + 1)*(2*SCOOP_SIZE + 1); j++) {
+            env->dozers[i].load_indices[j] = -1;
+        }
     }
     compute_all_observations(env);
 }
@@ -484,18 +484,18 @@ float scoop_dirt(Terraform* env, float x, float y, int bucket_atn, int agent_idx
 
     // Reward for terraforming towards target map
     float delta_post = fabsf(map_height - target_height);
-    if(env->grid_indices[scoop_idx] == dozer->target_quadrant) {
-        dozer->target_quadrant_delta += (delta_post - delta_pre);
-    } else if (env->in_progress_quadrants[env->grid_indices[scoop_idx]] == 0){
-        env->current_quadrant_deltas[env->grid_indices[scoop_idx]] += (delta_post - delta_pre);
-    } else {
-        int agent_count_in_progress_in_quadrant = env->in_progress_quadrants[env->grid_indices[scoop_idx]*(env->num_agents+1)+env->num_agents];
+    int agent_count_in_progress_in_quadrant = env->in_progress_quadrants[env->grid_indices[scoop_idx]*(env->num_agents+1)+env->num_agents];
+    if(agent_count_in_progress_in_quadrant > 0) {
         for(int i = 0; i < agent_count_in_progress_in_quadrant; i++) {
             int temp_agent_idx = env->in_progress_quadrants[env->grid_indices[scoop_idx]*(env->num_agents+1)+i] - 1;
-            if(temp_agent_idx == agent_idx) {
-                continue;
-            }
             env->dozers[temp_agent_idx].target_quadrant_delta += (delta_post - delta_pre);
+        }
+    } else {
+        env->current_quadrant_deltas[env->grid_indices[scoop_idx]] += (delta_post - delta_pre);
+        if(env->current_quadrant_deltas[env->grid_indices[scoop_idx]] < 0.01f && env->complete_quadrants[env->grid_indices[scoop_idx]] == 0) {
+            env->current_quadrant_deltas[env->grid_indices[scoop_idx]] = 0.0f;
+            env->quadrants_solved++;
+            env->complete_quadrants[env->grid_indices[scoop_idx]] = 1;
         }
     }
     env->current_total_delta += (delta_post - delta_pre);   
@@ -509,45 +509,57 @@ float scoop_dirt(Terraform* env, float x, float y, int bucket_atn, int agent_idx
     
 }
 
-void reset_quadrant(Terraform* env, int agent_idx) {
-    env->complete_quadrants[env->dozers[agent_idx].target_quadrant] = 1;
-    env->in_progress_quadrants[env->dozers[agent_idx].target_quadrant*(env->num_agents+1)] = 0;
-    env->in_progress_quadrants[env->dozers[agent_idx].target_quadrant*(env->num_agents+1)+env->num_agents]-=1;
-    env->current_quadrant_deltas[env->dozers[agent_idx].target_quadrant] = 0.0f;
+void reset_quadrant(Terraform* env, int* agent_indices, int agent_count) {
+    env->complete_quadrants[env->dozers[agent_indices[0]].target_quadrant] = 1;
+    int agent_count_in_progress_in_quadrant = env->in_progress_quadrants[env->dozers[agent_indices[0]].target_quadrant*(env->num_agents+1)+env->num_agents];
+    memset(env->in_progress_quadrants + env->dozers[agent_indices[0]].target_quadrant*(env->num_agents+1), 0, (env->num_agents+1)*sizeof(int));
+    env->current_quadrant_deltas[env->dozers[agent_indices[0]].target_quadrant] = 0.0f;
     env->quadrants_solved += 1.0f;
     int quadrants_remaining[env->num_quadrants];
     int quadrant_remaining_count = 0;
     int goals_more_than_agents = env->num_quadrants - env->quadrants_solved > env->num_agents;
+    // printf("Debug - Goals more than agents: %d\n", goals_more_than_agents);
+    // printf("Debug - Quadrants solved: %f, Total quadrants: %d\n", env->quadrants_solved, env->num_quadrants);
     for(int i = 0; i < env->num_quadrants; i++) {
-        if(!env->complete_quadrants[i] && env->current_quadrant_deltas[i] > 0.0f ){
-            if(goals_more_than_agents){
+        if(!env->complete_quadrants[i]) {
+            // printf("Debug - Quadrant %d: complete=%d, delta=%f\n", 
+                // i, env->complete_quadrants[i], env->current_quadrant_deltas[i]);
+            
+            if(goals_more_than_agents) {
                 int other_agents_on_quadrant = 0;
-                for(int j = 0; j < env->num_agents; j++){
-                    if(env->dozers[j].target_quadrant == i){
-                        other_agents_on_quadrant=1;
+                for(int j = 0; j < env->num_agents; j++) {
+                    if(env->dozers[j].target_quadrant == i) {
+                        other_agents_on_quadrant = 1;
+                        // printf("Debug - Agent %d is on quadrant %d\n", j, i);
+                        break;
                     }
                 }
-                if(!other_agents_on_quadrant ){
+                if(!other_agents_on_quadrant) {
                     quadrants_remaining[quadrant_remaining_count] = i;
                     quadrant_remaining_count++;
+                    // printf("Debug - Added quadrant %d to remaining\n", i);
                 }
             } else {
                 quadrants_remaining[quadrant_remaining_count] = i;
                 quadrant_remaining_count++;
+                // printf("Debug - Added quadrant %d to remaining (goals <= agents)\n", i);
             }
-
+            
         }
     }
     if(env->quadrants_solved == env->num_quadrants) {
         return;
     }
-    env->dozers[agent_idx].target_quadrant = quadrants_remaining[rand() % quadrant_remaining_count];
-    int agent_count_in_progress_in_quadrant = env->in_progress_quadrants[env->dozers[agent_idx].target_quadrant*(env->num_agents+1)+env->num_agents];
-    env->in_progress_quadrants[env->dozers[agent_idx].target_quadrant*(env->num_agents+1) + agent_count_in_progress_in_quadrant] = agent_idx+1;
-    env->in_progress_quadrants[env->dozers[agent_idx].target_quadrant*(env->num_agents+1)+env->num_agents]+=1;
-    env->dozers[agent_idx].target_quadrant_delta = env->current_quadrant_deltas[env->dozers[agent_idx].target_quadrant];
-    env->dozers[agent_idx].quadrant_progress = 0.0f;
-    env->dozers[agent_idx].highest_quadrant_progress = 0.0f;
+    for(int i = 0; i < agent_count; i++) {
+        int agent_idx = agent_indices[i];
+        env->dozers[agent_idx].target_quadrant = quadrants_remaining[rand() % quadrant_remaining_count];
+        int agent_count_in_progress_in_quadrant = env->in_progress_quadrants[env->dozers[agent_idx].target_quadrant*(env->num_agents+1)+env->num_agents];
+        env->in_progress_quadrants[env->dozers[agent_idx].target_quadrant*(env->num_agents+1) + agent_count_in_progress_in_quadrant] = agent_idx+1;
+        env->in_progress_quadrants[env->dozers[agent_idx].target_quadrant*(env->num_agents+1)+env->num_agents]+=1;
+        env->dozers[agent_idx].target_quadrant_delta = env->current_quadrant_deltas[env->dozers[agent_idx].target_quadrant];
+        env->dozers[agent_idx].quadrant_progress = 0.0f;
+        env->dozers[agent_idx].highest_quadrant_progress = 0.0f;
+    }
 }
 
 void c_step(Terraform* env) {
@@ -679,8 +691,12 @@ void c_step(Terraform* env) {
         }
  
     }
-
+    int marked_to_skip[env->num_agents];
+    memset(marked_to_skip, 0, env->num_agents*sizeof(int));
     for(int i = 0; i < env->num_agents; i++) {
+        if(marked_to_skip[i]) {
+            continue;
+        }
         // compute delta progress
         if (env->initial_total_delta > 0) {
             env->delta_progress = 1.0f - (env->current_total_delta / env->initial_total_delta);
@@ -690,18 +706,39 @@ void c_step(Terraform* env) {
                 env->dozers[i].highest_quadrant_progress = env->dozers[i].quadrant_progress;
                 env->agent_logs[i].quadrant_progress = env->dozers[i].quadrant_progress;
                 if(env->dozers[i].quadrant_progress > 0.99f) {
-                    env->rewards[i] += 1.0f;
-                    env->returns[i] += 1.0f;
-                    env->agent_logs[i].episode_return += 1.0f;
-                    env->agent_logs[i].score += 1.0f;
-                    env->agent_logs[i].perf += 1.0f;
-                    reset_quadrant(env, i);
+                    int agent_count_in_progress_in_quadrant = env->in_progress_quadrants[env->dozers[i].target_quadrant*(env->num_agents+1)+env->num_agents];
+                    int agent_indices[agent_count_in_progress_in_quadrant];
+                    memset(agent_indices, 0, agent_count_in_progress_in_quadrant*sizeof(int));
+                    for(int j = 0; j < agent_count_in_progress_in_quadrant; j++) {
+                        int temp_agent_idx = env->in_progress_quadrants[env->dozers[i].target_quadrant*(env->num_agents+1)+j] - 1;
+                        env->rewards[temp_agent_idx] += 1.0f;
+                        env->returns[temp_agent_idx] += 1.0f;
+                        env->agent_logs[temp_agent_idx].episode_return += 1.0f;
+                        env->agent_logs[temp_agent_idx].score += 1.0f;
+                        env->agent_logs[temp_agent_idx].perf += 1.0f;
+                        if(temp_agent_idx != i) {
+                            marked_to_skip[temp_agent_idx] = 1;
+                            env->agent_logs[temp_agent_idx].quadrant_progress = 1.0f;
+                        }
+                        agent_indices[j] = temp_agent_idx;
+                    }
+                    reset_quadrant(env, agent_indices, agent_count_in_progress_in_quadrant);
+                    if(env->quadrants_solved == env->num_quadrants) {
+                        compute_all_observations(env);
+                        return;
+                    }
                 } else { 
-                    env->rewards[i] += env->reward_scale;
-                    env->returns[i] += env->reward_scale;
-                    env->agent_logs[i].episode_return += env->reward_scale;
+                    int agent_count_in_progress_in_quadrant = env->in_progress_quadrants[env->dozers[i].target_quadrant*(env->num_agents+1)+env->num_agents];
+                    for(int j = 0; j < agent_count_in_progress_in_quadrant; j++) {
+                        int temp_agent_idx = env->in_progress_quadrants[env->dozers[i].target_quadrant*(env->num_agents+1)+j] - 1;
+                        env->rewards[temp_agent_idx] += env->reward_scale;
+                        env->returns[temp_agent_idx] += env->reward_scale;
+                        env->agent_logs[temp_agent_idx].episode_return += env->reward_scale;
+                        if(temp_agent_idx != i) {
+                            marked_to_skip[temp_agent_idx] = 1;
+                        }
+                    }
                 }
-
             }
         } else {
             env->delta_progress = 1.0f;
@@ -712,14 +749,11 @@ void c_step(Terraform* env) {
             env->agent_logs[i].episode_return += 1.0f;
             env->agent_logs[i].score += 1.0f;
             env->agent_logs[i].perf += 1.0f;
-        }
-
-        if(env->quadrants_solved == env->num_quadrants) {
             compute_all_observations(env);
             return;
         }
     }
-    
+   
     //printf("observations\n");
     compute_all_observations(env);
     //int action = env->actions[0];
