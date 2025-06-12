@@ -101,7 +101,7 @@ void demo() {
         .human_agent_idx = 0,
         .reward_vehicle_collision = -0.1f,
         .reward_offroad_collision = -0.1f,
-	    .map_name = "resources/gpudrive/binaries/map_661.bin",
+	    .map_name = "resources/gpudrive/binaries/map_055.bin",
         .spawn_immunity_timer = 30
     };
     allocate(&env);
