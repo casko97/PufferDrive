@@ -99,6 +99,7 @@ typedef struct Terraform {
     float quadrants_solved;
     int* complete_quadrants;
     int* in_progress_quadrants;
+    float* quadrant_volume_deltas;
 } Terraform;
 
 float randf(float min, float max) {
@@ -173,6 +174,7 @@ void calculate_total_delta(Terraform* env) {
         float delta = fabsf(env->orig_map[i] - env->target_map[i]);
         env->initial_total_delta += delta;
         env->quadrant_deltas[env->grid_indices[i]] += delta;
+        env->quadrant_volume_deltas[env->grid_indices[i]] += (env->orig_map[i] - env->target_map[i]);
     }
     memcpy(env->current_quadrant_deltas, env->quadrant_deltas, env->num_quadrants*sizeof(float));
     env->current_total_delta = env->initial_total_delta;
@@ -203,6 +205,7 @@ void init(Terraform* env) {
     env->complete_quadrants = calloc(env->num_quadrants, sizeof(int));
     env->in_progress_quadrants = calloc(env->num_quadrants*(env->num_agents+1), sizeof(int));
     env->current_quadrant_deltas = calloc(env->num_quadrants, sizeof(float));
+    env->quadrant_volume_deltas = calloc(env->num_quadrants, sizeof(float));
     env->agent_logs = calloc(env->num_agents, sizeof(Log));
     // for (int i = 0; i < env->size*env->size; i++) {
     //     env->target_map[i] = 1;  // Initialize all to empty
@@ -280,6 +283,7 @@ void free_initialized(Terraform* env) {
     free(env->current_quadrant_deltas);
     free(env->in_progress_quadrants);
     free(env->agent_logs);
+    free(env->quadrant_volume_deltas);
 }
 
 void add_log(Terraform* env, Log* agent_log) {
@@ -350,8 +354,6 @@ void compute_all_observations(Terraform* env) {
         int quad_y = dozer->target_quadrant / num_quads_x;
         float x = quad_x * 11 + 5;
         float y = quad_y * 11 + 5;
-        float dx = dozer->x - x;
-        float dy = dozer->y - y;
         float goal_x = x - dozer->x;
         float goal_y = y - dozer->y;
         float cos_heading = cosf(dozer->heading);
@@ -363,6 +365,9 @@ void compute_all_observations(Terraform* env) {
         float norm_y = rel_goal_y / max_dist;
         obs[obs_idx++] = norm_x;
         obs[obs_idx++] = norm_y;
+        memcpy(obs + obs_idx, env->quadrant_volume_deltas, env->num_quadrants*sizeof(float));
+        obs_idx += env->num_quadrants;
+        obs[obs_idx++] = dozer->target_quadrant_delta;
         
     }
 }
