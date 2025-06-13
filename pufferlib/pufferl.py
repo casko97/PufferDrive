@@ -754,9 +754,12 @@ class Utilization(Thread):
     def stop(self):
         self.stopped = True
 
-def downsample_alt(arr, m):
+def downsample(arr, m):
     if len(arr) < m:
         return arr
+
+    if m == 0:
+        return [arr[-1]]
 
     orig_arr = arr
     last = arr[-1]
@@ -968,6 +971,7 @@ def sweep(args=None, env_name=None):
         raise pufferlib.APIUsageError(f'Invalid sweep method {method}. See pufferlib.sweep')
 
     sweep = sweep_cls(args['sweep'])
+    points_per_run = args['sweep']['downsample']
     target_key = f'environment/{args["sweep"]["metric"]}'
     for i in range(args['max_runs']):
         seed = time.time_ns() & 0xFFFFFFFF
@@ -978,9 +982,9 @@ def sweep(args=None, env_name=None):
         total_timesteps = args['train']['total_timesteps']
         all_logs = train(env_name, args=args)
         all_logs = [e for e in all_logs if target_key in e]
-        scores = downsample_alt([log[target_key] for log in all_logs], 10)
-        costs = downsample_alt([log['uptime'] for log in all_logs], 10)
-        timesteps = downsample_alt([log['agent_steps'] for log in all_logs], 10)
+        scores = downsample([log[target_key] for log in all_logs], points_per_run)
+        costs = downsample([log['uptime'] for log in all_logs], points_per_run)
+        timesteps = downsample([log['agent_steps'] for log in all_logs], points_per_run)
         for score, cost, timestep in zip(scores, costs, timesteps):
             args['train']['total_timesteps'] = timestep
             sweep.observe(args, score, cost)
