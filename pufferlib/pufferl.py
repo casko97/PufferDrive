@@ -369,7 +369,7 @@ class PuffeRL:
 
             profile('train_misc', epoch)
             newlogprob = newlogprob.reshape(mb_logprobs.shape)
-            logratio = newlogprob - mb_logprobs
+            logratio = newlogprob.detach() - mb_logprobs
             ratio = logratio.exp()
             self.ratio[idx] = ratio # TODO: Experiment with this
 
