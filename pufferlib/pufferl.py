@@ -48,6 +48,8 @@ rich.traceback.install(show_locals=False)
 import signal # Aggressively exit on ctrl+c
 signal.signal(signal.SIGINT, lambda sig, frame: os._exit(0))
 
+# Assume advantage kernel has been built if CUDA compiler is available
+ADVANTAGE_CUDA = shutil.which("nvcc") is not None
 
 class PuffeRL:
     def __init__(self, config, vecenv, policy, logger=None):
@@ -330,8 +332,7 @@ class PuffeRL:
 
             shape = self.values.shape
             advantages = torch.zeros(shape, device=device)
-            # TODO: robustify
-            torch.ops.pufferlib.compute_puff_advantage(self.values, self.rewards,
+            compute_puff_advantage(self.values, self.rewards,
                 self.terminals, self.ratio, advantages, config['gamma'],
                 config['gae_lambda'], config['vtrace_rho_clip'], config['vtrace_c_clip'])
 
@@ -381,7 +382,7 @@ class PuffeRL:
 
             # TODO: Do you need to do this? Policy hasn't changed
             adv = advantages[idx]
-            torch.ops.pufferlib.compute_puff_advantage(mb_values, mb_rewards, mb_terminals,
+            compute_puff_advantage(mb_values, mb_rewards, mb_terminals,
                 ratio, adv, config['gamma'], config['gae_lambda'],
                 config['vtrace_rho_clip'], config['vtrace_c_clip'])
             adv = mb_advantages
@@ -636,6 +637,29 @@ class PuffeRL:
             console.print(dashboard)
 
         print('\033[0;0H' + capture.get())
+
+def compute_puff_advantage(values, rewards, terminals,
+        ratio, advantages, gamma, gae_lambda, vtrace_rho_clip, vtrace_c_clip):
+    '''CUDA kernel for puffer advantage with automatic CPU fallback. You need
+    nvcc (in cuda-dev-tools or in a cuda-dev docker base) for PufferLib to
+    compile the fast version.'''
+
+    device = values.device
+    if not ADVANTAGE_CUDA:
+        values = values.cpu()
+        rewards = rewards.cpu()
+        terminals = terminals.cpu()
+        ratio = ratio.cpu()
+        advantages = advantages.cpu()
+
+    torch.ops.pufferlib.compute_puff_advantage(values, rewards, terminals,
+        ratio, advantages, gamma, gae_lambda, vtrace_rho_clip, vtrace_c_clip)
+
+    if not ADVANTAGE_CUDA:
+        return advantages.to(device)
+
+    return advantages
+
 
 def abbreviate(num, b2, c2):
     if num < 1e3:
