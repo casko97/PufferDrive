@@ -129,7 +129,7 @@ class Terraform(nn.Module):
         self.hidden_size = hidden_size
         self.is_continuous = False
 
-        self.net_2d = nn.Sequential(
+        self.local_net_2d = nn.Sequential(
             pufferlib.pytorch.layer_init(
                 nn.Conv2d(3, cnn_channels, 5, stride=3)),
             nn.ReLU(),
@@ -138,13 +138,24 @@ class Terraform(nn.Module):
             nn.ReLU(),
             nn.Flatten(),
         )
+
+        self.global_net_2d = nn.Sequential(
+            pufferlib.pytorch.layer_init(
+                nn.Conv2d(2, cnn_channels, 3, stride=1)),
+            nn.ReLU(),
+            pufferlib.pytorch.layer_init(
+                nn.Conv2d(cnn_channels, cnn_channels, 3, stride=1)),
+            nn.ReLU(),
+            nn.Flatten(),
+        )
+
         self.net_1d = nn.Sequential(
             pufferlib.pytorch.layer_init(
                 nn.Linear(7, hidden_size)),
             nn.Flatten(),
         )
         self.proj = nn.Sequential(
-            pufferlib.pytorch.layer_init(nn.Linear(hidden_size + cnn_channels, hidden_size)),
+            pufferlib.pytorch.layer_init(nn.Linear(hidden_size + cnn_channels*5, hidden_size)),
             nn.ReLU(),
         )
         self.atn_dim = env.single_action_space.nvec.tolist()
@@ -163,10 +174,12 @@ class Terraform(nn.Module):
     def encode_observations(self, observations, state=None):
         # breakpoint()
         obs_2d = observations[:, :363].reshape(-1, 3, 11, 11).float()
-        obs_1d = observations[:, 363:].reshape(-1, 7).float()
-        hidden_2d = self.net_2d(obs_2d)
+        obs_1d = observations[:, 363:370].reshape(-1, 7).float()
+        location_2d = observations[:, 370:].reshape(-1,2, 6, 6).float()
+        hidden_local_2d = self.local_net_2d(obs_2d)
+        hidden_global_2d = self.global_net_2d(location_2d)
         hidden_1d = self.net_1d(obs_1d)
-        hidden = torch.cat([hidden_2d, hidden_1d], dim=1)
+        hidden = torch.cat([hidden_local_2d, hidden_global_2d, hidden_1d], dim=1)
         return self.proj(hidden)
 
     def decode_actions(self, hidden):
