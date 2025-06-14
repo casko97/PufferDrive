@@ -13,9 +13,14 @@ static int my_init(Env* env, PyObject* args, PyObject* kwargs) {
 
 static int my_log(PyObject* dict, Log* log) {
     assign_to_dict(dict, "score", log->score);
-    assign_to_dict(dict, "lines_deleted", log->lines_deleted);
-    assign_to_dict(dict, "episode_length", log->episode_length);
-    assign_to_dict(dict, "episode_return", log->episode_return);
+    assign_to_dict(dict, "perf", log->perf);
+    assign_to_dict(dict, "ep_length", log->ep_length);
+    assign_to_dict(dict, "ep_return", log->ep_return);
     assign_to_dict(dict, "avg_combo", log->avg_combo);
+    assign_to_dict(dict, "lines_deleted", log->lines_deleted);
+
+    assign_to_dict(dict, "atn_frac_soft_drop", log->atn_frac_soft_drop);
+    assign_to_dict(dict, "atn_frac_hard_drop", log->atn_frac_hard_drop);
+    assign_to_dict(dict, "atn_frac_rotate", log->atn_frac_rotate);
     return 0;
 }

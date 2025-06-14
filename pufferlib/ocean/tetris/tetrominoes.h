@@ -6,7 +6,7 @@
 
 const Color TETROMINOES_COLORS[NUM_TETROMINOES] = {
     (Color){255, 255, 0, 255}, // Yellow
-    (Color){0, 255, 255, 255},  // Cyan
+    (Color){0, 255, 255, 255}, // Cyan
     (Color){0, 255, 0, 255},   // Green
     (Color){255, 0, 0, 255},   // Red
     (Color){128, 0, 128, 255}, // Purple
@@ -200,7 +200,7 @@ const int TETROMINOES[NUM_TETROMINOES][NUM_ROTATIONS][SIZE][SIZE] = {
 };
 
 
-const int TETROMINOES_FILLS_COLUMN[NUM_TETROMINOES][NUM_ROTATIONS] = {
+const int TETROMINOES_FILLS_COL[NUM_TETROMINOES][NUM_ROTATIONS] = {
     {
         2,2,2,2
     },

@@ -8,22 +8,21 @@ class Tetris(pufferlib.PufferEnv):
         self, 
         num_envs=1, 
         n_cols=10, 
-        n_rows=10,
-        deck_size=2,
+        n_rows=20,
+        deck_size=3,
         render_mode=None, 
         log_interval=32,
         buf=None, 
         seed=0
     ):
         self.single_observation_space = gymnasium.spaces.Box(low=0, high=1,
-            shape=(n_cols*n_rows + 7 * deck_size + 1 + 4*n_cols,), dtype=np.float32)
-        self.single_action_space = gymnasium.spaces.Discrete(4 * n_cols)
+            shape=(n_cols*n_rows + 6 + 7 * (deck_size + 1),), dtype=np.float32)
+        self.single_action_space = gymnasium.spaces.Discrete(7)
         self.render_mode = render_mode
         self.log_interval = log_interval
         self.num_agents = num_envs
 
         super().__init__(buf)
-        self.actions = self.actions.astype(np.float32)
         self.deck_size = deck_size
         self.n_cols = n_cols
         self.n_rows = n_rows
@@ -66,7 +65,7 @@ class Tetris(pufferlib.PufferEnv):
 
 if __name__ == '__main__':
     TIME = 10
-    num_envs = 1024
+    num_envs = 4096
     env = Tetris(num_envs=num_envs)
     actions = [
         [env.single_action_space.sample() for _ in range(num_envs) ]for _ in range(1000)
@@ -79,10 +78,8 @@ if __name__ == '__main__':
     
     while time.time() - start < TIME:
         action = actions[tick%1000]
-        # action_mask = obs[0][-(4*env.n_cols):]
-        # print("col", action[0]%10, "rot", action[0]//10,action_mask[action[0]] )
-        # env.render()
-        # time.sleep(0.1)
+        env.render()
+        print(np.array(obs[0][0:200]).reshape(20,10), obs[0][200:206], obs[0][206:(206+7*4)])
         obs, _, _, _, _ = env.step(action)
         tick += 1
     print('SPS:', (tick*num_envs) / (time.time() - start))

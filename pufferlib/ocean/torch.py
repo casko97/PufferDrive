@@ -866,30 +866,29 @@ class Tetris(nn.Module):
     def __init__(
         self, 
         env, 
-        cnn_channels=64,
+        cnn_channels=32,
         input_size=128,
         hidden_size=128,
         **kwargs
     ):
         super().__init__()
-        self.input_size = input_size
         self.hidden_size = hidden_size
         self.cnn_channels =  cnn_channels   
-
         self.n_cols = env.n_cols
         self.n_rows = env.n_rows
-        self.scalar_input_size = (1 + 7 * env.deck_size)
+        self.scalar_input_size = (6 + 7 * (env.deck_size + 1))
+        self.flat_conv_size = cnn_channels * 3 * 10
         self.is_continuous = isinstance(env.single_action_space, pufferlib.spaces.Box)
 
         self.conv_grid = nn.Sequential(
-            pufferlib.pytorch.layer_init(nn.Conv2d(1, cnn_channels, 3, stride=1, padding = 1)),
+            pufferlib.pytorch.layer_init(nn.Conv2d(2, cnn_channels, kernel_size=(5, 3), stride=(2,1), padding=(2,1))),
             nn.ReLU(),
-            pufferlib.pytorch.layer_init(nn.Conv2d(cnn_channels, cnn_channels, (3, 5), stride=(2, 1), padding = (1,2))),
+            pufferlib.pytorch.layer_init(nn.Conv2d(cnn_channels, cnn_channels, kernel_size=(5, 3), stride=(2,1), padding=(2,1))),
             nn.ReLU(),
-            pufferlib.pytorch.layer_init(nn.Conv2d(cnn_channels, cnn_channels, (3, 5), stride=(2, 1), padding = (1,2))),
+            pufferlib.pytorch.layer_init(nn.Conv2d(cnn_channels, cnn_channels, kernel_size=(5, 5), stride=(2,1), padding=(2,2))),
             nn.ReLU(),
-            pufferlib.pytorch.layer_init(nn.Conv2d(cnn_channels, input_size, (3, 5), stride=(2, 1), padding = (1,2))),
-            nn.ReLU(),
+            nn.Flatten(),
+            pufferlib.pytorch.layer_init(nn.Linear(self.flat_conv_size, input_size)),
         )
 
         self.fc_scalar = nn.Sequential(
@@ -898,12 +897,12 @@ class Tetris(nn.Module):
         )
 
         self.proj = nn.Sequential(
-            pufferlib.pytorch.layer_init(nn.Linear(3 * input_size, hidden_size)),
+            pufferlib.pytorch.layer_init(nn.Linear(2 * input_size, hidden_size)),
             nn.ReLU(),
         )
 
         self.actor = nn.Sequential(
-            pufferlib.pytorch.layer_init(nn.Linear(hidden_size, 4), std = 0.01),
+            pufferlib.pytorch.layer_init(nn.Linear(hidden_size, 7), std=0.01),
             nn.Flatten()
         )
 
@@ -915,31 +914,25 @@ class Tetris(nn.Module):
     def forward(self, observations, state=None):
         hidden = self.encode_observations(observations) 
         actions, value = self.decode_actions(hidden)
-        return self.mask_actions_logits(actions, observations), value
+        return actions, value
 
     def forward_train(self, x, state=None):
         return self.forward(x, state)
 
     def encode_observations(self, observations, state=None):
-        grid_info = observations[:,0:(self.n_cols * self.n_rows)].view(-1, 1, self.n_rows, self.n_cols).float() # (1, n_rows,n_cols)
+        B = observations.shape[0]
+        grid_info = observations[:, 0:(self.n_cols * self.n_rows)].view(B, self.n_rows, self.n_cols)  # (B, n_rows, n_cols)
+        grid_info = torch.stack([(grid_info == 1).float(), (grid_info == 2).float()], dim=1)  # (B, 2, n_rows, n_cols)
         scalar_info = observations[:, (self.n_cols * self.n_rows):(self.n_cols * self.n_rows + self.scalar_input_size)].float()
 
-        grid_feat = self.conv_grid(grid_info) # (I, 2, n_cols,)
-        scalar_feat = self.fc_scalar(scalar_info) # (I,)
-        
-        grid_feat = grid_feat.permute(0,3,2,1) # (n_cols, 2, I,)
-        grid_feat = grid_feat.reshape(-1, grid_feat.shape[1], grid_feat.shape[2] * grid_feat.shape[3]) # (n_cols, 2 * I,)
-        scalar_feat = scalar_feat.unsqueeze(1).repeat(1, self.n_cols, 1)  # (N, self.n_cols, I)
-        features = torch.cat([grid_feat, scalar_feat], dim = -1) # (n_cols, 3 * I)
-        features = self.proj(features) # (n_cols, H)
+        grid_feat = self.conv_grid(grid_info)  # (B, input_size)
+        scalar_feat = self.fc_scalar(scalar_info)  # (B, input_size)
+
+        combined = torch.cat([grid_feat, scalar_feat], dim=-1)  # (B, 2 * input_size)
+        features = self.proj(combined)  # (B, hidden_size)
         return features
-    
+
     def decode_actions(self, hidden):
-        action = self.actor(hidden) # (4 * n_cols)
-        value = self.value_fn(hidden.sum(-2)) # (1)
+        action = self.actor(hidden)  # (B, 4 * n_cols)
+        value = self.value_fn(hidden)  # (B, 1)
         return action, value
-    
-    def mask_actions_logits(self, action_logits, observations):
-        action_mask = (observations[:, -(4*self.n_cols):]).float()
-        masked_action_logits = action_logits + (1 - action_mask) * -1e8
-        return masked_action_logits
