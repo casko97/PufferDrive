@@ -245,12 +245,12 @@ class Multiprocessing:
 
         import psutil
         cpu_cores = psutil.cpu_count(logical=False)
-        # if num_workers > cpu_cores and not overwork:
-        #     raise pufferlib.APIUsageError(' '.join([
-        #         f'num_workers ({num_workers}) > hardware cores ({cpu_cores}) is disallowed by default.',
-        #         'PufferLib multiprocessing is heavily optimized for 1 process per hardware core.',
-        #         'If you really want to do this, set overwork=True (--vec-overwork in our demo.py).',
-        #     ]))
+        if num_workers > cpu_cores and not overwork:
+            raise pufferlib.APIUsageError(' '.join([
+                f'num_workers ({num_workers}) > hardware cores ({cpu_cores}) is disallowed by default.',
+                'PufferLib multiprocessing is heavily optimized for 1 process per hardware core.',
+                'If you really want to do this, set overwork=True (--vec-overwork in our demo.py).',
+            ]))
 
         num_batches = num_envs / batch_size
         if zero_copy and num_batches != int(num_batches):
