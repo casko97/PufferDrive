@@ -112,8 +112,6 @@ class PuffeRL:
             h = policy.hidden_size
             self.lstm_h = {i*n: torch.zeros(n, h, device=device) for i in range(total_agents//n)}
             self.lstm_c = {i*n: torch.zeros(n, h, device=device) for i in range(total_agents//n)}
-            print("n: ", n)
-            print("h: ", h)
 
         # Minibatching & gradient accumulation
         minibatch_size = config['minibatch_size']
@@ -226,10 +224,6 @@ class PuffeRL:
                 self.lstm_c[k].zero_()
 
         self.full_rows = 0
-        n = self.vecenv.agents_per_batch
-        h = self.policy.hidden_size
-        self.lstm_h = {i*n: torch.zeros(n, h, device=device) for i in range(self.total_agents//n)}
-        self.lstm_c = {i*n: torch.zeros(n, h, device=device) for i in range(self.total_agents//n)}
         while self.full_rows < self.segments:
             profile('env', epoch)
             o, r, d, t, info, env_id, mask = self.vecenv.recv()
@@ -956,22 +950,13 @@ def eval(env_name, args=None, vecenv=None, policy=None):
 
     state = {}
     if args['train']['use_rnn']:
-        print(num_agents)
-        print(policy.hidden_size)
         state = dict(
             lstm_h=torch.zeros(num_agents, policy.hidden_size, device=device),
             lstm_c=torch.zeros(num_agents, policy.hidden_size, device=device),
         )
 
     frames = []
-    tick = 0
     while True:
-        tick += 1
-        if tick % 91 == 0:
-            state = dict(
-                lstm_h=torch.zeros(num_agents, policy.hidden_size, device=device),
-                lstm_c=torch.zeros(num_agents, policy.hidden_size, device=device),
-            )
         render = driver.render()
         if len(frames) < args['save_frames']:
             frames.append(render)
@@ -996,7 +981,8 @@ def eval(env_name, args=None, vecenv=None, policy=None):
         if isinstance(logits, torch.distributions.Normal):
             action = np.clip(action, vecenv.action_space.low, vecenv.action_space.high)
 
-        ob, rew, term, trunc, info = vecenv.step(action)
+        ob = vecenv.step(action)[0]
+
         if len(frames) > 0 and len(frames) == args['save_frames']:
             import imageio
             imageio.mimsave(args['gif_path'], frames, fps=args['fps'], loop=0)
@@ -1149,8 +1135,8 @@ def load_config(env_name):
     parser.add_argument('--wandb-project', type=str, default='pufferlib')
     parser.add_argument('--wandb-group', type=str, default='debug')
     parser.add_argument('--neptune', action='store_true', help='Use neptune for logging')
-    parser.add_argument('--neptune-name', type=str, default='puffer')
-    parser.add_argument('--neptune-project', type=str, default='PufferTest')
+    parser.add_argument('--neptune-name', type=str, default='pufferai')
+    parser.add_argument('--neptune-project', type=str, default='ablations')
     parser.add_argument('--local-rank', type=int, default=0, help='Used by torchrun for DDP')
     parser.add_argument('--tag', type=str, default=None, help='Tag for experiment')
     args = parser.parse_known_args()[0]
