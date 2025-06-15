@@ -298,8 +298,8 @@ void randomize_enemy_speed(Freeway* env) {
         for (int i = 0; i < MAX_ENEMIES_PER_LANE; i++) {
             if (enemy->speed_randomization) {
                 enemy = &env->enemies[lane*MAX_ENEMIES_PER_LANE + i];
-                enemy->current_speed_idx = min(max(0, enemy->current_speed_idx + delta_speed), 5);
                 enemy->current_speed_idx = min(max(enemy->initial_speed_idx-2, enemy->current_speed_idx), enemy->initial_speed_idx+2);
+                enemy->current_speed_idx = min(max(0, enemy->current_speed_idx + delta_speed), 5);
                 enemy->enemy_vx = enemy->lane_idx < NUM_LANES/2 ? SPEED_VALUES[enemy->current_speed_idx] * TICK_RATE * env->width: -SPEED_VALUES[enemy->current_speed_idx] * TICK_RATE * env->width;
             }
         }
@@ -371,6 +371,8 @@ void step_player(Freeway* env, FreewayPlayer* player, int action) {
 
     if (player->best_lane_idx == NUM_LANES) {
         reached_end(env, player);
+        env->rewards[0] += 1.0;
+        env->ep_return += 1.0;
     }
 }
 void c_reset(Freeway* env) {
@@ -427,6 +429,7 @@ void c_step(Freeway* env) {
 typedef struct Client Client;
 struct Client {
     Texture2D chicken;
+    Texture2D puffer;
     Texture2D car_body;
     Texture2D car_wheels;
     Texture2D truck_body;
@@ -445,6 +448,7 @@ Client* make_client(Freeway* env) {
     client->car_body = LoadTexture("resources/freeway/tex_car_body.png");
     client->car_wheels = LoadTexture("resources/freeway/tex_car_wheels.png");
     client->chicken = LoadTexture("resources/freeway/tex_chicken0.png");
+    client->puffer = LoadTexture("resources/shared/puffers.png");
     client->truck_body = LoadTexture("resources/freeway/tex_truck_body.png");
     client->truck_wheels = LoadTexture("resources/freeway/tex_truck_wheels.png");
     return client;
@@ -530,9 +534,9 @@ void c_render(Freeway* env) {
     
     // Draw ai player
     DrawTexturePro(
-        client->chicken,
+        client->puffer,
         (Rectangle){
-            14,0, 14, 8,
+            0, 0, 128, 128,
         },
         (Rectangle){
             env->ai_player.player_x - env->player_width / 2,
@@ -546,9 +550,9 @@ void c_render(Freeway* env) {
     );
 
     DrawTexturePro(
-        client->chicken,
+        client->puffer,
         (Rectangle){
-            14,0, 14, 8,
+            128, 128, 128, 128,
         },
         (Rectangle){
             env->human_player.player_x - env->player_width / 2,
