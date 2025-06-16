@@ -86,6 +86,7 @@ class GPUDrive(pufferlib.PufferEnv):
             log = binding.vec_log(self.c_envs)
             if log:
                 info.append(log)
+                print(log)
         if(self.tick > 0 and self.resample_frequency > 0 and self.tick % self.resample_frequency == 0):
             self.tick = 0
             will_resample = 1

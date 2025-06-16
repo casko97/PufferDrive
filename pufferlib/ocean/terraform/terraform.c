@@ -1,7 +1,7 @@
 #include "terraform.h"
 
 void allocate(Terraform* env) {
-    env->observations = (float*)calloc(env->num_agents*491, sizeof(float));
+    env->observations = (float*)calloc(env->num_agents*442, sizeof(float));
     env->actions = (int*)calloc(3*env->num_agents, sizeof(int));
     env->rewards = (float*)calloc(env->num_agents, sizeof(float));
     env->terminals = (unsigned char*)calloc(env->num_agents, sizeof(unsigned char));
@@ -20,7 +20,7 @@ void demo() {
     //Weights* weights = load_weights("resources/pong_weights.bin", 133764);
     //LinearLSTM* net = make_linearlstm(weights, 1, 8, 3);
     srand(time(NULL));
-    Terraform env = {.size = 64, .num_agents = 8, .reset_frequency = 8192, .reward_scale = 0.04f};
+    Terraform env = {.size = 64, .num_agents = 1, .reset_frequency = 8192, .reward_scale = 0.04f};
     allocate(&env);
 
     c_reset(&env);
@@ -83,7 +83,7 @@ void test_performance(int timeout) {
 }
 
 int main() {
-    test_performance(10);
-    // demo();
+    // test_performance(10);
+    demo();
 }
 
