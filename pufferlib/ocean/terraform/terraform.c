@@ -1,7 +1,7 @@
 #include "terraform.h"
 
 void allocate(Terraform* env) {
-    env->observations = (unsigned char*)calloc(env->num_agents*246, sizeof(unsigned char));
+    env->observations = (float*)calloc(env->num_agents*442, sizeof(float));
     env->actions = (int*)calloc(3*env->num_agents, sizeof(int));
     env->rewards = (float*)calloc(env->num_agents, sizeof(float));
     env->terminals = (unsigned char*)calloc(env->num_agents, sizeof(unsigned char));
@@ -19,8 +19,8 @@ void free_allocated(Terraform* env) {
 void demo() {
     //Weights* weights = load_weights("resources/pong_weights.bin", 133764);
     //LinearLSTM* net = make_linearlstm(weights, 1, 8, 3);
-
-    Terraform env = {.size = 512, .num_agents = 8};
+    srand(time(NULL));
+    Terraform env = {.size = 64, .num_agents = 1, .reset_frequency = 8192, .reward_scale = 0.04f};
     allocate(&env);
 
     c_reset(&env);
@@ -34,11 +34,11 @@ void demo() {
         env.actions[0] = 2;
         env.actions[1] = 2;
         env.actions[2] = 0;
-        if (IsKeyDown(KEY_UP)    || IsKeyPressed(KEY_W)) env.actions[0] = 4;
-        if (IsKeyDown(KEY_DOWN)  || IsKeyPressed(KEY_S)) env.actions[0] = 0;
-        if (IsKeyDown(KEY_LEFT)  || IsKeyDown(KEY_A)) env.actions[1] = 4;
-        if (IsKeyDown(KEY_RIGHT) || IsKeyDown(KEY_D)) env.actions[1] = 0;
-        if (IsKeyDown(KEY_SPACE)) env.actions[2] = 1;
+        if (IsKeyPressed(KEY_UP)    || IsKeyPressed(KEY_W)) env.actions[0] = 4;
+        if (IsKeyPressed(KEY_DOWN)  || IsKeyPressed(KEY_S)) env.actions[0] = 0;
+        if (IsKeyDown(KEY_LEFT)  || IsKeyPressed(KEY_A)) env.actions[1] = 4;
+        if (IsKeyDown(KEY_RIGHT) || IsKeyPressed(KEY_D)) env.actions[1] = 0;
+        if (IsKeyPressed(KEY_SPACE)) env.actions[2] = 1;
         if (IsKeyPressed(KEY_LEFT_SHIFT)) {
             env.actions[2] = 2;
         }
@@ -49,12 +49,16 @@ void demo() {
     //free_linearlstm(net);
     //free(weights);
     free_allocated(&env);
+    close_client(env.client);
 }
 
 void test_performance(int timeout) {
+    srand(time(NULL));
     Terraform env = {
-        .size = 128,
+        .size = 64,
         .num_agents = 8,
+        .reset_frequency = 512,
+        .reward_scale = 0.01f,
     };
     allocate(&env);
     c_reset(&env);
@@ -73,13 +77,13 @@ void test_performance(int timeout) {
     }
 
     int end = time(NULL);
-    float sps = num_steps / (end - start);
+    float sps = num_steps * env.num_agents / (end - start);
     printf("Test Environment SPS: %f\n", sps);
     free_allocated(&env);
 }
 
 int main() {
-    //test_performance(10);
+    // test_performance(10);
     demo();
 }
 

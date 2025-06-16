@@ -37,63 +37,6 @@ void handle_human_input(GPUDrive* env) {
     }
 }
 
-// Camera control functions
-void handle_camera_controls(Client* client) {
-    static Vector2 prev_mouse_pos = {0};
-    static bool is_dragging = false;
-    float camera_move_speed = 0.5f;
-    
-    // Handle mouse drag for camera movement
-    if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
-        prev_mouse_pos = GetMousePosition();
-        is_dragging = true;
-    }
-    
-    if (IsMouseButtonReleased(MOUSE_BUTTON_LEFT)) {
-        is_dragging = false;
-    }
-    
-    if (is_dragging) {
-        Vector2 current_mouse_pos = GetMousePosition();
-        Vector2 delta = {
-            (current_mouse_pos.x - prev_mouse_pos.x) * camera_move_speed,
-            -(current_mouse_pos.y - prev_mouse_pos.y) * camera_move_speed
-        };
-
-        // Update camera position (only X and Y)
-        client->camera.position.x += delta.x;
-        client->camera.position.y += delta.y;
-        
-        // Update camera target (only X and Y)
-        client->camera.target.x += delta.x;
-        client->camera.target.y += delta.y;
-
-        prev_mouse_pos = current_mouse_pos;
-    }
-
-    // Handle mouse wheel for zoom
-    float wheel = GetMouseWheelMove();
-    if (wheel != 0) {
-        float zoom_factor = 1.0f - (wheel * 0.1f);
-        // Calculate the current direction vector from target to position
-        Vector3 direction = {
-            client->camera.position.x - client->camera.target.x,
-            client->camera.position.y - client->camera.target.y,
-            client->camera.position.z - client->camera.target.z
-        };
-        
-        // Scale the direction vector by the zoom factor
-        direction.x *= zoom_factor;
-        direction.y *= zoom_factor;
-        direction.z *= zoom_factor;
-        
-        // Update the camera position based on the scaled direction
-        client->camera.position.x = client->camera.target.x + direction.x;
-        client->camera.position.y = client->camera.target.y + direction.y;
-        client->camera.position.z = client->camera.target.z + direction.z;
-    }
-}
-
 void demo() {
     
     GPUDrive env = {
@@ -101,7 +44,7 @@ void demo() {
         .human_agent_idx = 0,
         .reward_vehicle_collision = -0.1f,
         .reward_offroad_collision = -0.1f,
-	    .map_name = "resources/gpudrive/binaries/map_086.bin",
+	    .map_name = "resources/gpudrive/binaries/map_055.bin",
         .spawn_immunity_timer = 30
     };
     allocate(&env);
@@ -113,7 +56,6 @@ void demo() {
     int steer_delta = 1;
     while (!WindowShouldClose()) {
         // Handle camera controls
-        handle_camera_controls(env.client);
         int (*actions)[2] = (int(*)[2])env.actions;
         // // Reset all agent actions at the beginning of each frame
         // for(int i = 0; i < env.active_agent_count; i++) {

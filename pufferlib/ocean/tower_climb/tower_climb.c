@@ -190,6 +190,12 @@ void demo() {
     }
     close_client(client);
     free_allocated(env);
+    free_tower_climb_net(net);
+    free(weights);
+    free(levels[0].map);
+    free(levels);
+    free(puzzle_states[0].blocks);
+    free(puzzle_states);
 }
 
 void performance_test() {
