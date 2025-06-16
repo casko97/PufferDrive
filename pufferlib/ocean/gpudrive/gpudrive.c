@@ -23,28 +23,28 @@ void demo() {
         int (*actions)[2] = (int(*)[2])env.actions;
         actions[env.human_agent_idx][0] = 3;
         actions[env.human_agent_idx][1] = 6;
-        if(IsKeyDown(KEY_UP)){
+        if(IsKeyDown(KEY_UP) || IsKeyDown(KEY_W)){
             actions[env.human_agent_idx][0] += accel_delta;
             // Cap acceleration to maximum of 6
             if(actions[env.human_agent_idx][0] > 6) {
                 actions[env.human_agent_idx][0] = 6;
             }
         }
-        if(IsKeyDown(KEY_DOWN)){
+        if(IsKeyDown(KEY_DOWN) || IsKeyDown(KEY_S)){
             actions[env.human_agent_idx][0] -= accel_delta;
             // Cap acceleration to minimum of 0
             if(actions[env.human_agent_idx][0] < 0) {
                 actions[env.human_agent_idx][0] = 0;
             }
         }
-        if(IsKeyDown(KEY_LEFT)){
+        if(IsKeyDown(KEY_LEFT) || IsKeyDown(KEY_A)){
             actions[env.human_agent_idx][1] += steer_delta;
             // Cap steering to minimum of 0
             if(actions[env.human_agent_idx][1] < 0) {
                 actions[env.human_agent_idx][1] = 0;
             }
         }
-        if(IsKeyDown(KEY_RIGHT)){
+        if(IsKeyDown(KEY_RIGHT) || IsKeyDown(KEY_D)){
             actions[env.human_agent_idx][1] -= steer_delta;
             // Cap steering to maximum of 12
             if(actions[env.human_agent_idx][1] > 12) {
