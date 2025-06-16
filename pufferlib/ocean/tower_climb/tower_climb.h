@@ -2135,9 +2135,16 @@ void c_render(CTowerClimb* env) {
 }
 
 void close_client(Client* client) {
-    UnloadShader(client->shader);
-    CloseWindow();
+    // First unload all animations
+    UnloadModelAnimations(client->animations, 8);  // We know we have 8 animations
+    // Then unload models (which will also unload their materials and meshes)
     UnloadModel(client->robot);
     UnloadModel(client->puffer);
+    UnloadModel(client->cube);
+    // Unload shader
+    UnloadShader(client->shader);
+    // Unload texture
+    UnloadTexture(client->background);
+    CloseWindow();
     free(client);
 }
