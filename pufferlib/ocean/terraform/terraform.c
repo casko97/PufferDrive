@@ -186,15 +186,21 @@ void demo() {
     c_render(&env);
     while (!WindowShouldClose()) {
         forward(net, env.observations, env.actions, 11, 6);
-        if (IsKeyPressed(KEY_UP)    || IsKeyPressed(KEY_W)) env.actions[0] = 4;
-        if (IsKeyPressed(KEY_DOWN)  || IsKeyPressed(KEY_S)) env.actions[0] = 0;
-        if (IsKeyDown(KEY_LEFT)  || IsKeyPressed(KEY_A)) env.actions[1] = 4;
-        if (IsKeyDown(KEY_RIGHT) || IsKeyPressed(KEY_D)) env.actions[1] = 0;
-        if (IsKeyPressed(KEY_SPACE)) env.actions[2] = 1;
-        if (IsKeyPressed(KEY_LEFT_SHIFT)) {
-            env.actions[2] = 2;
+        int policy_actions[3] = {env.actions[0], env.actions[1], env.actions[2]};
+        
+        if(IsKeyDown(KEY_LEFT_SHIFT)) {
+            // When shift is held, stop the dozer
+            env.actions[0] = 2;  // Stop vertical movement
+            env.actions[1] = 2;  // Stop horizontal movement
+            env.actions[2] = 0;  // no scoop or drop
+            // Override with keyboard controls if keys are pressed
+            if (IsKeyPressed(KEY_UP) || IsKeyPressed(KEY_W)) env.actions[0] = 4;
+            if (IsKeyPressed(KEY_DOWN) || IsKeyPressed(KEY_S)) env.actions[0] = 0;
+            if (IsKeyDown(KEY_LEFT) || IsKeyDown(KEY_A)) env.actions[1] = 0;
+            if (IsKeyDown(KEY_RIGHT) || IsKeyDown(KEY_D)) env.actions[1] = 4;
+            if (IsKeyPressed(KEY_SPACE)) env.actions[2] = 1;
+            if (IsKeyPressed(KEY_ENTER)) env.actions[2] = 2;
         }
-
         c_step(&env);
         c_render(&env);
     }
