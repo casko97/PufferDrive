@@ -911,3 +911,79 @@ class Tetris(nn.Module):
         action = self.actor(hidden)  # (B, 4 * n_cols)
         value = self.value_fn(hidden)  # (B, 1)
         return action, value
+
+class Drone(nn.Module):
+    ''' Drone policy. Flattens obs and applies a linear layer.
+    '''
+    def __init__(self, env, hidden_size=128):
+        super().__init__()
+        self.hidden_size = hidden_size
+        self.is_multidiscrete = isinstance(env.single_action_space,
+                pufferlib.spaces.MultiDiscrete)
+        self.is_continuous = isinstance(env.single_action_space,
+                pufferlib.spaces.Box)
+        try:
+            self.is_dict_obs = isinstance(env.env.observation_space, pufferlib.spaces.Dict) 
+        except:
+            self.is_dict_obs = isinstance(env.observation_space, pufferlib.spaces.Dict) 
+
+        if self.is_dict_obs:
+            self.dtype = pufferlib.pytorch.nativize_dtype(env.emulated)
+            input_size = int(sum(np.prod(v.shape) for v in env.env.observation_space.values()))
+            self.encoder = nn.Linear(input_size, self.hidden_size)
+        else:
+            self.encoder = torch.nn.Sequential(
+                nn.Linear(np.prod(env.single_observation_space.shape), hidden_size),
+                nn.GELU(),
+            )
+
+        if self.is_multidiscrete:
+            self.action_nvec = tuple(env.single_action_space.nvec)
+            self.decoder = pufferlib.pytorch.layer_init(
+                    nn.Linear(hidden_size, sum(self.action_nvec)), std=0.01)
+        elif not self.is_continuous:
+            self.decoder = pufferlib.pytorch.layer_init(
+                nn.Linear(hidden_size, env.single_action_space.n), std=0.01)
+        else:
+            self.decoder_mean = pufferlib.pytorch.layer_init(
+                nn.Linear(hidden_size, env.single_action_space.shape[0]), std=0.01)
+            self.decoder_logstd = nn.Parameter(torch.zeros(
+                1, env.single_action_space.shape[0]))
+
+        self.value = pufferlib.pytorch.layer_init(
+            nn.Linear(hidden_size, 1), std=1)
+
+    def forward_eval(self, observations, state=None):
+        hidden = self.encode_observations(observations, state=state)
+        logits, values = self.decode_actions(hidden)
+        return logits, values
+
+    def forward(self, observations, state=None):
+        return self.forward_eval(observations, state)
+
+    def encode_observations(self, observations, state=None):
+        '''Encodes a batch of observations into hidden states. Assumes
+        no time dimension (handled by LSTM wrappers).'''
+        batch_size = observations.shape[0]
+        if self.is_dict_obs:
+            observations = pufferlib.pytorch.nativize_tensor(observations, self.dtype)
+            observations = torch.cat([v.view(batch_size, -1) for v in observations.values()], dim=1)
+        else: 
+            observations = observations.view(batch_size, -1)
+        return self.encoder(observations.float())
+
+    def decode_actions(self, hidden):
+        '''Decodes a batch of hidden states into (multi)discrete actions.
+        Assumes no time dimension (handled by LSTM wrappers).'''
+        if self.is_multidiscrete:
+            logits = self.decoder(hidden).split(self.action_nvec, dim=1)
+        elif self.is_continuous:
+            mean = self.decoder_mean(hidden)
+            logstd = self.decoder_logstd.expand_as(mean)
+            std = torch.exp(logstd)
+            logits = torch.distributions.Normal(mean, std)
+        else:
+            logits = self.decoder(hidden)
+
+        values = self.value(hidden)
+        return logits, values
