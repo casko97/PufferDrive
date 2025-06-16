@@ -86,17 +86,15 @@ class GPUDrive(pufferlib.PufferEnv):
             log = binding.vec_log(self.c_envs)
             if log:
                 info.append(log)
-                print(log)
+                # print(log)
         if(self.tick > 0 and self.resample_frequency > 0 and self.tick % self.resample_frequency == 0):
             self.tick = 0
             will_resample = 1
             if will_resample:
                 binding.vec_close(self.c_envs)
                 agent_offsets, map_ids, num_envs = binding.shared(num_agents=self.num_agents, num_maps=self.num_maps)
-                print(len(dict.fromkeys(map_ids)))
                 env_ids = []
                 seed = np.random.randint(0, 2**32-1)
-                print("Resampling")
                 for i in range(num_envs):
                     cur = agent_offsets[i]
                     nxt = agent_offsets[i+1]
