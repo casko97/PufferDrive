@@ -2,8 +2,88 @@
 // Compile using: ./scripts/build_ocean.sh drone [local|fast]
 // Run with: ./drone
 
-#include "drone.h"
 #include <time.h>
+#include "drone.h"
+#include "puffernet.h"
+
+double randn(double mean, double std) {
+    static int has_spare = 0;
+    static double spare;
+    
+    if (has_spare) {
+        has_spare = 0;
+        return mean + std * spare;
+    }
+    
+    has_spare = 1;
+    double u, v, s;
+    do {
+        u = 2.0 * rand() / RAND_MAX - 1.0;
+        v = 2.0 * rand() / RAND_MAX - 1.0;
+        s = u * u + v * v;
+    } while (s >= 1.0 || s == 0.0);
+    
+    s = sqrt(-2.0 * log(s) / s);
+    spare = v * s;
+    return mean + std * (u * s);
+}
+
+typedef struct LinearContLSTM LinearContLSTM;
+struct LinearContLSTM {
+    int num_agents;
+    float* obs;
+    float* log_std;
+    Linear* encoder;
+    GELU* gelu1;
+    LSTM* lstm;
+    Linear* actor;
+    Linear* value_fn;
+    int num_actions;
+};
+
+LinearContLSTM* make_linearcontlstm(Weights* weights, int num_agents, int input_dim, int logit_sizes[], int num_actions) {
+    LinearContLSTM* net = calloc(1, sizeof(LinearContLSTM));
+    net->num_agents = num_agents;
+    net->obs = calloc(num_agents*input_dim, sizeof(float));
+    net->num_actions = logit_sizes[0];
+    net->log_std = weights->data;
+    weights->idx += net->num_actions;
+    net->encoder = make_linear(weights, num_agents, input_dim, 128);
+    net->gelu1 = make_gelu(num_agents, 128);
+    int atn_sum = 0;
+    for (int i = 0; i < num_actions; i++) {
+        atn_sum += logit_sizes[i];
+    }
+    net->actor = make_linear(weights, num_agents, 128, atn_sum);
+    net->value_fn = make_linear(weights, num_agents, 128, 1);
+    net->lstm = make_lstm(weights, num_agents, 128, 128);
+    return net;
+}
+
+void free_linearcontlstm(LinearContLSTM* net) {
+    free(net->obs);
+    free(net->encoder);
+    free(net->gelu1);
+    free(net->actor);
+    free(net->value_fn);
+    free(net->lstm);
+    free(net);
+}
+
+void forward_linearcontlstm(LinearContLSTM* net, float* observations, float* actions) {
+    linear(net->encoder, observations);
+    gelu(net->gelu1, net->encoder->output);
+    lstm(net->lstm, net->gelu1->output);
+    linear(net->actor, net->lstm->state_h);
+    linear(net->value_fn, net->lstm->state_h);
+    for (int i = 0; i < net->num_actions; i++) {
+        float std = expf(net->log_std[i]);
+        float mean = net->actor->output[i];
+        actions[i] = randn(mean, std);
+    }
+
+}
+
 
 void generate_dummy_actions(Drone *env) {
     // Generate random floats in [-1, 1] range
@@ -23,6 +103,11 @@ void demo() {
     env.rewards = (float *)calloc(1, sizeof(float));
     env.terminals = (unsigned char *)calloc(1, sizeof(float));
 
+    Weights* weights = load_weights("resources/drone/drone_weights.bin", 134921);
+    int logit_sizes[1] = {4};
+    LinearContLSTM* net = make_linearcontlstm(weights, 1, 16, logit_sizes, 1);
+
+
     if (!env.observations || !env.actions || !env.rewards) {
         fprintf(stderr, "ERROR: Failed to allocate memory for demo buffers.\n");
         free(env.observations);
@@ -32,37 +117,19 @@ void demo() {
     }
 
     init(&env);
-    Client *client = make_client(&env);
-
-    if (client == NULL) {
-        fprintf(stderr,
-                "ERROR: Failed to create rendering client during initial setup.\n");
-        c_close(&env);
-        free(env.observations);
-        free(env.actions);
-        free(env.rewards);
-        return;
-    }
-    env.client = client;
-
-    // Initial reset
     c_reset(&env);
-    int total_steps = 0;
-
-    printf("Starting Drone demo. Press ESC to exit.\n");
-
+    c_render(&env);
     while (!WindowShouldClose()) {
-        generate_dummy_actions(&env);
+        forward_linearcontlstm(net, env.observations, env.actions);
         c_step(&env);
         c_render(&env);
-        total_steps++;
     }
 
     c_close(&env);
+    free_linearcontlstm(net);
     free(env.observations);
     free(env.actions);
     free(env.rewards);
-    // ----------------------------------------
 }
 
 int main() {

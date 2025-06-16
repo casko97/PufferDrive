@@ -61,7 +61,7 @@ class Drone(pufferlib.PufferEnv):
                 self.rewards[env_num:(env_num+1)],
                 self.terminals[env_num:(env_num+1)],
                 self.truncations[env_num:(env_num+1)],
-                seed,
+                env_num,
                 report_interval=self.report_interval,
                 n_targets=n_targets,
                 moves_left=moves_left,
