@@ -1329,6 +1329,63 @@ Client* make_client(GPUDrive* env){
     return client;
 }
 
+// Camera control functions
+void handle_camera_controls(Client* client) {
+    static Vector2 prev_mouse_pos = {0};
+    static bool is_dragging = false;
+    float camera_move_speed = 0.5f;
+    
+    // Handle mouse drag for camera movement
+    if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+        prev_mouse_pos = GetMousePosition();
+        is_dragging = true;
+    }
+    
+    if (IsMouseButtonReleased(MOUSE_BUTTON_LEFT)) {
+        is_dragging = false;
+    }
+    
+    if (is_dragging) {
+        Vector2 current_mouse_pos = GetMousePosition();
+        Vector2 delta = {
+            (current_mouse_pos.x - prev_mouse_pos.x) * camera_move_speed,
+            -(current_mouse_pos.y - prev_mouse_pos.y) * camera_move_speed
+        };
+
+        // Update camera position (only X and Y)
+        client->camera.position.x += delta.x;
+        client->camera.position.y += delta.y;
+        
+        // Update camera target (only X and Y)
+        client->camera.target.x += delta.x;
+        client->camera.target.y += delta.y;
+
+        prev_mouse_pos = current_mouse_pos;
+    }
+
+    // Handle mouse wheel for zoom
+    float wheel = GetMouseWheelMove();
+    if (wheel != 0) {
+        float zoom_factor = 1.0f - (wheel * 0.1f);
+        // Calculate the current direction vector from target to position
+        Vector3 direction = {
+            client->camera.position.x - client->camera.target.x,
+            client->camera.position.y - client->camera.target.y,
+            client->camera.position.z - client->camera.target.z
+        };
+        
+        // Scale the direction vector by the zoom factor
+        direction.x *= zoom_factor;
+        direction.y *= zoom_factor;
+        direction.z *= zoom_factor;
+        
+        // Update the camera position based on the scaled direction
+        client->camera.position.x = client->camera.target.x + direction.x;
+        client->camera.position.y = client->camera.target.y + direction.y;
+        client->camera.position.z = client->camera.target.z + direction.z;
+    }
+}
+
 void draw_agent_obs(GPUDrive* env, int agent_index){
     // Diamond dimensions
     float diamond_height = 3.0f;    // Total height of diamond
@@ -1536,6 +1593,7 @@ void c_render(GPUDrive* env) {
     Color road = (Color){35, 35, 37, 255};
     ClearBackground(road);
     BeginMode3D(client->camera);
+    handle_camera_controls(env->client);
     
     // Draw a grid to help with orientation
     // DrawGrid(20, 1.0f);
@@ -1563,7 +1621,8 @@ void c_render(GPUDrive* env) {
                     break;
                 }
             }
-            if(!is_active_agent && !is_static_car){
+            // HIDE CARS ON RESPAWN - IMPORTANT TO KNOW VISUAL SETTING
+            if(!is_active_agent && !is_static_car || env->entities[i].respawn_timestep != -1){
                 continue;
             }
             Vector3 position;
