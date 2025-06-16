@@ -2,41 +2,6 @@
 #include <unistd.h>
 #include "gpudrive.h"
 
-// Human control functions
-void handle_human_input(GPUDrive* env) {
-    float steering_delta = M_PI/8.0f;
-    int active_idx = env->active_agent_indices[env->human_agent_idx];
-    int (*actions)[2] = (int(*)[2])env->actions;
-    
-    // Reset the human-controlled agent's actions
-    actions[active_idx][0] = 0;
-    actions[active_idx][1] = 0;
-    
-    // Apply keyboard inputs to the human-controlled agent
-    if(IsKeyDown(KEY_W)) {
-        actions[active_idx][0] = 1;
-    }
-    if(IsKeyDown(KEY_S)) {
-        actions[active_idx][0] = -1;
-    }
-    if(IsKeyDown(KEY_A)) {
-        actions[active_idx][1] = -steering_delta;
-    }
-    if(IsKeyDown(KEY_D)) {
-        actions[active_idx][1] = steering_delta;
-    }
-    
-    // Allow switching between agents with number keys
-    for(int i = 0; i < env->active_agent_count; i++) {
-        if(IsKeyPressed(KEY_ONE + i)) {
-            env->human_agent_idx = i;
-            printf("Switched to controlling agent %d (index %d)\n", 
-                   i, env->active_agent_indices[i]);
-            break;
-        }
-    }
-}
-
 void demo() {
     
     GPUDrive env = {
@@ -44,49 +9,43 @@ void demo() {
         .human_agent_idx = 0,
         .reward_vehicle_collision = -0.1f,
         .reward_offroad_collision = -0.1f,
-	    .map_name = "resources/gpudrive/binaries/map_055.bin",
+	    .map_name = "resources/gpudrive/binaries/map_942.bin",
         .spawn_immunity_timer = 30
     };
     allocate(&env);
     c_reset(&env);
     c_render(&env);
     //Client* client = make_client(&env);
-    printf("Human controlling agent index: %d\n", env.active_agent_indices[env.human_agent_idx]);
-    int accel_delta = 1;
-    int steer_delta = 1;
+    int accel_delta = 2;
+    int steer_delta = 4;
     while (!WindowShouldClose()) {
         // Handle camera controls
         int (*actions)[2] = (int(*)[2])env.actions;
-        // // Reset all agent actions at the beginning of each frame
-        // for(int i = 0; i < env.active_agent_count; i++) {
-        //     int accel = rand() % 7;
-        //     int steer = rand() % 13;
-        //     actions[i][0] = 0;
-        //     actions[i][1] = 0;
-        // }
-        if(IsKeyPressed(KEY_UP)){
+        actions[env.human_agent_idx][0] = 3;
+        actions[env.human_agent_idx][1] = 6;
+        if(IsKeyDown(KEY_UP) || IsKeyDown(KEY_W)){
             actions[env.human_agent_idx][0] += accel_delta;
             // Cap acceleration to maximum of 6
             if(actions[env.human_agent_idx][0] > 6) {
                 actions[env.human_agent_idx][0] = 6;
             }
         }
-        if(IsKeyPressed(KEY_DOWN)){
+        if(IsKeyDown(KEY_DOWN) || IsKeyDown(KEY_S)){
             actions[env.human_agent_idx][0] -= accel_delta;
             // Cap acceleration to minimum of 0
             if(actions[env.human_agent_idx][0] < 0) {
                 actions[env.human_agent_idx][0] = 0;
             }
         }
-        if(IsKeyPressed(KEY_LEFT)){
-            actions[env.human_agent_idx][1] -= steer_delta;
+        if(IsKeyDown(KEY_LEFT) || IsKeyDown(KEY_A)){
+            actions[env.human_agent_idx][1] += steer_delta;
             // Cap steering to minimum of 0
             if(actions[env.human_agent_idx][1] < 0) {
                 actions[env.human_agent_idx][1] = 0;
             }
         }
-        if(IsKeyPressed(KEY_RIGHT)){
-            actions[env.human_agent_idx][1] += steer_delta;
+        if(IsKeyDown(KEY_RIGHT) || IsKeyDown(KEY_D)){
+            actions[env.human_agent_idx][1] -= steer_delta;
             // Cap steering to maximum of 12
             if(actions[env.human_agent_idx][1] > 12) {
                 actions[env.human_agent_idx][1] = 12;
@@ -95,13 +54,6 @@ void demo() {
         if(IsKeyPressed(KEY_TAB)){
             env.human_agent_idx = (env.human_agent_idx + 1) % env.active_agent_count;
         }
-        // for (int i = 0; i < env.active_agent_count * 1; i++) {
-        //         net->obs[i] = (float)env.observations[i];
-        //     }
-
-        // forward_linearlstm(net, net->obs, actions);
-        // Handle human input for the controlled agent
-        // handle_human_input(&env);
         c_step(&env);
         c_render(&env);
     }
