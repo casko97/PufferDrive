@@ -153,7 +153,6 @@ struct Drone {
 void init(Drone *env) {
     env->log = (Log){0};
     env->tick = 0;
-    srand(time(NULL));
 }
 
 void add_log(Drone *env) {
@@ -165,9 +164,9 @@ void add_log(Drone *env) {
 }
 
 void compute_observations(Drone *env) {
-    env->observations[0] = env->move_target.x / GRID_SIZE;
-    env->observations[1] = env->move_target.y / GRID_SIZE;
-    env->observations[2] = env->move_target.z / GRID_SIZE;
+    env->observations[0] = (env->pos.x - env->move_target.x) / GRID_SIZE;
+    env->observations[1] = (env->pos.y - env->move_target.y) / GRID_SIZE;
+    env->observations[2] = (env->pos.z - env->move_target.z) / GRID_SIZE;
 
     env->observations[3] = env->pos.x / GRID_SIZE;
     env->observations[4] = env->pos.y / GRID_SIZE;
@@ -436,106 +435,104 @@ void c_render(Drone *env) {
         exit(0);
     }
 
-    if (IsWindowReady()) {
-        if (IsKeyDown(KEY_ESCAPE)) {
-            c_close(env);
-            exit(0);
-        }
-
-        handle_camera_controls(env->client);
-
-        BeginDrawing();
-        ClearBackground((Color){6, 24, 24, 255});
-
-        BeginMode3D(env->client->camera);
-
-        DrawCubeWires((Vector3){0.0f, 0.0f, 0.0f}, GRID_SIZE * 2.0f,
-                      GRID_SIZE * 2.0f, GRID_SIZE * 2.0f, WHITE);
-
-        DrawSphere(
-            (Vector3){env->move_target.x, env->move_target.y, env->move_target.z},
-            0.3f, BLUE);
-
-        DrawSphere((Vector3){env->pos.x, env->pos.y, env->pos.z}, 0.3f, RED);
-
-        float T[4];
-        for (int i = 0; i < 4; i++) {
-            float rpm = (env->actions[i] + 1.0f) * 0.5f * MAX_RPM;
-            T[i] = K_THRUST * rpm * rpm;
-        }
-
-        const float rotor_radius = 0.15f;
-        const float visual_arm_len = ARM_LEN * 4.0f;
-
-        Vec3 rotor_offsets_body[4] = {{+visual_arm_len, 0.0f, 0.0f},
-                                      {-visual_arm_len, 0.0f, 0.0f},
-                                      {0.0f, +visual_arm_len, 0.0f},
-                                      {0.0f, -visual_arm_len, 0.0f}};
-
-        Color base_colors[4] = {ORANGE, PURPLE, LIME, SKYBLUE};
-
-        for (int i = 0; i < 4; i++) {
-            Vec3 world_off = quat_rotate(env->quat, rotor_offsets_body[i]);
-
-            Vector3 rotor_pos = {env->pos.x + world_off.x, env->pos.y + world_off.y,
-                                 env->pos.z + world_off.z};
-
-            float rpm = (env->actions[i] + 1.0f) * 0.5f * MAX_RPM;
-            float intensity = 0.75f + 0.25f * (rpm / MAX_RPM);
-
-            Color rotor_color =
-                (Color){(unsigned char)(base_colors[i].r * intensity),
-                        (unsigned char)(base_colors[i].g * intensity),
-                        (unsigned char)(base_colors[i].b * intensity), 255};
-
-            DrawSphere(rotor_pos, rotor_radius, rotor_color);
-
-            DrawCylinderEx((Vector3){env->pos.x, env->pos.y, env->pos.z}, rotor_pos,
-                           0.02f, 0.02f, 8, BLACK);
-        }
-
-        Vec3 forward_body = {1.0f, 0.0f, 0.0f};
-        Vec3 forward_world = quat_rotate(env->quat, forward_body);
-        DrawLine3D((Vector3){env->pos.x, env->pos.y, env->pos.z},
-                   (Vector3){env->pos.x + forward_world.x * 0.5f,
-                             env->pos.y + forward_world.y * 0.5f,
-                             env->pos.z + forward_world.z * 0.5f},
-                   YELLOW);
-
-        if (norm3(env->vel) > 0.1f) {
-            DrawLine3D((Vector3){env->pos.x, env->pos.y, env->pos.z},
-                       (Vector3){env->pos.x + env->vel.x * 0.1f,
-                                 env->pos.y + env->vel.y * 0.1f,
-                                 env->pos.z + env->vel.z * 0.1f},
-                       MAGENTA);
-        }
-
-        DrawLine3D(
-            (Vector3){env->pos.x, env->pos.y, env->pos.z},
-            (Vector3){env->move_target.x, env->move_target.y, env->move_target.z},
-            ColorAlpha(BLUE, 0.3f));
-
-        EndMode3D();
-
-        DrawText(TextFormat("Targets left: %d", env->n_targets), 10, 10, 20, WHITE);
-        DrawText(TextFormat("Moves left: %d", env->moves_left), 10, 40, 20, WHITE);
-        DrawText(TextFormat("Episode Return: %.2f", env->episodic_return), 10, 70,
-                 20, WHITE);
-
-        DrawText("Motor Thrusts:", 10, 110, 20, WHITE);
-        DrawText(TextFormat("Front: %.3f", T[0]), 10, 135, 18, ORANGE);
-        DrawText(TextFormat("Back:  %.3f", T[1]), 10, 155, 18, PURPLE);
-        DrawText(TextFormat("Right: %.3f", T[2]), 10, 175, 18, LIME);
-        DrawText(TextFormat("Left:  %.3f", T[3]), 10, 195, 18, SKYBLUE);
-
-        DrawText(TextFormat("Pos: (%.1f, %.1f, %.1f)", env->pos.x, env->pos.y,
-                            env->pos.z),
-                 10, 225, 18, WHITE);
-        DrawText(TextFormat("Vel: %.2f m/s", norm3(env->vel)), 10, 245, 18, WHITE);
-
-        DrawText("Left click + drag: Rotate camera", 10, 275, 16, LIGHTGRAY);
-        DrawText("Mouse wheel: Zoom in/out", 10, 295, 16, LIGHTGRAY);
-
-        EndDrawing();
+    if (IsKeyDown(KEY_ESCAPE)) {
+        c_close(env);
+        exit(0);
     }
+
+    handle_camera_controls(env->client);
+
+    BeginDrawing();
+    ClearBackground((Color){6, 24, 24, 255});
+
+    BeginMode3D(env->client->camera);
+
+    DrawCubeWires((Vector3){0.0f, 0.0f, 0.0f}, GRID_SIZE * 2.0f,
+                  GRID_SIZE * 2.0f, GRID_SIZE * 2.0f, WHITE);
+
+    DrawSphere(
+        (Vector3){env->move_target.x, env->move_target.y, env->move_target.z},
+        0.3f, BLUE);
+
+    DrawSphere((Vector3){env->pos.x, env->pos.y, env->pos.z}, 0.3f, RED);
+
+    float T[4];
+    for (int i = 0; i < 4; i++) {
+        float rpm = (env->actions[i] + 1.0f) * 0.5f * MAX_RPM;
+        T[i] = K_THRUST * rpm * rpm;
+    }
+
+    const float rotor_radius = 0.15f;
+    const float visual_arm_len = ARM_LEN * 4.0f;
+
+    Vec3 rotor_offsets_body[4] = {{+visual_arm_len, 0.0f, 0.0f},
+                                  {-visual_arm_len, 0.0f, 0.0f},
+                                  {0.0f, +visual_arm_len, 0.0f},
+                                  {0.0f, -visual_arm_len, 0.0f}};
+
+    Color base_colors[4] = {ORANGE, PURPLE, LIME, SKYBLUE};
+
+    for (int i = 0; i < 4; i++) {
+        Vec3 world_off = quat_rotate(env->quat, rotor_offsets_body[i]);
+
+        Vector3 rotor_pos = {env->pos.x + world_off.x, env->pos.y + world_off.y,
+                             env->pos.z + world_off.z};
+
+        float rpm = (env->actions[i] + 1.0f) * 0.5f * MAX_RPM;
+        float intensity = 0.75f + 0.25f * (rpm / MAX_RPM);
+
+        Color rotor_color =
+            (Color){(unsigned char)(base_colors[i].r * intensity),
+                    (unsigned char)(base_colors[i].g * intensity),
+                    (unsigned char)(base_colors[i].b * intensity), 255};
+
+        DrawSphere(rotor_pos, rotor_radius, rotor_color);
+
+        DrawCylinderEx((Vector3){env->pos.x, env->pos.y, env->pos.z}, rotor_pos,
+                       0.02f, 0.02f, 8, BLACK);
+    }
+
+    Vec3 forward_body = {1.0f, 0.0f, 0.0f};
+    Vec3 forward_world = quat_rotate(env->quat, forward_body);
+    DrawLine3D((Vector3){env->pos.x, env->pos.y, env->pos.z},
+               (Vector3){env->pos.x + forward_world.x * 0.5f,
+                         env->pos.y + forward_world.y * 0.5f,
+                         env->pos.z + forward_world.z * 0.5f},
+               YELLOW);
+
+    if (norm3(env->vel) > 0.1f) {
+        DrawLine3D((Vector3){env->pos.x, env->pos.y, env->pos.z},
+                   (Vector3){env->pos.x + env->vel.x * 0.1f,
+                             env->pos.y + env->vel.y * 0.1f,
+                             env->pos.z + env->vel.z * 0.1f},
+                   MAGENTA);
+    }
+
+    DrawLine3D(
+        (Vector3){env->pos.x, env->pos.y, env->pos.z},
+        (Vector3){env->move_target.x, env->move_target.y, env->move_target.z},
+        ColorAlpha(BLUE, 0.3f));
+
+    EndMode3D();
+
+    DrawText(TextFormat("Targets left: %d", env->n_targets), 10, 10, 20, WHITE);
+    DrawText(TextFormat("Moves left: %d", env->moves_left), 10, 40, 20, WHITE);
+    DrawText(TextFormat("Episode Return: %.2f", env->episodic_return), 10, 70,
+             20, WHITE);
+
+    DrawText("Motor Thrusts:", 10, 110, 20, WHITE);
+    DrawText(TextFormat("Front: %.3f", T[0]), 10, 135, 18, ORANGE);
+    DrawText(TextFormat("Back:  %.3f", T[1]), 10, 155, 18, PURPLE);
+    DrawText(TextFormat("Right: %.3f", T[2]), 10, 175, 18, LIME);
+    DrawText(TextFormat("Left:  %.3f", T[3]), 10, 195, 18, SKYBLUE);
+
+    DrawText(TextFormat("Pos: (%.1f, %.1f, %.1f)", env->pos.x, env->pos.y,
+                        env->pos.z),
+             10, 225, 18, WHITE);
+    DrawText(TextFormat("Vel: %.2f m/s", norm3(env->vel)), 10, 245, 18, WHITE);
+
+    DrawText("Left click + drag: Rotate camera", 10, 275, 16, LIGHTGRAY);
+    DrawText("Mouse wheel: Zoom in/out", 10, 295, 16, LIGHTGRAY);
+
+    EndDrawing();
 }
