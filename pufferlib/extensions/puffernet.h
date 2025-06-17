@@ -62,6 +62,7 @@ Weights* load_weights(const char* filename, size_t num_weights) {
 float* get_weights(Weights* weights, int num_weights) {
     float* data = &weights->data[weights->idx];
     weights->idx += num_weights;
+    printf("weights->idx: %d, weights->size: %d\n", weights->idx, weights->size);
     assert(weights->idx <= weights->size);
     return data;
 }
@@ -318,6 +319,21 @@ void _softmax_multidiscrete(float* input, int* output, int batch_size, int logit
     }
 }
 
+void _max_dim1(float* input, float* output, int batch_size, int seq_len, int feature_dim) {
+    for (int b = 0; b < batch_size; b++) {
+        for (int f = 0; f < feature_dim; f++) {
+            float max_val = input[b*seq_len*feature_dim + f];
+            for (int s = 1; s < seq_len; s++) {
+                float val = input[b*seq_len*feature_dim + s*feature_dim + f];
+                if (val > max_val) {
+                    max_val = val;
+                }
+            }
+            output[b*feature_dim + f] = max_val;
+        }
+    }
+}
+
 // User API. Provided to help organize layers
 typedef struct Linear Linear;
 struct Linear {
@@ -395,6 +411,30 @@ GELU* make_gelu(int batch_size, int input_dim) {
 
 void gelu(GELU* layer, float* input) {
     _gelu(input, layer->output, layer->batch_size*layer->input_dim);
+}
+
+typedef struct MaxDim1 MaxDim1;
+struct MaxDim1 {
+    float* output;
+    int batch_size;
+    int seq_len;
+    int feature_dim;
+};
+
+MaxDim1* make_max_dim1(int batch_size, int seq_len, int feature_dim) {
+    size_t buffer_size = batch_size*feature_dim*sizeof(float);
+    MaxDim1* layer = calloc(1, sizeof(MaxDim1) + buffer_size);
+    *layer = (MaxDim1){
+        .output = (float*)(layer + 1),
+        .batch_size = batch_size,
+        .seq_len = seq_len,
+        .feature_dim = feature_dim,
+    };
+    return layer;
+}
+
+void max_dim1(MaxDim1* layer, float* input) {
+    _max_dim1(input, layer->output, layer->batch_size, layer->seq_len, layer->feature_dim);
 }
 
 typedef struct Conv2D Conv2D;
