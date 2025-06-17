@@ -62,7 +62,6 @@ Weights* load_weights(const char* filename, size_t num_weights) {
 float* get_weights(Weights* weights, int num_weights) {
     float* data = &weights->data[weights->idx];
     weights->idx += num_weights;
-    printf("weights->idx: %d, weights->size: %d\n", weights->idx, weights->size);
     assert(weights->idx <= weights->size);
     return data;
 }
