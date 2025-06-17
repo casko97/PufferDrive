@@ -26,7 +26,7 @@ int main(void) {
     initEnv(e, NUM_DRONES, 0, -1, time(NULL), false, false, false, false);
     initMaps(e);
     setupEnv(e);
-    e->humanInput = true;
+    // e->humanInput = true;
 
 #ifdef __EMSCRIPTEN__
     lastFrameTime = emscripten_get_now();

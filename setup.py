@@ -48,6 +48,7 @@ RLIGHTS_URL = 'https://raw.githubusercontent.com/raysan5/raylib/refs/heads/maste
 
 def download_raylib(platform, ext):
     if not os.path.exists(platform):
+        print(f'Downloading Raylib {platform}')
         urllib.request.urlretrieve(RAYLIB_URL + platform + ext, platform + ext)
         if ext == '.zip':
             with zipfile.ZipFile(platform + ext, 'r') as zip_ref:
@@ -60,6 +61,22 @@ def download_raylib(platform, ext):
         urllib.request.urlretrieve(RLIGHTS_URL, platform + '/include/rlights.h')
 
 download_raylib('raylib-5.5_webassembly', '.zip')
+
+BOX2D_URL = 'https://github.com/capnspacehook/box2d/releases/latest/download/'
+BOX2D_NAME = 'box2d-macos-arm64' if platform.system() == "Darwin" else 'box2d-linux-amd64'
+
+def download_box2d(platform):
+    if not os.path.exists(platform):
+        ext = ".tar.gz"
+
+        print(f'Downloading Box2D {platform}')
+        urllib.request.urlretrieve(BOX2D_URL + platform + ext, platform + ext)
+        with tarfile.open(platform + ext, 'r') as tar_ref:
+            tar_ref.extractall()
+
+        os.remove(platform + ext)
+
+download_box2d('box2d-web')
 
 # Shared compile args for all platforms
 extra_compile_args = [
@@ -133,6 +150,8 @@ elif system == 'Darwin':
     download_raylib('raylib-5.5_macos', '.tar.gz')
 else:
     raise ValueError(f'Unsupported system: {system}')
+
+download_box2d(BOX2D_NAME)
 
 # Default Gym/Gymnasium/PettingZoo versions
 # Gym:
@@ -381,32 +400,13 @@ class TorchBuildExt(cpp_extension.BuildExtension):
         super().run()
 
 RAYLIB_A = f'{RAYLIB_NAME}/lib/libraylib.a'
-INCLUDE = [numpy.get_include(), 'raylib/include']
+INCLUDE = [numpy.get_include(), 'raylib/include', f'{BOX2D_NAME}/include', f'{BOX2D_NAME}/src']
 extension_kwargs = dict(
     include_dirs=INCLUDE,
     extra_compile_args=extra_compile_args,
     extra_link_args=extra_link_args,
     extra_objects=[RAYLIB_A],
 )
-
-# Put C env names here. PufferLib will look for
-# pufferlib/ocean/<name>/binding.c
-c_extensions_names = [
-    'gpudrive',
-    'squared',
-    'pong',
-    'drone',
-    'boids',
-    'breakout',
-    'enduro',
-    'blastar',
-    'grid',
-    'nmmo3',
-    'tactical',
-    'connect4',
-    'go',
-    'cartpole'
-]
 
 # TODO: Include other C files so rebuild is auto?
 c_extension_paths = glob.glob('pufferlib/ocean/**/binding.c', recursive=True)
@@ -419,6 +419,11 @@ c_extensions = [
     for path in c_extension_paths
 ]
 c_extension_paths = [os.path.join(*path.split('/')[:-1]) for path in c_extension_paths]
+
+for c_ext in c_extensions:
+    if "impulse_wars" in c_ext.name:
+        print(f"Adding {c_ext.name} to extra objects")
+        c_ext.extra_objects.append(f'{BOX2D_NAME}/libbox2d.a')
 
 # Check if CUDA compiler is available. You need cuda dev, not just runtime.
 torch_sources = [

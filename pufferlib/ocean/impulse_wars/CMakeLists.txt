@@ -95,8 +95,8 @@ target_compile_options(box2d PRIVATE "-ffp-contract=fast")
 function(configure_target target_name)
 	target_include_directories(
 		${target_name} PRIVATE
-		"${CMAKE_CURRENT_SOURCE_DIR}/src"
-		"${CMAKE_CURRENT_SOURCE_DIR}/src/include"
+		"${CMAKE_CURRENT_SOURCE_DIR}"
+		"${CMAKE_CURRENT_SOURCE_DIR}/include"
 	)
 
 	# Mark box2d as a system include directory to suppress warnings from it
@@ -128,7 +128,7 @@ if(DEFINED BUILD_PYTHON_MODULE)
 
 	install(TARGETS binding DESTINATION .)
 elseif(DEFINED BUILD_DEMO)
-	add_executable(demo "${CMAKE_CURRENT_SOURCE_DIR}/src/demo.c")
+	add_executable(demo "${CMAKE_CURRENT_SOURCE_DIR}/impulse_wars.c")
 	configure_target(demo)
 elseif(DEFINED BUILD_BENCHMARK)
 	add_executable(benchmark "${CMAKE_CURRENT_SOURCE_DIR}/src/benchmark.c")
