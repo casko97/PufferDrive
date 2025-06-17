@@ -386,7 +386,7 @@ void c_reset(Terraform* env) {
     memcpy(env->quadrant_volume_deltas, env->volume_deltas, env->num_quadrants*sizeof(float));
     memset(env->complete_quadrants, 0, env->num_quadrants*sizeof(int));
 
-    int num_quadrants_to_precomplete = rand() % 5 + 30; // e.g. 30 to 34
+    int num_quadrants_to_precomplete = rand() % 5 + 25; // e.g. 30 to 34
     
     // Create array of available quadrants
     int available[env->num_quadrants];
@@ -398,26 +398,46 @@ void c_reset(Terraform* env) {
     }
 
     // Complete exactly num_quadrants_to_precomplete quadrants
-    for (int i = 0; i < num_quadrants_to_precomplete && num_available > 0; i++) {
-        // Pick random quadrant from remaining available ones
-        int idx = rand() % num_available;
-        int quad = available[idx];
+    // for (int i = 0; i < num_quadrants_to_precomplete && num_available > 0; i++) {
+    //     // Pick random quadrant from remaining available ones
+    //     int idx = rand() % num_available;
+    //     int quad = available[idx];
         
-        // Complete the quadrant
-        for (int j = 0; j < env->size*env->size; j++) {
-            if(env->grid_indices[j] == quad) {
-                env->map[j] = env->target_map[j];
-            }
-        }
+    //     // Complete the quadrant
+    //     for (int j = 0; j < env->size*env->size; j++) {
+    //         if(env->grid_indices[j] == quad) {
+    //             env->map[j] = env->target_map[j];
+    //         }
+    //     }
 
-        env->complete_quadrants[quad] = 1;
-        env->current_quadrant_deltas[quad] = 0.0f;
-        env->quadrant_volume_deltas[quad] = 0.0f;
-        env->quadrants_solved++;
+    //     env->complete_quadrants[quad] = 1;
+    //     env->current_quadrant_deltas[quad] = 0.0f;
+    //     env->quadrant_volume_deltas[quad] = 0.0f;
+    //     env->quadrants_solved++;
 
-        // Remove used quadrant by swapping with last available one
-        available[idx] = available[--num_available];
-    }
+    //     // Remove used quadrant by swapping with last available one
+    //     available[idx] = available[--num_available];
+    // }
+
+    // // adjust remaining volume
+    // float remaining_target_sum = 0.0f;
+    // float remaining_map_sum = 0.0f;
+    // for(int i = 0; i < env->size*env->size; i++) {
+    //     int quad = env->grid_indices[i];
+    //     if (!env->complete_quadrants[quad]) {
+    //         remaining_target_sum += env->target_map[i];
+    //         remaining_map_sum += env->map[i];
+    //     }
+    // }
+    // // 2. Compute scale factor
+    // float scale = (remaining_map_sum > 0.0f) ? (remaining_target_sum / remaining_map_sum) : 1.0f;
+    // for (int i = 0; i < env->size * env->size; i++) {
+    //     int quad = env->grid_indices[i];
+    //     if (!env->complete_quadrants[quad]) {
+    //         env->map[i] *= scale;
+    //         if (env->map[i] > MAX_DIRT_HEIGHT) env->map[i] = MAX_DIRT_HEIGHT;
+    //     }
+    // }
     int available_quadrants[env->num_quadrants - (int)env->quadrants_solved];
     int available_quadrants_count = 0;
     for (int i = 0; i < env->num_quadrants; i++) {
@@ -587,21 +607,6 @@ void c_step(Terraform* env) {
         env->rewards[i] += total_change;
         env->returns[i] += total_change;
         env->agent_logs[i].episode_return += total_change;
-        // Bucket AABB
-        /*
-        float x_min = bucket_cx - BUCKET_WIDTH/2.0f*cosf(dozer->heading) + BUCKET_LENGTH/2.0f*sinf(dozer->heading);
-        float x_max = bucket_cx + BUCKET_WIDTH/2.0f*cosf(dozer->heading) + BUCKET_LENGTH/2.0f*sinf(dozer->heading);
-        float y_min = bucket_cy - BUCKET_WIDTH/2.0f*sinf(dozer->heading) + BUCKET_LENGTH/2.0f*cosf(dozer->heading);
-        float y_max = bucket_cy + BUCKET_WIDTH/2.0f*sinf(dozer->heading) + BUCKET_LENGTH/2.0f*cosf(dozer->heading);
-
-        for (int x = x_min; x < x_max; x++) {
-            for (int y = y_min; y < y_max; y++) {
-                float cell_x = x + 0.5f;
-                float cell_y = y + 0.5f;
-
-            }
-        }
-        */
 
         dozer->heading += steer;
         if (dozer->heading > 2*PI) {
@@ -856,7 +861,7 @@ Client* make_client(Terraform* env) {
     Client* client = (Client*)calloc(1, sizeof(Client));
     InitWindow(1080, 720, "PufferLib Terraform");
     SetConfigFlags(FLAG_MSAA_4X_HINT);
-    SetTargetFPS(400);
+    SetTargetFPS(60);
     Camera3D camera = { 0 };
                                                        //
     camera.up = (Vector3){ 0.0f, 1.0f, 0.0f };          // Camera up vector (rotation towards target)

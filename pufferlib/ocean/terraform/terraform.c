@@ -43,7 +43,7 @@ struct TerraformNet {
 };
 TerraformNet* init_terranet(Weights* weights, int num_agents, int vision_size, int quadrant_size) {
     TerraformNet* net = calloc(1, sizeof(TerraformNet));
-    int hidden_size = 1024;
+    int hidden_size = 512;
     int cnn_channels = 32;
     int local_conv1_output_size = 3;
     int local_conv2_output_size = 1;
@@ -72,7 +72,7 @@ TerraformNet* init_terranet(Weights* weights, int num_agents, int vision_size, i
     net->relu5 = make_relu(num_agents, hidden_size);
     net->actor = make_linear(weights, num_agents, hidden_size, 13); // +1 for pass move
     net->value_fn = make_linear(weights, num_agents, hidden_size, 1);
-    net->lstm = make_lstm(weights, num_agents, hidden_size, 1024);
+    net->lstm = make_lstm(weights, num_agents, hidden_size, 512);
     int logit_sizes[3] = {5, 5, 3};
     net->multidiscrete = make_multidiscrete(num_agents, logit_sizes, 3);
     return net;
@@ -176,7 +176,7 @@ void forward(TerraformNet* net, float* observations, int* actions, int vision_si
 }
 
 void demo() {
-    Weights* weights = load_weights("resources/terraform/puffer_terraform_weights.bin", 9651470);
+    Weights* weights = load_weights("resources/terraform/puffer_terraform_weights.bin", 2476814);
     TerraformNet* net = init_terranet(weights, 1, 11, 6);
     srand(time(NULL));
     Terraform env = {.size = 64, .num_agents = 1, .reset_frequency = 8192, .reward_scale = 0.04f};
