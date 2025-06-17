@@ -1412,7 +1412,7 @@ void draw_agent_obs(GPUDrive* env, int agent_index){
     DrawTriangle3D(bottom_point, back_point, right_point, PUFF_CYAN);  // Back-right face
     DrawTriangle3D(bottom_point, left_point, back_point, PUFF_CYAN);   // Back-left face
     DrawTriangle3D(bottom_point, front_point, left_point, PUFF_CYAN);  // Front-left face
-    if(!IsKeyDown(KEY_LEFT_SHIFT)){
+    if(!IsKeyDown(KEY_LEFT_CONTROL)){
         return;
     }
     int max_obs = 6 + 7*(MAX_CARS - 1) + 7*MAX_ROAD_SEGMENT_OBSERVATIONS;
@@ -1718,7 +1718,7 @@ void c_render(GPUDrive* env) {
                 DrawLine3D(corners[j], corners[(j+1)%4], PURPLE);  // Draw red lines between corners
             }
             // FPV Camera Control
-            if(IsKeyDown(KEY_LEFT_CONTROL) && env->human_agent_idx== agent_index){
+            if(IsKeyDown(KEY_SPACE) && env->human_agent_idx== agent_index){
                 if(env->entities[agent_index].reached_goal){
                     env->human_agent_idx = rand() % env->active_agent_count;
                 }
@@ -1737,7 +1737,7 @@ void c_render(GPUDrive* env) {
                 client->camera.target = camera_target;
                 client->camera.up = (Vector3){0, 0, 1};
             }
-            if(IsKeyReleased(KEY_LEFT_CONTROL)){
+            if(IsKeyReleased(KEY_SPACE)){
                 client->camera.position = client->default_camera_position;
                 client->camera.target = client->default_camera_target;
                 client->camera.up = (Vector3){0, 0, 1};
@@ -1747,7 +1747,7 @@ void c_render(GPUDrive* env) {
             if(!is_active_agent || env->entities[i].valid == 0) {
                 continue;
             }
-            if(!IsKeyDown(KEY_LEFT_SHIFT)){
+            if(!IsKeyDown(KEY_LEFT_CONTROL)){
                 DrawSphere((Vector3){
                     env->entities[i].goal_position_x,
                     env->entities[i].goal_position_y,
@@ -1778,7 +1778,7 @@ void c_render(GPUDrive* env) {
             if(env->entities[i].type != ROAD_EDGE){
                 continue;
             }
-            if(!IsKeyDown(KEY_LEFT_SHIFT)){
+            if(!IsKeyDown(KEY_LEFT_CONTROL)){
                 draw_road_edge(env, start.x, start.y, end.x, end.y);
                 // DrawLine3D(start, end, lineColor);
                 // DrawCube(start, 0.5f, 0.5f, 0.5f, lineColor);
