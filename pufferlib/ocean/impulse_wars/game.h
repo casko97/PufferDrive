@@ -627,7 +627,7 @@ void createDroneShield(iwEnv *e, droneEntity *drone, const int8_t groupIdx) {
 
     b2BodyDef shieldBodyDef = b2DefaultBodyDef();
     shieldBodyDef.type = b2_kinematicBody;
-    shieldBodyDef.fixedRotation = true;
+    shieldBodyDef.motionLocks = (b2MotionLocks){.angularZ = true};
     shieldBodyDef.position = drone->pos;
     b2BodyId shieldBodyID = b2CreateBody(e->worldID, &shieldBodyDef);
 
@@ -694,7 +694,7 @@ void createDrone(iwEnv *e, const uint8_t idx) {
         ERROR("no open position for drone");
     }
 
-    droneBodyDef.fixedRotation = true;
+    droneBodyDef.motionLocks = (b2MotionLocks){.angularZ = true};
     droneBodyDef.linearDamping = DRONE_LINEAR_DAMPING;
     b2BodyId droneBodyID = b2CreateBody(e->worldID, &droneBodyDef);
     b2ShapeDef droneShapeDef = b2DefaultShapeDef();
@@ -1458,7 +1458,7 @@ void destroyProjectile(iwEnv *e, projectileEntity *projectile, const bool proces
         ASSERT(res == CC_OK);
     }
 
-    e->stats[projectile->droneIdx].shotDistances[projectile->droneIdx] += projectile->distance;
+    e->stats[projectile->droneIdx].shotDistances[projectile->weaponInfo->type] += projectile->distance;
     e->stats[projectile->droneIdx].totalShotDistances += projectile->distance;
 
     if (projectile->entsInBlackHole != NULL) {
@@ -2187,7 +2187,7 @@ void handleBodyMoveEvents(iwEnv *e) {
 
 // destroy the projectile if it has traveled enough or has bounced enough
 // times, and update drone stats if a drone was hit
-uint8_t handleProjectileBeginContact(iwEnv *e, const entity *proj, const entity *ent, const b2Manifold *manifold, const bool projIsShapeA) {
+uint8_t handleProjectileBeginContact(iwEnv *e, const entity *proj, const entity *ent, const b2ContactId contactID, const bool projIsShapeA) {
     projectileEntity *projectile = proj->entity;
     projectile->contacts++;
 
@@ -2281,22 +2281,28 @@ uint8_t handleProjectileBeginContact(iwEnv *e, const entity *proj, const entity 
         // create a weld joint to stick the mine to the wall
         ASSERT(entityTypeIsWall(ent->type));
         wallEntity *wall = ent->entity;
-        ASSERT(manifold->pointCount == 1);
+        ASSERT(b2Contact_IsValid(contactID));
+        const b2Manifold manifold = b2Contact_GetData(contactID).manifold;
+        ASSERT(manifold.pointCount == 1);
 
         b2WeldJointDef jointDef = b2DefaultWeldJointDef();
         const b2Rot projRot = b2Body_GetRotation(projectile->bodyID);
         if (projIsShapeA) {
-            jointDef.bodyIdA = projectile->bodyID;
-            jointDef.bodyIdB = wall->bodyID;
-            jointDef.localAnchorA = b2InvRotateVector(projRot, manifold->points[0].anchorB);
-            jointDef.localAnchorB = b2InvRotateVector(wall->rot, manifold->points[0].anchorA);
-            jointDef.referenceAngle = b2RelativeAngle(wall->rot, projRot);
+            jointDef.base.bodyIdA = projectile->bodyID;
+            jointDef.base.bodyIdB = wall->bodyID;
+            const b2Rot relativeRot = b2MakeRot(b2RelativeAngle(wall->rot, projRot));
+            jointDef.base.localFrameA.p = b2InvRotateVector(projRot, manifold.points[0].anchorB);
+            jointDef.base.localFrameA.q = relativeRot;
+            jointDef.base.localFrameB.p = b2InvRotateVector(wall->rot, manifold.points[0].anchorA);
+            jointDef.base.localFrameB.q = relativeRot;
         } else {
-            jointDef.bodyIdA = wall->bodyID;
-            jointDef.bodyIdB = projectile->bodyID;
-            jointDef.localAnchorA = b2InvRotateVector(wall->rot, manifold->points[0].anchorA);
-            jointDef.localAnchorB = b2InvRotateVector(projRot, manifold->points[0].anchorB);
-            jointDef.referenceAngle = b2RelativeAngle(projRot, wall->rot);
+            jointDef.base.bodyIdA = wall->bodyID;
+            jointDef.base.bodyIdB = projectile->bodyID;
+            const b2Rot relativeRot = b2MakeRot(b2RelativeAngle(projRot, wall->rot));
+            jointDef.base.localFrameA.p = b2InvRotateVector(wall->rot, manifold.points[0].anchorA);
+            jointDef.base.localFrameA.q = relativeRot;
+            jointDef.base.localFrameB.p = b2InvRotateVector(projRot, manifold.points[0].anchorB);
+            jointDef.base.localFrameB.q = relativeRot;
         }
         b2CreateWeldJoint(e->worldID, &jointDef);
         projectile->velocity = b2Vec2_zero;
@@ -2387,7 +2393,7 @@ void handleContactEvents(iwEnv *e) {
 
         if (e1 != NULL) {
             if (e1->type == PROJECTILE_ENTITY) {
-                uint8_t numDestroyed = handleProjectileBeginContact(e, e1, e2, &event->manifold, true);
+                uint8_t numDestroyed = handleProjectileBeginContact(e, e1, e2, event->contactId, true);
                 if (numDestroyed == 2) {
                     continue;
                 } else if (numDestroyed == 1) {
@@ -2408,7 +2414,7 @@ void handleContactEvents(iwEnv *e) {
         }
         if (e2 != NULL) {
             if (e2->type == PROJECTILE_ENTITY) {
-                handleProjectileBeginContact(e, e2, e1, &event->manifold, false);
+                handleProjectileBeginContact(e, e2, e1, event->contactId, false);
             } else if (e2->type == DEATH_WALL_ENTITY && e1 != NULL) {
                 if (e1->type == DRONE_ENTITY) {
                     droneEntity *drone = e1->entity;
