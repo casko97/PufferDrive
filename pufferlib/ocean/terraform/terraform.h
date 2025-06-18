@@ -876,7 +876,7 @@ Client* make_client(Terraform* env) {
         TextFormat("resources/terraform/shader_%i.fs", GLSL_VERSION)
     );
     client->target_shader = LoadShader(
-        TextFormat("resources/terraform/target_shader_%i.vs", GLSL_VERSION),
+        TextFormat("resources/terraform/shader_%i.vs", GLSL_VERSION),
         TextFormat("resources/terraform/target_shader_%i.fs", GLSL_VERSION)
     );
 

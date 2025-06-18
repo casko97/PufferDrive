@@ -206,7 +206,8 @@ class NMMO3(pufferlib.PufferEnv):
         return self.observations, self.rewards, self.terminals, self.truncations, info
 
     def render(self):
-        binding.vec_render(self.c_envs, 0)
+        for i in range(36):
+            binding.vec_render(self.c_envs, 0)
 
     def close(self):
         binding.vec_close(self.c_envs)

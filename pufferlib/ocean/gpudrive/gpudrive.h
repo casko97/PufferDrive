@@ -1293,7 +1293,7 @@ Client* make_client(GPUDrive* env){
     client->height = 704;
     SetConfigFlags(FLAG_MSAA_4X_HINT);
     InitWindow(client->width, client->height, "PufferLib Ray GPU Drive");
-    SetTargetFPS(60);
+    SetTargetFPS(30);
     client->puffers = LoadTexture("resources/puffers_128.png");
     client->cars[0] = LoadModel("resources/gpudrive/RedCar.glb");
     client->cars[1] = LoadModel("resources/gpudrive/WhiteCar.glb");
@@ -1711,9 +1711,11 @@ void c_render(GPUDrive* env) {
             };
             
             // Draw the corners as spheres
+            /*
             for(int j = 0; j < 4; j++) {
                 DrawSphere(corners[j], 0.3f, RED);  // Draw red spheres at each corner
             }
+            */
             for(int j = 0; j < 4; j++) {
                 DrawLine3D(corners[j], corners[(j+1)%4], PURPLE);  // Draw red lines between corners
             }
