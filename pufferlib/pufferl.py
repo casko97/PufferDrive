@@ -1100,7 +1100,7 @@ def load_policy(args, vecenv):
 
         state_dict = torch.load(path, map_location=device)
         state_dict = {k.replace('module.', ''): v for k, v in state_dict.items()}
-        policy.load_state_dict(torch.load(path, map_location=device))
+        policy.load_state_dict(state_dict)
 
     load_path = args['load_model_path']
     if load_path == 'latest':
