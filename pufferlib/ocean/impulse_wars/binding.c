@@ -1,8 +1,8 @@
 #include <Python.h>
 
-#include "src/env.h"
+#include "env.h"
 
-static PyObject* get_consts(PyObject* self, PyObject* args);
+static PyObject *get_consts(PyObject *self, PyObject *args);
 
 #define Env iwEnv
 #define MY_SHARED
@@ -10,21 +10,21 @@ static PyObject* get_consts(PyObject* self, PyObject* args);
 
 #include "../env_binding.h"
 
-#define setDictVal(dict, key, val) \
-    if (PyDict_SetItemString(dict, key, PyLong_FromLong(val)) < 0) { \
+#define setDictVal(dict, key, val)                                            \
+    if (PyDict_SetItemString(dict, key, PyLong_FromLong(val)) < 0) {          \
         PyErr_SetString(PyExc_RuntimeError, "Failed to set " key " in dict"); \
-        return NULL; \
+        return NULL;                                                          \
     }
 
-static PyObject* get_consts(PyObject* self, PyObject* args) {
-    PyObject* dronesArg = PyTuple_GetItem(args, 0);
+static PyObject *get_consts(PyObject *self, PyObject *args) {
+    PyObject *dronesArg = PyTuple_GetItem(args, 0);
     if (!PyObject_TypeCheck(dronesArg, &PyLong_Type)) {
         PyErr_SetString(PyExc_TypeError, "num_drones must be an integer");
         return NULL;
     }
     const uint8_t numDrones = (uint8_t)PyLong_AsLong(dronesArg);
 
-    PyObject* dict = PyDict_New();
+    PyObject *dict = PyDict_New();
     if (PyErr_Occurred()) {
         return NULL;
     }
@@ -76,20 +76,21 @@ static PyObject* get_consts(PyObject* self, PyObject* args) {
     return dict;
 }
 
-static PyObject* my_shared(PyObject* self, PyObject* args, PyObject* kwargs) {
+static PyObject *my_shared(PyObject *self, PyObject *args, PyObject *kwargs) {
     VecEnv *ve = unpack_vecenv(args);
     initMaps(ve->envs[0]);
 
     for (uint16_t i = 0; i < ve->num_envs; i++) {
-        iwEnv* e = (iwEnv*)ve->envs[i];
+        iwEnv *e = (iwEnv *)ve->envs[i];
         setupEnv(e);
     }
 
     return Py_None;
 }
 
-static int my_init(iwEnv* e, PyObject* args, PyObject* kwargs) {
-    initEnv(e, 
+static int my_init(iwEnv *e, PyObject *args, PyObject *kwargs) {
+    initEnv(
+        e,
         (uint8_t)unpack(kwargs, "num_drones"),
         (uint8_t)unpack(kwargs, "num_agents"),
         (int8_t)unpack(kwargs, "map_idx"),
@@ -114,7 +115,7 @@ char *weaponLog(char *buf, const uint8_t droneIdx, const uint8_t weaponIdx, cons
     return buf;
 }
 
-static int my_log(PyObject* dict, Log* log) {
+static int my_log(PyObject *dict, Log *log) {
     assign_to_dict(dict, "episode_length", log->length);
     assign_to_dict(dict, "ties", log->ties);
 
@@ -132,14 +133,17 @@ static int my_log(PyObject* dict, Log* log) {
         assign_to_dict(dict, droneLog(buf, i, "energy_emptied"), log->stats[i].energyEmptied);
         assign_to_dict(dict, droneLog(buf, i, "wins"), log->stats[i].wins);
 
-        for (uint8_t j = 0; j < _NUM_WEAPONS; j++) {
-            assign_to_dict(dict, weaponLog(buf, i, j, "shots_fired"), log->stats[i].shotsFired[j]);
-            assign_to_dict(dict, weaponLog(buf, i, j, "shots_hit"), log->stats[i].shotsHit[j]);
-            assign_to_dict(dict, weaponLog(buf, i, j, "shots_taken"), log->stats[i].shotsTaken[j]);
-            assign_to_dict(dict, weaponLog(buf, i, j, "own_shots_taken"), log->stats[i].ownShotsTaken[j]);
-            assign_to_dict(dict, weaponLog(buf, i, j, "picked_up"), log->stats[i].weaponsPickedUp[j]);
-            assign_to_dict(dict, weaponLog(buf, i, j, "shot_distances"), log->stats[i].shotDistances[j]);
-        }
+        // useful for debugging weapon balance, but really slows down
+        // sweeps due to adding a ton of extra logging data
+        //
+        // for (uint8_t j = 0; j < _NUM_WEAPONS; j++) {
+        //     assign_to_dict(dict, weaponLog(buf, i, j, "shots_fired"), log->stats[i].shotsFired[j]);
+        //     assign_to_dict(dict, weaponLog(buf, i, j, "shots_hit"), log->stats[i].shotsHit[j]);
+        //     assign_to_dict(dict, weaponLog(buf, i, j, "shots_taken"), log->stats[i].shotsTaken[j]);
+        //     assign_to_dict(dict, weaponLog(buf, i, j, "own_shots_taken"), log->stats[i].ownShotsTaken[j]);
+        //     assign_to_dict(dict, weaponLog(buf, i, j, "picked_up"), log->stats[i].weaponsPickedUp[j]);
+        //     assign_to_dict(dict, weaponLog(buf, i, j, "shot_distances"), log->stats[i].shotDistances[j]);
+        // }
 
         assign_to_dict(dict, droneLog(buf, i, "total_shots_fired"), log->stats[i].totalShotsFired);
         assign_to_dict(dict, droneLog(buf, i, "total_shots_hit"), log->stats[i].totalShotsHit);

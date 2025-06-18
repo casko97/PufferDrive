@@ -25,8 +25,8 @@ float castCircleCallback(b2ShapeId shapeId, b2Vec2 point, b2Vec2 normal, float f
     // these parameters are required by the callback signature
     MAYBE_UNUSED(point);
     MAYBE_UNUSED(normal);
-    if (!b2Shape_IsValid(shapeId)) {
-        // skip this shape if it isn't valid
+    if (!b2Shape_IsValid(shapeId) || (fraction == 0.0f && b2VecEqual(normal, b2Vec2_zero))) {
+        // skip this shape if it isn't valid or this is an initial overlap
         return -1.0f;
     }
 
@@ -34,7 +34,7 @@ float castCircleCallback(b2ShapeId shapeId, b2Vec2 point, b2Vec2 normal, float f
     ctx->hit = true;
     ctx->shapeID = shapeId;
 
-    return fraction;
+    return 0.0f;
 }
 
 static inline uint32_t pathOffset(const iwEnv *e, uint16_t srcCellIdx, uint16_t destCellIdx) {
