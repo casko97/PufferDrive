@@ -723,6 +723,7 @@ void createDrone(iwEnv *e, const uint8_t idx) {
     drone->mapCellIdx = entityPosToCellIdx(e, droneBodyDef.position);
     drone->lastAim = (b2Vec2){.x = 0.0f, .y = -1.0f};
     drone->livesLeft = DRONE_LIVES;
+    create_array(&drone->brakeTrailPoints, 64);
     drone->respawnGuideLifetime = UINT16_MAX;
     memset(&drone->stepInfo, 0x0, sizeof(droneStepInfo));
 
@@ -832,6 +833,12 @@ void destroyDroneShield(iwEnv *e, shieldEntity *shield, const bool createPieces)
 }
 
 void destroyDrone(iwEnv *e, droneEntity *drone) {
+    for (size_t i = 0; i < cc_array_size(drone->brakeTrailPoints); i++) {
+        brakeTrailPoint *trailPoint = safe_array_get_at(drone->brakeTrailPoints, i);
+        fastFree(trailPoint);
+    }
+    cc_array_destroy(drone->brakeTrailPoints);
+
     destroyEntity(e, drone->ent);
 
     shieldEntity *shield = drone->shield;
@@ -1719,6 +1726,14 @@ void droneBrake(iwEnv *e, droneEntity *drone, const bool brake) {
             if (drone->energyRefillWait == 0.0f && !drone->chargingBurst) {
                 drone->energyRefillWait = DRONE_ENERGY_REFILL_WAIT;
             }
+
+            if (e->client != NULL) {
+                brakeTrailPoint *trailPoint = fastCalloc(1, sizeof(brakeTrailPoint));
+                trailPoint->pos = drone->pos;
+                trailPoint->lifetime = UINT16_MAX;
+                trailPoint->isEnd = true;
+                cc_array_add(drone->brakeTrailPoints, trailPoint);
+            }
         }
         return;
     }
@@ -1747,7 +1762,7 @@ void droneBrake(iwEnv *e, droneEntity *drone, const bool brake) {
         brakeTrailPoint *trailPoint = fastCalloc(1, sizeof(brakeTrailPoint));
         trailPoint->pos = drone->pos;
         trailPoint->lifetime = UINT16_MAX;
-        cc_array_add(e->brakeTrailPoints, trailPoint);
+        cc_array_add(drone->brakeTrailPoints, trailPoint);
     }
 }
 
