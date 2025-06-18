@@ -449,9 +449,9 @@ typedef struct iwEnv {
     uint8_t humanDroneInput;
     uint8_t connectedControllers;
 
+    // used for rendering
     rayClient *client;
     float renderScale;
-    // used for rendering explosions
     CC_Array *explosions;
     b2Vec2 debugPoint;
 } iwEnv;

@@ -21,9 +21,8 @@ const uint8_t FOUR_BIT_MASK = 0xf;
 // pufferlib compatibility
 #define c_step stepEnv
 #define c_reset resetEnv
+#define c_render setupRayClient
 #define c_close destroyEnv
-
-void c_render(const iwEnv *e) {}
 
 // returns a cell index that is closest to pos that isn't cellIdx
 uint16_t findNearestCell(const iwEnv *e, const b2Vec2 pos, const uint16_t cellIdx) {
@@ -509,7 +508,16 @@ void setupEnv(iwEnv *e) {
 
 // sets the timing related variables for the environment depending on
 // the frame rate
-void setEnvFrameRate(iwEnv *e, uint8_t frameRate) {
+void setEnvFrameRate(iwEnv *e) {
+    float frameRate = TRAINING_FRAME_RATE;
+    e->box2dSubSteps = TRAINING_BOX2D_SUBSTEPS;
+    // set a higher frame rate and physics substeps when evaluating
+    // to make it more enjoyable to play
+    if (!e->isTraining) {
+        frameRate = EVAL_FRAME_RATE;
+        e->box2dSubSteps = EVAL_BOX2D_SUBSTEPS;
+    }
+
     e->frameRate = frameRate;
     e->deltaTime = 1.0f / (float)frameRate;
     e->frameSkip = frameRate / TRAINING_ACTIONS_PER_SECOND;
@@ -539,15 +547,7 @@ iwEnv *initEnv(iwEnv *e, uint8_t numDrones, uint8_t numAgents, int8_t mapIdx, ui
     // TODO: remove when puffer bindings add truncations
     e->truncations = fastCalloc(numDrones, sizeof(uint8_t));
 
-    float frameRate = TRAINING_FRAME_RATE;
-    e->box2dSubSteps = TRAINING_BOX2D_SUBSTEPS;
-    // set a higher frame rate and physics substeps when evaluating
-    // to make it more enjoyable to play
-    if (!isTraining) {
-        frameRate = EVAL_FRAME_RATE;
-        e->box2dSubSteps = EVAL_BOX2D_SUBSTEPS;
-    }
-    setEnvFrameRate(e, frameRate);
+    setEnvFrameRate(e);
     e->randState = seed;
     e->needsReset = false;
 

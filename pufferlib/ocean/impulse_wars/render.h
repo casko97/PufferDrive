@@ -30,11 +30,12 @@ const Color PUFF_WHITE = RAYWHITE;
 const Color PUFF_BACKGROUND = BLACK;
 const Color PUFF_BACKGROUND2 = BLACK;
 
+void setEnvFrameRate(iwEnv *e);
 bool droneControlledByHuman(const iwEnv *e, uint8_t i);
 
 const float DEFAULT_SCALE = 11.0f;
-const uint16_t DEFAULT_WIDTH = 1500;
-const uint16_t DEFAULT_HEIGHT = 1000;
+const uint16_t DEFAULT_WIDTH = 1280;
+const uint16_t DEFAULT_HEIGHT = 720;
 const uint16_t HEIGHT_LEEWAY = 75;
 
 const float START_READY_TIME = 1.5f;
@@ -150,6 +151,18 @@ rayClient *createRayClient() {
     client->bloomTexBloomBlurLoc = GetShaderLocation(client->bloomShader, "uTexBloomBlur");
 
     return client;
+}
+
+void setupRayClient(iwEnv *e) {
+    if (e->client != NULL) {
+        return;
+    }
+    // create a rendering client, change the env to eval mode and ensure
+    // it's reset so training only maps and behaviors aren't evaluated
+    e->client = createRayClient();
+    e->isTraining = false;
+    setEnvFrameRate(e);
+    e->needsReset = true;
 }
 
 void destroyRayClient(rayClient *client) {
@@ -800,7 +813,11 @@ void renderUI(const iwEnv *e, const bool starting) {
         } else if (drone->idx < e->numAgents) {
             playerType = "NN";
         } else {
-            playerType = "Scripted";
+            if (e->sittingDuck) {
+                playerType = "Sitting Duck";
+            } else {
+                playerType = "Scripted";
+            }
         }
         char *droneInfo;
         if (e->teamsEnabled) {
@@ -1350,7 +1367,6 @@ void renderProjectileTrail(const projectileEntity *proj) {
     const float maxWidth = proj->weaponInfo->radius;
     const float numPoints = proj->trailPoints.length;
 
-    // here
     for (uint8_t i = 0; i < proj->trailPoints.length - 1; i++) {
         const Vector2 p0 = proj->trailPoints.points[i];
         const Vector2 p1 = proj->trailPoints.points[i + 1];
