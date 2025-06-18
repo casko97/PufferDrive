@@ -284,6 +284,7 @@ typedef struct droneEntity {
 
     // for rendering
     trailPoints trailPoints;
+    CC_Array *brakeTrailPoints;
     uint16_t respawnGuideLifetime;
 } droneEntity;
 
@@ -359,6 +360,7 @@ typedef struct rayClient {
 typedef struct brakeTrailPoint {
     b2Vec2 pos;
     uint16_t lifetime;
+    bool isEnd;
 } brakeTrailPoint;
 
 typedef struct explosionInfo {
@@ -449,7 +451,6 @@ typedef struct iwEnv {
 
     rayClient *client;
     float renderScale;
-    CC_Array *brakeTrailPoints;
     // used for rendering explosions
     CC_Array *explosions;
     b2Vec2 debugPoint;

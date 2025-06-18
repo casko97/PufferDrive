@@ -566,7 +566,6 @@ iwEnv *initEnv(iwEnv *e, uint8_t numDrones, uint8_t numAgents, int8_t mapIdx, ui
     create_array(&e->drones, e->numDrones);
     create_array(&e->pickups, MAX_WEAPON_PICKUPS);
     create_array(&e->projectiles, 64);
-    create_array(&e->brakeTrailPoints, 64);
     create_array(&e->explosions, 8);
     create_array(&e->explodingProjectiles, 8);
     create_array(&e->dronePieces, 16);
@@ -589,7 +588,7 @@ iwEnv *initEnv(iwEnv *e, uint8_t numDrones, uint8_t numAgents, int8_t mapIdx, ui
 
 void clearEnv(iwEnv *e) {
     // rewards get cleared in stepEnv every step
-    //memset(e->masks, 1, e->numAgents * sizeof(uint8_t));
+    // memset(e->masks, 1, e->numAgents * sizeof(uint8_t));
     memset(e->terminals, 0x0, e->numAgents * sizeof(uint8_t));
     memset(e->truncations, 0x0, e->numAgents * sizeof(uint8_t));
 
@@ -616,11 +615,6 @@ void clearEnv(iwEnv *e) {
         destroyProjectile(e, p, false, false);
     }
 
-    for (size_t i = 0; i < cc_array_size(e->brakeTrailPoints); i++) {
-        brakeTrailPoint *trailPoint = safe_array_get_at(e->brakeTrailPoints, i);
-        fastFree(trailPoint);
-    }
-
     for (size_t i = 0; i < cc_array_size(e->explosions); i++) {
         explosionInfo *explosion = safe_array_get_at(e->explosions, i);
         fastFree(explosion);
@@ -636,7 +630,6 @@ void clearEnv(iwEnv *e) {
     cc_array_remove_all(e->pickups);
     cc_array_remove_all(e->projectiles);
     cc_array_remove_all(e->explodingProjectiles);
-    cc_array_remove_all(e->brakeTrailPoints);
     cc_array_remove_all(e->explosions);
     cc_array_remove_all(e->dronePieces);
 }
@@ -675,7 +668,6 @@ void destroyEnv(iwEnv *e) {
     cc_array_destroy(e->floatingWalls);
     cc_array_destroy(e->pickups);
     cc_array_destroy(e->projectiles);
-    cc_array_destroy(e->brakeTrailPoints);
     cc_array_destroy(e->explosions);
     cc_array_destroy(e->explodingProjectiles);
     cc_array_destroy(e->dronePieces);
@@ -1153,7 +1145,7 @@ void stepEnv(iwEnv *e) {
                     if (i < e->numAgents) {
                         if (drone->diedThisStep) {
                             e->terminals[i] = 1;
-                        } 
+                        }
                         // else {
                         //     e->masks[i] = 0;
                         // }

@@ -833,28 +833,71 @@ void renderUI(const iwEnv *e, const bool starting) {
     renderTimer(e, timerStr, PUFF_WHITE);
 }
 
-// TODO: fix and improve
-void renderBrakeTrails(const iwEnv *e) {
-    MAYBE_UNUSED(e);
-    // const float maxLifetime = 3.0f * e->frameRate;
-    // const float radius = 0.3f * e->renderScale;
+void renderBrakeTrails(iwEnv *e, const droneEntity *drone) {
+    const float maxLifetime = 3.0f * e->frameRate;
+    const float maxAlpha = 0.33f;
+    const float trailWidth = 0.33f;
 
-    // CC_ArrayIter brakeTrailIter;
-    // cc_array_iter_init(&brakeTrailIter, e->brakeTrailPoints);
-    // brakeTrailPoint *trailPoint;
-    // while (cc_array_iter_next(&brakeTrailIter, (void **)&trailPoint) != CC_ITER_END) {
-    //     if (trailPoint->lifetime == UINT16_MAX) {
-    //         trailPoint->lifetime = maxLifetime;
-    //     } else if (trailPoint->lifetime == 0) {
-    //         fastFree(trailPoint);
-    //         cc_array_iter_remove(&brakeTrailIter, NULL);
-    //         continue;
-    //     }
+    // update lifetimes and prune expired points
+    CC_ArrayIter iter;
+    cc_array_iter_init(&iter, drone->brakeTrailPoints);
+    brakeTrailPoint *pt;
+    while (cc_array_iter_next(&iter, (void **)&pt) != CC_ITER_END) {
+        if (pt->lifetime == UINT16_MAX) {
+            pt->lifetime = maxLifetime;
+        } else if (pt->lifetime == 0) {
+            fastFree(pt);
+            cc_array_iter_remove(&iter, NULL);
+            continue;
+        } else {
+            pt->lifetime--;
+        }
+    }
 
-    //     Color trailColor = Fade(GRAY, 0.133f * (trailPoint->lifetime / maxLifetime));
-    //     DrawCircleV(b2VecToRayVec(e, trailPoint->pos), radius, trailColor);
-    //     trailPoint->lifetime--;
-    // }
+    size_t count = cc_array_size(drone->brakeTrailPoints);
+    if (count < 2) {
+        return;
+    }
+
+    for (size_t i = 0; i + 1 < count; i++) {
+        const brakeTrailPoint *trailPoint0 = safe_array_get_at(drone->brakeTrailPoints, i);
+        if (trailPoint0->isEnd) {
+            continue;
+        }
+        const brakeTrailPoint *trailPoint1 = safe_array_get_at(drone->brakeTrailPoints, i + 1);
+        const Vector2 p0 = (Vector2){.x = trailPoint0->pos.x, .y = trailPoint0->pos.y};
+        const Vector2 p1 = (Vector2){.x = trailPoint1->pos.x, .y = trailPoint1->pos.y};
+
+        // compute direction and a perpendicular vector
+        Vector2 segment = Vector2Subtract(p1, p0);
+        if (Vector2Length(segment) == 0) {
+            continue;
+        }
+        segment = Vector2Normalize(segment);
+        const Vector2 perp = {-segment.y, segment.x};
+
+        // compute four vertices for the quad segment
+        const Vector2 v0 = Vector2Add(p0, Vector2Scale(perp, trailWidth));
+        const Vector2 v1 = Vector2Subtract(p0, Vector2Scale(perp, trailWidth));
+        const Vector2 v2 = Vector2Add(p1, Vector2Scale(perp, trailWidth));
+        const Vector2 v3 = Vector2Subtract(p1, Vector2Scale(perp, trailWidth));
+
+        // draw the quad as two triangles
+        const float alpha0 = maxAlpha * (trailPoint0->lifetime / maxLifetime);
+        const float alpha1 = maxAlpha * (trailPoint1->lifetime / maxLifetime);
+        DrawTriangle3D(
+            (Vector3){.x = v0.x, .y = 0.0f, .z = v0.y},
+            (Vector3){.x = v2.x, .y = 0.0f, .z = v2.y},
+            (Vector3){.x = v1.x, .y = 0.0f, .z = v1.y},
+            Fade(GRAY, alpha0)
+        );
+        DrawTriangle3D(
+            (Vector3){.x = v1.x, .y = 0.0f, .z = v1.y},
+            (Vector3){.x = v2.x, .y = 0.0f, .z = v2.y},
+            (Vector3){.x = v3.x, .y = 0.0f, .z = v3.y},
+            Fade(GRAY, alpha1)
+        );
+    }
 }
 
 // TODO: improve
@@ -1307,6 +1350,7 @@ void renderProjectileTrail(const projectileEntity *proj) {
     const float maxWidth = proj->weaponInfo->radius;
     const float numPoints = proj->trailPoints.length;
 
+    // here
     for (uint8_t i = 0; i < proj->trailPoints.length - 1; i++) {
         const Vector2 p0 = proj->trailPoints.points[i];
         const Vector2 p1 = proj->trailPoints.points[i + 1];
@@ -1588,7 +1632,15 @@ void _renderEnv(iwEnv *e, const bool starting, const bool ending, const int8_t w
         renderWeaponPickup(e, pickup);
     }
 
-    renderBrakeTrails(e);
+    BeginBlendMode(BLEND_ALPHA);
+    for (uint8_t i = 0; i < cc_array_size(e->drones); i++) {
+        const droneEntity *drone = safe_array_get_at(e->drones, i);
+        if (drone->dead) {
+            continue;
+        }
+        renderBrakeTrails(e, drone);
+    }
+    EndBlendMode();
     renderDronePieces(e);
 
     EndMode3D();
