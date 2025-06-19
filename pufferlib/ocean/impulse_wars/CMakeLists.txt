@@ -61,6 +61,9 @@ else()
 	if(CMAKE_C_COMPILER_ID MATCHES "Clang" AND NOT DEFINED EMSCRIPTEN)
 		add_link_options("-fuse-ld=lld")
 	endif()
+
+	# add_compile_options("-pg")
+	# add_link_options("-pg")
 endif()
 
 set_property(GLOBAL PROPERTY USE_FOLDERS ON)
@@ -82,7 +85,7 @@ FetchContent_MakeAvailable(raylib)
 # maybe due to install prefix schenanigans?
 FetchContent_Declare(
 	box2d
-	URL https://github.com/capnspacehook/box2d/archive/a3f48bb6996e1713fb59a749fb73113ec2de733d.zip # 3.1
+	URL https://github.com/capnspacehook/box2d/archive/df25d747be0ab2fd9425eece022d2ec897c2028d.zip
 )
 set(BOX2D_ENABLE_SIMD ON CACHE BOOL "Enable SIMD math (faster)" FORCE)
 set(BOX2D_AVX2 ON CACHE BOOL "Enable AVX2 (faster)" FORCE)
@@ -117,8 +120,7 @@ if(DEFINED BUILD_PYTHON_MODULE)
 		REQUIRED
 	)
 
-	# TODO: rename to binding.c
-	python_add_library(binding MODULE my_binding.c WITH_SOABI)
+	python_add_library(binding MODULE binding.c WITH_SOABI)
 
 	target_include_directories(binding PRIVATE
     	${Python_NumPy_INCLUDE_DIRS}
@@ -131,6 +133,6 @@ elseif(DEFINED BUILD_DEMO)
 	add_executable(demo "${CMAKE_CURRENT_SOURCE_DIR}/impulse_wars.c")
 	configure_target(demo)
 elseif(DEFINED BUILD_BENCHMARK)
-	add_executable(benchmark "${CMAKE_CURRENT_SOURCE_DIR}/src/benchmark.c")
+	add_executable(benchmark "${CMAKE_CURRENT_SOURCE_DIR}/benchmark.c")
 	configure_target(benchmark)
 endif()
