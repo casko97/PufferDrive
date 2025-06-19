@@ -213,12 +213,12 @@ void init(CTowerClimb* env) {
     env->rows_cleared = 0;
     
     // Initialize with minimal map storage to avoid fallback in c_reset
-    env->num_maps = 0;
-    env->all_levels = NULL;
-    env->all_puzzles = NULL;
-    env->pending_reset = false;
-    env->goal_reached = false;
-    env->bannerTriggered = false;
+    // env->num_maps = 0;
+    // env->all_levels = NULL;
+    // env->all_puzzles = NULL;
+    // env->pending_reset = false;
+    // env->goal_reached = false;
+    // env->bannerTriggered = false;
 }
 
 void setPuzzle(CTowerClimb* env, PuzzleState* src, Level* lvl){
@@ -343,6 +343,7 @@ void c_reset(CTowerClimb* env) {
     memset(env->state->blocks, 0, BLOCK_BYTES * sizeof(unsigned char));
     
     // Always use pre-generated maps (ensure at least 1 exists during initialization)
+    // printf("num maps: %d\n", env->num_maps);
     if (env->num_maps > 0) {
         int idx = rand() % env->num_maps;
         setPuzzle(env, &env->all_puzzles[idx], &env->all_levels[idx]);
