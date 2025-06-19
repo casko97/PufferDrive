@@ -34,6 +34,7 @@
 #define MAX_RPM 750.0f  // rad/s
 #define MAX_VEL 50.0f   // m/s
 #define MAX_OMEGA 50.0f // rad/s
+#define TRAIL_LENGTH 50
 
 typedef struct Log Log;
 struct Log {
@@ -121,6 +122,11 @@ struct Client {
     float camera_elevation;
     bool is_dragging;
     Vector2 last_mouse_pos;
+
+    // Trailing path buffer (for rendering only)
+    Vec3 trail[TRAIL_LENGTH];
+    int trail_index;
+    int trail_count;
 };
 
 typedef struct Drone Drone;
@@ -397,6 +403,7 @@ Client *make_client(Drone *env) {
     client->width = WIDTH;
     client->height = HEIGHT;
 
+    SetConfigFlags(FLAG_MSAA_4X_HINT);  // antialiasing
     InitWindow(WIDTH, HEIGHT, "PufferLib Drone");
     SetTargetFPS(60);
 
@@ -417,6 +424,13 @@ Client *make_client(Drone *env) {
     client->camera.projection = CAMERA_PERSPECTIVE;
 
     update_camera_position(client);
+
+    // Initialize trail buffer
+    client->trail_index = 0;
+    client->trail_count = 0;
+    for (int i = 0; i < TRAIL_LENGTH; i++) {
+        client->trail[i] = env->pos;
+    }
 
     return client;
 }
@@ -442,10 +456,15 @@ void c_render(Drone *env) {
 
     handle_camera_controls(env->client);
 
+    Client *client = env->client;
+    client->trail[client->trail_index] = env->pos;
+    client->trail_index = (client->trail_index + 1) % TRAIL_LENGTH;
+    if (client->trail_count < TRAIL_LENGTH) client->trail_count++;
+
     BeginDrawing();
     ClearBackground((Color){6, 24, 24, 255});
 
-    BeginMode3D(env->client->camera);
+    BeginMode3D(client->camera);
 
     DrawCubeWires((Vector3){0.0f, 0.0f, 0.0f}, GRID_SIZE * 2.0f,
                   GRID_SIZE * 2.0f, GRID_SIZE * 2.0f, WHITE);
@@ -512,6 +531,18 @@ void c_render(Drone *env) {
         (Vector3){env->pos.x, env->pos.y, env->pos.z},
         (Vector3){env->move_target.x, env->move_target.y, env->move_target.z},
         ColorAlpha(BLUE, 0.3f));
+
+    // Draw trailing path
+    for (int i = 1; i < client->trail_count; i++) {
+        int idx0 = (client->trail_index + i) % TRAIL_LENGTH;
+        int idx1 = (client->trail_index + i - 1) % TRAIL_LENGTH;
+        float alpha = (float)i / client->trail_count * 0.8f; // fade out
+        Color trail_color = ColorAlpha(YELLOW, alpha);
+        DrawLine3D(
+            (Vector3){client->trail[idx0].x, client->trail[idx0].y, client->trail[idx0].z},
+            (Vector3){client->trail[idx1].x, client->trail[idx1].y, client->trail[idx1].z},
+            trail_color);
+    }
 
     EndMode3D();
 
