@@ -162,10 +162,10 @@ void init(Drone *env) {
 }
 
 void add_log(Drone *env) {
-    env->log.score = env->score;
-    env->log.episode_return = env->episodic_return;
-    env->log.episode_length = env->tick;
-    env->log.perf = (float)env->score / (float)env->n_targets;
+    env->log.score += env->score;
+    env->log.episode_return += env->episodic_return;
+    env->log.episode_length += env->tick;
+    env->log.perf += (float)env->score / (float)env->n_targets;
     env->log.n += 1.0f;
 }
 
@@ -451,7 +451,7 @@ void c_render(Drone *env) {
         c_close(env);
         exit(0);
     }
-    
+
     handle_camera_controls(env->client);
 
     Client *client = env->client;
