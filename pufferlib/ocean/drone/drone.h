@@ -12,9 +12,10 @@
 
 #include "raylib.h"
 
-// Width and height for visualisation window
+// Visualisation properties
 #define WIDTH 1080
 #define HEIGHT 720
+#define TRAIL_LENGTH 50
 
 // Simulation properties
 #define GRID_SIZE 10.0f
@@ -34,7 +35,6 @@
 #define MAX_RPM 750.0f  // rad/s
 #define MAX_VEL 50.0f   // m/s
 #define MAX_OMEGA 50.0f // rad/s
-#define TRAIL_LENGTH 50
 
 typedef struct Log Log;
 struct Log {
@@ -142,7 +142,7 @@ struct Drone {
     unsigned int score;
     float episodic_return;
 
-    int n_targets;
+    unsigned int n_targets;
     int moves_left;
 
     Vec3 pos;   // global position (x, y, z)
@@ -162,10 +162,10 @@ void init(Drone *env) {
 }
 
 void add_log(Drone *env) {
-    env->log.score = env->score;
-    env->log.episode_return = env->episodic_return;
-    env->log.episode_length = env->tick;
-    env->log.perf = 0.0f;
+    env->log.score += env->score;
+    env->log.episode_return += env->episodic_return;
+    env->log.episode_length += env->tick;
+    env->log.perf += (float)env->score / (float)env->n_targets;
     env->log.n += 1.0f;
 }
 
@@ -262,11 +262,10 @@ void c_step(Drone *env) {
     Vec3 accel = {F_world.x / MASS, F_world.y / MASS,
                   (F_world.z / MASS) - GRAVITY};
 
-    // integrates quaternion
+    // from the definition of q dot
     Quat omega_q = {0.0f, env->omega.x, env->omega.y, env->omega.z};
     Quat q_dot = quat_mul(env->quat, omega_q);
 
-    // from the definition of q dot
     q_dot.w *= 0.5f;
     q_dot.x *= 0.5f;
     q_dot.y *= 0.5f;
@@ -318,7 +317,6 @@ void c_step(Drone *env) {
     if (norm3(env->vec_to_target) < 1.5f) {
         env->rewards[0] += 1;
         env->episodic_return += 1;
-        env->n_targets -= 1;
         env->score++;
 
         env->move_target.x = rndf(-9, 9);
@@ -327,7 +325,7 @@ void c_step(Drone *env) {
     }
 
     env->moves_left -= 1;
-    if (env->moves_left == 0 || env->n_targets == 0) {
+    if (env->moves_left == 0 || env->n_targets == env->score) {
         env->terminals[0] = 1;
         add_log(env);
         c_reset(env);
