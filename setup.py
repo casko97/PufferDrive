@@ -36,10 +36,12 @@ from torch.utils.cpp_extension import (
 )
 
 
-VERSION = "2.0.6"
+VERSION = "3.0.0"
 
 # Build with DEBUG=1 to enable debug symbols
 DEBUG = os.getenv("DEBUG", "0") == "1"
+NO_OCEAN = os.getenv("NO_OCEAN", "0") == "1"
+NO_TRAIN = os.getenv("NO_TRAIN", "0") == "1"
 
 # Build raylib for your platform
 RAYLIB_URL = 'https://github.com/raysan5/raylib/releases/download/5.5/'
@@ -48,6 +50,7 @@ RLIGHTS_URL = 'https://raw.githubusercontent.com/raysan5/raylib/refs/heads/maste
 
 def download_raylib(platform, ext):
     if not os.path.exists(platform):
+        print(f'Downloading Raylib {platform}')
         urllib.request.urlretrieve(RAYLIB_URL + platform + ext, platform + ext)
         if ext == '.zip':
             with zipfile.ZipFile(platform + ext, 'r') as zip_ref:
@@ -59,7 +62,25 @@ def download_raylib(platform, ext):
         os.remove(platform + ext)
         urllib.request.urlretrieve(RLIGHTS_URL, platform + '/include/rlights.h')
 
-download_raylib('raylib-5.5_webassembly', '.zip')
+if not NO_OCEAN:
+    download_raylib('raylib-5.5_webassembly', '.zip')
+
+BOX2D_URL = 'https://github.com/capnspacehook/box2d/releases/latest/download/'
+BOX2D_NAME = 'box2d-macos-arm64' if platform.system() == "Darwin" else 'box2d-linux-amd64'
+
+def download_box2d(platform):
+    if not os.path.exists(platform):
+        ext = ".tar.gz"
+
+        print(f'Downloading Box2D {platform}')
+        urllib.request.urlretrieve(BOX2D_URL + platform + ext, platform + ext)
+        with tarfile.open(platform + ext, 'r') as tar_ref:
+            tar_ref.extractall()
+
+        os.remove(platform + ext)
+
+if not NO_OCEAN:
+    download_box2d('box2d-web')
 
 # Shared compile args for all platforms
 extra_compile_args = [
@@ -118,7 +139,8 @@ if system == 'Linux':
     extra_link_args += [
         '-Bsymbolic-functions',
     ]
-    download_raylib('raylib-5.5_linux_amd64', '.tar.gz')
+    if not NO_OCEAN:
+        download_raylib('raylib-5.5_linux_amd64', '.tar.gz')
 elif system == 'Darwin':
     extra_compile_args += [
         '-Wno-error=int-conversion',
@@ -130,9 +152,13 @@ elif system == 'Darwin':
         '-framework', 'OpenGL',
         '-framework', 'IOKit',
     ]
-    download_raylib('raylib-5.5_macos', '.tar.gz')
+    if not NO_OCEAN:
+        download_raylib('raylib-5.5_macos', '.tar.gz')
 else:
     raise ValueError(f'Unsupported system: {system}')
+
+if not NO_OCEAN:
+    download_box2d(BOX2D_NAME)
 
 # Default Gym/Gymnasium/PettingZoo versions
 # Gym:
@@ -157,6 +183,7 @@ environments = {
     'atari': [
         f'gym=={GYM_VERSION}',
         f'gymnasium[accept-rom-license]=={GYMNASIUM_VERSION}',
+        'opencv-python==3.4.17.63',
         'ale_py==0.9.0',
     ],
     'box2d': [
@@ -286,6 +313,7 @@ environments = {
     'procgen': [
         f'gym=={GYM_VERSION}',
         f'gymnasium=={GYMNASIUM_VERSION}',
+        'stable_baselines3==2.1.0',
         'procgen-mirror==0.10.7', # Procgen mirror for 3.11 and 3.12 support
         # Note: You need glfw==2.7 after installing for some torch versions
     ],
@@ -302,6 +330,7 @@ environments = {
     ],
     'vizdoom': [
         'vizdoom==1.2.3',
+        'stable_baselines3==2.1.0',
     ],
 }
 
@@ -314,20 +343,14 @@ docs = [
     'furo==2023.3.27',
 ]
 
-train = [
-    'stable_baselines3==2.1.0',
-    'tensorboard==2.11.2',
-    'torch',
-    'tyro==0.8.6',
-    'wandb==0.19.1',
-    'scipy',
-    'pyro-ppl',
-    'neptune',
-    'heavyball',
-]
-
 ray = [
     'ray==2.23.0',
+]
+
+cleanrl = [
+    'stable_baselines3==2.1.0',
+    'tensorboard==2.11.2',
+    'tyro==0.8.6',
 ]
 
 # These are the environments that PufferLib has made
@@ -336,7 +359,7 @@ ray = [
 # We force updated versions of Gym/Gymnasium/PettingZoo here to
 # ensure that users do not have issues with conflicting versions
 # when switching to incompatible environments
-common = train + [environments[env] for env in [
+common = [environments[env] for env in [
     'atari',
     #'box2d',
     'bsuite',
@@ -381,7 +404,7 @@ class TorchBuildExt(cpp_extension.BuildExtension):
         super().run()
 
 RAYLIB_A = f'{RAYLIB_NAME}/lib/libraylib.a'
-INCLUDE = [numpy.get_include(), 'raylib/include']
+INCLUDE = [numpy.get_include(), 'raylib/include', f'{BOX2D_NAME}/include', f'{BOX2D_NAME}/src']
 extension_kwargs = dict(
     include_dirs=INCLUDE,
     extra_compile_args=extra_compile_args,
@@ -389,57 +412,47 @@ extension_kwargs = dict(
     extra_objects=[RAYLIB_A],
 )
 
-# Put C env names here. PufferLib will look for
-# pufferlib/ocean/<name>/binding.c
-c_extensions_names = [
-    'gpudrive',
-    'squared',
-    'pong',
-    'drone',
-    'boids',
-    'breakout',
-    'enduro',
-    'blastar',
-    'grid',
-    'nmmo3',
-    'tactical',
-    'connect4',
-    'go',
-    'cartpole'
-]
-
 # TODO: Include other C files so rebuild is auto?
-c_extension_paths = glob.glob('pufferlib/ocean/**/binding.c', recursive=True)
-c_extensions = [
-    Extension(
-        path.rstrip('.c').replace('/', '.'),
-        sources=[path],
-        **extension_kwargs,
-    )
-    for path in c_extension_paths
-]
-c_extension_paths = [os.path.join(*path.split('/')[:-1]) for path in c_extension_paths]
+c_extensions = []
+if not NO_OCEAN:
+    c_extension_paths = glob.glob('pufferlib/ocean/**/binding.c', recursive=True)
+    c_extensions = [
+        Extension(
+            path.rstrip('.c').replace('/', '.'),
+            sources=[path],
+            **extension_kwargs,
+        )
+        for path in c_extension_paths
+    ]
+    c_extension_paths = [os.path.join(*path.split('/')[:-1]) for path in c_extension_paths]
+
+    for c_ext in c_extensions:
+        if "impulse_wars" in c_ext.name:
+            print(f"Adding {c_ext.name} to extra objects")
+            c_ext.extra_objects.append(f'{BOX2D_NAME}/libbox2d.a')
 
 # Check if CUDA compiler is available. You need cuda dev, not just runtime.
-torch_sources = [
-    "pufferlib/extensions/pufferlib.cpp",
-]
-if shutil.which("nvcc"):
-    extension = CUDAExtension
-    torch_sources.append("pufferlib/extensions/cuda/pufferlib.cu")
-else:
-    extension = CppExtension
+torch_extensions = []
+if not NO_TRAIN:
+    torch_sources = [
+        "pufferlib/extensions/pufferlib.cpp",
+    ]
+    if shutil.which("nvcc"):
+        extension = CUDAExtension
+        torch_sources.append("pufferlib/extensions/cuda/pufferlib.cu")
+    else:
+        extension = CppExtension
 
-torch_extensions = [
-   extension(
-        "pufferlib._C",
-        torch_sources,
-        extra_compile_args = {
-            "cxx": cxx_args,
-            "nvcc": nvcc_args,
-        }
-    ),
-]
+    torch_extensions = [
+       extension(
+            "pufferlib._C",
+            torch_sources,
+            extra_compile_args = {
+                "cxx": cxx_args,
+                "nvcc": nvcc_args,
+            }
+        ),
+    ]
 
 # Prevent Conda from injecting garbage compile flags
 from distutils.sysconfig import get_config_vars
@@ -454,6 +467,29 @@ for key, value in cfg_vars.items():
     if value and '-fno-strict-overflow' in str(value):
         cfg_vars[key] = value.replace('-fno-strict-overflow', '')
 
+install_requires = [
+    'numpy',
+    f'gym<={GYM_VERSION}',
+    f'gymnasium<={GYMNASIUM_VERSION}',
+    f'pettingzoo<={PETTINGZOO_VERSION}',
+    'shimmy[gym-v21]',
+    'setuptools'
+]
+
+if not NO_TRAIN:
+    install_requires += [
+        'torch',
+        'psutil',
+        'pynvml',
+        'rich',
+        'rich_argparse',
+        'imageio',
+        'pyro-ppl',
+        'heavyball',
+        'neptune',
+        'wandb',
+    ]
+
 setup(
     name="pufferlib",
     description="PufferAI Library"
@@ -465,25 +501,11 @@ setup(
         "pufferlib": [RAYLIB_NAME + '/lib/libraylib.a']
     },
     include_package_data=True,
-    install_requires=[
-        'numpy',
-        'opencv-python==3.4.17.63',
-        'rich',
-        'rich_argparse',
-        f'gym<={GYM_VERSION}',
-        f'gymnasium<={GYMNASIUM_VERSION}',
-        f'pettingzoo<={PETTINGZOO_VERSION}',
-        'torch',
-        'shimmy[gym-v21]',
-        'psutil==5.9.5',
-        'pynvml',
-        'imageio',
-        'setuptools'
-    ],
+    install_requires=install_requires,
     extras_require={
         'docs': docs,
         'ray': ray,
-        'train': train,
+        'cleanrl': cleanrl,
         'common': common,
         **environments,
     },
@@ -513,6 +535,8 @@ setup(
         "Programming Language :: Python :: 3.10",
         "Programming Language :: Python :: 3.11",
         "Programming Language :: Python :: 3.12",
+        "Programming Language :: Python :: 3.13",
+        "Programming Language :: Python :: 3.14",
     ],
 )
 #stable_baselines3

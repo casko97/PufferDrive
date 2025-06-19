@@ -44,6 +44,7 @@ const float SHOT_HIT_REWARD_COEF = 0.000013333f;
 const float EXPLOSION_HIT_REWARD_COEF = 5.0f;
 const float APPROACH_REWARD = 0.0f;
 
+// approach reward doesn't apply within the cutoff to avoid constant clashing
 const uint8_t DISTANCE_CUTOFF = 15.0f;
 
 // observation constants

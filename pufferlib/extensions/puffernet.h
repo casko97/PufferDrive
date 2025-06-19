@@ -244,6 +244,29 @@ void _embedding(int* input, float* weights, float* output, int batch_size, int n
     }
 }
 
+void _layernorm(float* input, float* weights, float* bias, float* output, int batch_size, int input_dim) {
+    for (int b = 0; b < batch_size; b++) {
+        float mean = 0.0f;
+        for (int i = 0; i < input_dim; i++) {
+            mean += input[b*input_dim + i];
+        }
+        mean /= (float)input_dim;
+
+        float variance = 0.0f;
+        for (int i = 0; i < input_dim; i++) {
+            float diff = input[b*input_dim + i] - mean;
+            variance += diff*diff;
+        }
+        variance /= (float)input_dim;
+
+        float denom = sqrtf(variance + 1e-5f);
+        for (int i = 0; i < input_dim; i++) {
+            float norm = (input[b*input_dim + i] - mean)/denom;
+            output[b*input_dim + i] = norm*weights[i] + bias[i];
+        }
+    }
+}
+
 void _one_hot(int* input, int* output, int batch_size, int input_size, int num_classes) {
     for (int b = 0; b < batch_size; b++) {
         for (int i = 0; i < input_size; i++) {
@@ -583,6 +606,33 @@ Embedding* make_embedding(Weights* weights, int batch_size, int num_embeddings, 
 
 void embedding(Embedding* layer, int* input) {
     _embedding(input, layer->weights, layer->output, layer->batch_size, layer->num_embeddings, layer->embedding_dim);
+}
+
+typedef struct LayerNorm LayerNorm;
+struct LayerNorm {
+    float* output;
+    float* weights;
+    float* bias;
+    int batch_size;
+    int input_dim;
+};
+
+LayerNorm* make_layernorm(Weights* weights, int batch_size, int input_dim) {
+    size_t output_size = batch_size*input_dim*sizeof(float);
+    LayerNorm* layer = calloc(1, sizeof(LayerNorm) + output_size);
+    *layer = (LayerNorm){
+        .output = (float*)(layer + 1),
+        .weights = get_weights(weights, input_dim),
+        .bias = get_weights(weights, input_dim),
+        .batch_size = batch_size,
+        .input_dim = input_dim,
+    };
+    return layer;
+}
+    
+void layernorm(LayerNorm* layer, float* input) {
+    _layernorm(input, layer->weights, layer->bias, layer->output,
+        layer->batch_size, layer->input_dim);
 }
 
 typedef struct OneHot OneHot;

@@ -151,6 +151,7 @@ experiments/
 wandb/
 .neptune/
 raylib*/
+box2d*/
 
 # TODO: remove
 # Temp Impulse Wars files

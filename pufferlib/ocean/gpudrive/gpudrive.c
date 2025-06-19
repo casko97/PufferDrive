@@ -165,13 +165,13 @@ void demo() {
         .human_agent_idx = 0,
         .reward_vehicle_collision = -0.1f,
         .reward_offroad_collision = -0.1f,
-	    .map_name = "resources/gpudrive/binaries/map_942.bin",
+	    .map_name = "resources/gpudrive/map_942.bin",
         .spawn_immunity_timer = 50
     };
     allocate(&env);
     c_reset(&env);
     c_render(&env);
-    Weights* weights = load_weights("resources/gpudrive/puffer_gpudrive_weights.bin", 2212693);
+    Weights* weights = load_weights("resources/gpudrive/gpudrive_weights.bin", 2212693);
     GPUDriveNet* net = init_gpudrivenet(weights, env.active_agent_count);
     //Client* client = make_client(&env);
     int accel_delta = 2;
