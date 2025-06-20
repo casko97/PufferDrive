@@ -1,13 +1,9 @@
-# TODO: Add information
-# - Help menu
-# - Docs link
-#python -m torch.distributed.run --standalone --nnodes=1 --nproc-per-node=1 clean_pufferl.py --env puffer_nmmo3 --mode train
-# torchrun --standalone --nnodes=1 --nproc-per-node=6 -m pufferlib.pufferl train puffer_nmmo3
-from torch.distributed.elastic.multiprocessing.errors import record
+# puffer [train | eval | sweep] [env_name] [optional args] -- See https://puffer.ai for full details
+# This is the same as python -m pufferlib.pufferl [train | eval | sweep] [env_name] [optional args]
+# Distributed example: torchrun --standalone --nnodes=1 --nproc-per-node=6 -m pufferlib.pufferl train puffer_nmmo3
 
 import warnings
 warnings.filterwarnings('error', category=RuntimeWarning)
-
 
 import os
 import sys
@@ -27,6 +23,7 @@ import psutil
 
 import torch
 import torch.distributed
+from torch.distributed.elastic.multiprocessing.errors import record
 import torch.utils.cpp_extension
 
 import pufferlib
@@ -229,11 +226,9 @@ class PuffeRL:
             o, r, d, t, info, env_id, mask = self.vecenv.recv()
 
             profile('eval_misc', epoch)
-            # TODO: Port to vecenv
             env_id = slice(env_id[0], env_id[-1] + 1)
 
-            # TODO: Handle truncations
-            done_mask = d + t
+            done_mask = d + t # TODO: Handle truncations separately
             self.global_step += int(mask.sum())
 
             profile('eval_copy', epoch)
@@ -280,9 +275,7 @@ class PuffeRL:
                 self.terminals[batch_rows, l] = d.float()
                 self.values[batch_rows, l] = value.flatten()
 
-                # TODO: Handle masks!!
-                #indices = np.where(mask)[0]
-                #data.ep_lengths[env_id[mask]] += 1
+                # Note: We are not yet handling masks in this version
                 self.ep_lengths[env_id] += 1
                 if l+1 >= config['bptt_horizon']:
                     num_full = env_id.stop - env_id.start
@@ -368,31 +361,26 @@ class PuffeRL:
                 lstm_c=None,
             )
 
-            # TODO: Currently only returning traj shaped value as a hack
             logits, newvalue = self.policy(mb_obs, state)
-            # TODO: Redundant actions?
             actions, newlogprob, entropy = pufferlib.pytorch.sample_logits(logits, action=mb_actions)
 
             profile('train_misc', epoch)
             newlogprob = newlogprob.reshape(mb_logprobs.shape)
             logratio = newlogprob - mb_logprobs
             ratio = logratio.exp()
-            self.ratio[idx] = ratio.detach() # TODO: Experiment with this
+            self.ratio[idx] = ratio.detach()
 
-            # TODO: Only do this if we are KL clipping? Saves 1-2% compute
             with torch.no_grad():
                 old_approx_kl = (-logratio).mean()
                 approx_kl = ((ratio - 1) - logratio).mean()
                 clipfrac = ((ratio - 1.0).abs() > config['clip_coef']).float().mean()
 
-            # TODO: Do you need to do this? Policy hasn't changed
             adv = advantages[idx]
             adv = compute_puff_advantage(mb_values, mb_rewards, mb_terminals,
                 ratio, adv, config['gamma'], config['gae_lambda'],
                 config['vtrace_rho_clip'], config['vtrace_c_clip'])
             adv = mb_advantages
-            adv = mb_prio * (adv - adv.mean()) / (adv.std() + 1e-8) # TODO: Norm by full batch
-            #adv = mb_prio * (adv - advantages.mean()) / (advantages.std() + 1e-8) # TODO: Norm by full batch
+            adv = mb_prio * (adv - adv.mean()) / (adv.std() + 1e-8)
 
             # Losses
             pg_loss1 = -adv * ratio
@@ -408,7 +396,7 @@ class PuffeRL:
             entropy_loss = entropy.mean()
 
             loss = pg_loss + config['vf_coef']*v_loss - config['ent_coef']*entropy_loss
-            self.amp_context.__enter__() # TODO: Debug
+            self.amp_context.__enter__() # TODO: AMP needs some debugging
 
             # This breaks vloss clipping?
             self.values[idx] = newvalue.detach().float()
@@ -1189,8 +1177,6 @@ def load_config(env_name):
         prev[subkey] = value
 
     args['train']['use_rnn'] = args['rnn_name'] is not None
-    #args['train']['env'] = env_name
-    #args['env_name'] = env_name
     return args
 
 def main():

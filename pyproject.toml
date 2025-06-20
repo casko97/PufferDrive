@@ -3,7 +3,7 @@ name = "pufferlib"
 version = "3.0.0a1"
 description = "Fast and sane reinforcement learning"
 requires-python = ">=3.9"
-license="MIT"
+license= {file = "LICENSE"}
 authors = [{ name = "Joseph Suarez", email = "jsuarez@puffer.ai" }]
 classifiers=[
     "Intended Audience :: Science/Research",
