@@ -160,6 +160,7 @@ void forward(MMONet* net, unsigned char* observations, int* actions) {
 }
 
 void demo(int num_players) {
+    srand(time(NULL));
     Weights* weights = load_weights("resources/nmmo3/nmmo3_weights.bin", 3387547);
     MMONet* net = init_mmonet(weights, num_players);
 

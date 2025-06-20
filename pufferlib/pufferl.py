@@ -1088,9 +1088,6 @@ def load_policy(args, vecenv):
 
     load_id = args['load_id']
     if load_id is not None:
-        if args['mode'] not in ('train', 'eval'):
-            raise pufferlib.APIUsageError('load_id requires mode to be train or eval')
-
         if args['neptune']:
             path = NeptuneLogger(args, load_id, mode='read-only').download()
         elif args['wandb']:

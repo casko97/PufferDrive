@@ -663,9 +663,6 @@ class ImpulseWarsPolicy(nn.Module):
         actions, value = self.decode_actions(hidden)
         return actions, value
 
-    def forward_train(self, x, state=None):
-        return self.forward(x, state)
-
     def unpack(self, batchSize: int, obs: torch.Tensor) -> torch.Tensor:
         # prepare map obs to be unpacked
         mapObs = obs[:, : self.obsInfo.mapObsSize].reshape((batchSize, -1, 1))
