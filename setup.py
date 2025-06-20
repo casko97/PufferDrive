@@ -35,9 +35,6 @@ from torch.utils.cpp_extension import (
     CUDA_HOME,
 )
 
-
-VERSION = "3.0.0"
-
 # Build with DEBUG=1 to enable debug symbols
 DEBUG = os.getenv("DEBUG", "0") == "1"
 NO_OCEAN = os.getenv("NO_OCEAN", "0") == "1"
@@ -492,10 +489,7 @@ if not NO_TRAIN:
 
 setup(
     name="pufferlib",
-    description="PufferAI Library"
-    "PufferAI's library of RL tools and utilities",
     long_description_content_type="text/markdown",
-    version=VERSION,
     packages=find_namespace_packages() + find_packages() + c_extension_paths + ['pufferlib/extensions'],
     package_data={
         "pufferlib": [RAYLIB_NAME + '/lib/libraylib.a']
@@ -516,28 +510,11 @@ setup(
         "build_c": CBuildExt,
     },
     include_dirs=[numpy.get_include(), RAYLIB_NAME + '/include'],
-    python_requires=">=3.9",
-    license="MIT",
-    author="Joseph Suarez",
-    author_email="jsuarez@puffer.ai",
-    url="https://github.com/PufferAI/PufferLib",
-    keywords=["Puffer", "AI", "RL", "Reinforcement Learning"],
     entry_points={
         'console_scripts': [
             'puffer = pufferlib.pufferl:main',
         ],
     },
-    classifiers=[
-        "Intended Audience :: Science/Research",
-        "Intended Audience :: Developers",
-        "License :: OSI Approved :: MIT License",
-        "Programming Language :: Python :: 3.9",
-        "Programming Language :: Python :: 3.10",
-        "Programming Language :: Python :: 3.11",
-        "Programming Language :: Python :: 3.12",
-        "Programming Language :: Python :: 3.13",
-        "Programming Language :: Python :: 3.14",
-    ],
 )
 #stable_baselines3
 #supersuit==3.3.5
