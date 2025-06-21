@@ -726,6 +726,8 @@ void createDrone(iwEnv *e, const uint8_t idx) {
     create_array(&drone->brakeTrailPoints, 64);
     drone->respawnGuideLifetime = UINT16_MAX;
     memset(&drone->stepInfo, 0x0, sizeof(droneStepInfo));
+    create_array(&drone->physicsTracking, 128);
+    drone->killedBy = -1;
 
     entity *ent = createEntity(e, DRONE_ENTITY, drone);
     drone->ent = ent;
@@ -838,6 +840,11 @@ void destroyDrone(iwEnv *e, droneEntity *drone) {
         fastFree(trailPoint);
     }
     cc_array_destroy(drone->brakeTrailPoints);
+    for (size_t i = 0; i < cc_array_size(drone->physicsTracking); i++) {
+        physicsStepInfo *physicsStep = safe_array_get_at(drone->physicsTracking, i);
+        fastFree(physicsStep);
+    }
+    cc_array_destroy(drone->physicsTracking);
 
     destroyEntity(e, drone->ent);
 
@@ -848,6 +855,36 @@ void destroyDrone(iwEnv *e, droneEntity *drone) {
 
     b2DestroyBody(drone->bodyID);
     fastFree(drone);
+}
+
+void droneApplyForce(const iwEnv *e, const droneEntity *drone, const b2Vec2 force, const uint8_t srcIdx) {
+    b2Body_ApplyForceToCenter(drone->bodyID, force, true);
+
+    physicsStepInfo *physicsStep = fastCalloc(1, sizeof(physicsStepInfo));
+    physicsStep->srcIdx = srcIdx;
+    physicsStep->force = force;
+    physicsStep->step = e->episodeLength;
+    cc_array_add(drone->physicsTracking, physicsStep);
+}
+
+void droneTrackImpulse(const iwEnv *e, const droneEntity *drone, const b2Vec2 impulse, const uint8_t srcIdx) {
+    physicsStepInfo *physicsStep = fastCalloc(1, sizeof(physicsStepInfo));
+    physicsStep->srcIdx = srcIdx;
+    physicsStep->impulse = impulse;
+    physicsStep->step = e->episodeLength;
+    cc_array_add(drone->physicsTracking, physicsStep);
+}
+
+void droneApplyImpulse(const iwEnv *e, const droneEntity *drone, const b2Vec2 impulse, const uint8_t srcIdx) {
+    b2Body_ApplyLinearImpulseToCenter(drone->bodyID, impulse, true);
+    droneTrackImpulse(e, drone, impulse, srcIdx);
+}
+
+void droneTrackBrake(const iwEnv *e, const droneEntity *drone) {
+    physicsStepInfo *physicsStep = fastCalloc(1, sizeof(physicsStepInfo));
+    physicsStep->brakeToggled = true;
+    physicsStep->step = e->episodeLength;
+    cc_array_add(drone->physicsTracking, physicsStep);
 }
 
 void droneChangeWeapon(const iwEnv *e, droneEntity *drone, const enum weaponType newWeapon) {
@@ -861,11 +898,82 @@ void droneChangeWeapon(const iwEnv *e, droneEntity *drone, const enum weaponType
     drone->ammo = weaponAmmo(e->defaultWeapon->type, drone->weaponInfo->type);
 }
 
+void findDroneKiller(const iwEnv *e, droneEntity *drone) {
+    b2Vec2 contrib[e->numDrones];
+    memset(contrib, 0x0, e->numDrones * sizeof(b2Vec2));
+    uint16_t step = 0;
+    bool braking = false;
+    float droneDamping = DRONE_LINEAR_DAMPING;
+
+    // calculate the contribution of forces and impulses of each drone
+    for (size_t i = 0; i < cc_array_size(drone->physicsTracking); i++) {
+        physicsStepInfo *physicsStep = safe_array_get_at(drone->physicsTracking, i);
+        // if the step has changed, apply damping to contributions
+        if (physicsStep->step != step) {
+            const uint16_t stepDiff = physicsStep->step - step;
+            const float damp = 1.0f / (1.0f + (droneDamping * (e->deltaTime * stepDiff)));
+            for (uint8_t k = 0; k < e->numDrones; k++) {
+                contrib[k] = b2MulSV(damp, contrib[k]);
+            }
+
+            step = physicsStep->step;
+        }
+
+        if (physicsStep->brakeToggled) {
+            braking = !braking;
+            if (braking) {
+                droneDamping = DRONE_BRAKE_DAMPING_COEF;
+            } else {
+                droneDamping = DRONE_LINEAR_DAMPING;
+            }
+        }
+
+        const b2Vec2 invForce = b2MulSV(DRONE_INV_MASS, physicsStep->force);
+        contrib[physicsStep->srcIdx] = b2MulAdd(contrib[physicsStep->srcIdx], e->deltaTime, invForce);
+        contrib[physicsStep->srcIdx] = b2MulAdd(contrib[physicsStep->srcIdx], DRONE_INV_MASS, physicsStep->impulse);
+
+        // DEBUG_LOGF("# step %d drone %d contrib %f (%f, %f)", physicsStep->step, physicsStep->srcIdx, b2Length(contrib[physicsStep->srcIdx]), contrib[physicsStep->srcIdx].x, contrib[physicsStep->srcIdx].y);
+    }
+
+    // determine the killer by finding the drone that pushed the dead
+    // drone towards the wall that killed it the most
+    const b2Vec2 deathNormal = b2Normalize(drone->lastVelocity);
+    DEBUG_LOGF("> death normal (%f, %f) velocity (%f, %f)", deathNormal.x, deathNormal.y, drone->lastVelocity.x, drone->lastVelocity.y);
+    float maxContrib = -FLT_MAX;
+    int8_t killer = -1;
+    for (uint8_t i = 0; i < e->numDrones; i++) {
+        DEBUG_LOGF("---\n> src drone contrib %d %f (%f, %f)", i, b2Length(contrib[i]), contrib[i].x, contrib[i].y);
+        if (b2VecEqual(contrib[i], b2Vec2_zero)) {
+            continue;
+        }
+
+        const b2Vec2 normContrib = b2Normalize(contrib[i]);
+        const float dot = b2Dot(normContrib, deathNormal);
+        DEBUG_LOGF("> > src drone %d norm contrib (%f, %f)", i, normContrib.x, normContrib.y);
+        DEBUG_LOGF("> src drone %d death normal dot %f", i, dot);
+        const float totalContrib = b2Length(contrib[i]) * dot;
+        DEBUG_LOGF("> src drone %d total contrib %f", i, totalContrib);
+        if (totalContrib > maxContrib) {
+            maxContrib = totalContrib;
+            killer = i;
+        }
+    }
+    ASSERT(killer != -1);
+
+    DEBUG_LOGF(">>> drone %d killed by drone %d", drone->idx, killer);
+
+    drone->killedBy = killer;
+    droneEntity *killerDrone = safe_array_get_at(e->drones, killer);
+    killerDrone->killed[drone->idx] = true;
+}
+
 void killDrone(iwEnv *e, droneEntity *drone) {
     if (drone->dead || drone->livesLeft == 0) {
         return;
     }
     DEBUG_LOGF("drone %d died", drone->idx);
+
+    findDroneKiller(e, drone);
 
     drone->livesLeft--;
     drone->dead = true;
@@ -898,6 +1006,7 @@ bool respawnDrone(iwEnv *e, droneEntity *drone) {
     drone->dead = false;
     drone->pos = pos;
     drone->respawnGuideLifetime = UINT16_MAX;
+    drone->killedBy = -1;
 
     droneAddEnergy(drone, DRONE_ENERGY_RESPAWN_REFILL);
 
@@ -1321,7 +1430,7 @@ bool explodeCallback(b2ShapeId shapeID, void *context) {
 
         break;
     case DRONE_ENTITY:
-        b2Body_ApplyLinearImpulseToCenter(bodyID, impulse, true);
+        droneApplyImpulse(ctx->e, drone, impulse, ctx->parentDrone->idx);
         drone->lastVelocity = drone->velocity;
         drone->velocity = b2Body_GetLinearVelocity(drone->bodyID);
 
@@ -1415,7 +1524,7 @@ void applyDroneBurstImpulse(iwEnv *e, explosionCtx *ctx, const droneEntity *dron
     DEBUG_LOGF("walls used: %d magnitude: %f final: %f", wallsUsed, magnitude, magnitude / (float)wallsUsed);
     const b2Vec2 finalImpulse = b2MulSV(magnitude / (float)wallsUsed, b2Normalize(direction));
     ASSERT(b2IsValidVec2(finalImpulse));
-    b2Body_ApplyLinearImpulseToCenter(drone->bodyID, finalImpulse, true);
+    droneApplyImpulse(e, drone, finalImpulse, drone->idx);
 }
 
 void createExplosion(iwEnv *e, droneEntity *drone, const projectileEntity *projectile, const b2ExplosionDef *def) {
@@ -1645,7 +1754,7 @@ void handleSuddenDeath(iwEnv *e) {
     }
 }
 
-void droneMove(droneEntity *drone, b2Vec2 direction) {
+void droneMove(const iwEnv *e, droneEntity *drone, b2Vec2 direction) {
     ASSERT_VEC_BOUNDED(direction);
 
     // if energy is fully depleted halve movement until energy starts
@@ -1655,7 +1764,7 @@ void droneMove(droneEntity *drone, b2Vec2 direction) {
         drone->lastMove = direction;
     }
     const b2Vec2 force = b2MulSV(DRONE_MOVE_MAGNITUDE, direction);
-    b2Body_ApplyForceToCenter(drone->bodyID, force, true);
+    droneApplyForce(e, drone, force, drone->idx);
 }
 
 void droneShoot(iwEnv *e, droneEntity *drone, const b2Vec2 aim, const bool chargingWeapon) {
@@ -1697,7 +1806,7 @@ void droneShoot(iwEnv *e, droneEntity *drone, const b2Vec2 aim, const bool charg
     }
     ASSERT_VEC_NORMALIZED(normAim);
     b2Vec2 recoil = b2MulSV(-drone->weaponInfo->recoilMagnitude, normAim);
-    b2Body_ApplyLinearImpulseToCenter(drone->bodyID, recoil, true);
+    droneApplyImpulse(e, drone, recoil, drone->idx);
 
     for (int i = 0; i < drone->weaponInfo->numProjectiles; i++) {
         createProjectile(e, drone, normAim);
@@ -1726,6 +1835,7 @@ void droneBrake(iwEnv *e, droneEntity *drone, const bool brake) {
             if (drone->energyRefillWait == 0.0f && !drone->chargingBurst) {
                 drone->energyRefillWait = DRONE_ENERGY_REFILL_WAIT;
             }
+            droneTrackBrake(e, drone);
 
             if (e->client != NULL) {
                 brakeTrailPoint *trailPoint = fastCalloc(1, sizeof(brakeTrailPoint));
@@ -1744,6 +1854,7 @@ void droneBrake(iwEnv *e, droneEntity *drone, const bool brake) {
         if (!drone->braking) {
             drone->braking = true;
             b2Body_SetLinearDamping(drone->bodyID, DRONE_LINEAR_DAMPING * DRONE_BRAKE_DAMPING_COEF);
+            droneTrackBrake(e, drone);
         }
         drone->energyLeft = max(drone->energyLeft - (DRONE_BRAKE_DRAIN_RATE * e->deltaTime), 0.0f);
         e->stats[drone->idx].brakeTime += e->deltaTime;
@@ -1989,6 +2100,9 @@ void handleBlackHolePull(iwEnv *e, projectileEntity *projectile) {
 
         if (entityTypeIsWall(ent->type)) {
             b2Body_ApplyForce(bodyID, force, output.pointB, true);
+        } else if (ent->type == DRONE_ENTITY) {
+            droneEntity *drone = ent->entity;
+            droneApplyForce(e, drone, force, projectile->droneIdx);
         } else {
             b2Body_ApplyForceToCenter(bodyID, force, true);
         }
@@ -2252,6 +2366,16 @@ uint8_t handleProjectileBeginContact(iwEnv *e, const entity *proj, const entity 
     }
     if (ent->type == DRONE_ENTITY) {
         droneEntity *hitDrone = ent->entity;
+        if (b2Contact_IsValid(contactID)) {
+            const b2Manifold manifold = b2Contact_GetData(contactID).manifold;
+            ASSERT(manifold.pointCount == 1);
+            b2Vec2 hitImpulse = b2MulSV(manifold.points[0].normalImpulse, manifold.normal);
+            if (!projIsShapeA) {
+                hitImpulse = b2Neg(hitImpulse);
+            }
+            droneTrackImpulse(e, hitDrone, hitImpulse, projectile->droneIdx);
+        }
+
         if (projectile->droneIdx != hitDrone->idx) {
             droneEntity *shooterDrone = safe_array_get_at(e->drones, projectile->droneIdx);
 
@@ -2415,29 +2539,33 @@ void handleContactEvents(iwEnv *e) {
                     e1 = NULL;
                 }
 
-            } else if (e1->type == DEATH_WALL_ENTITY && e2 != NULL) {
-                if (e2->type == DRONE_ENTITY) {
-                    droneEntity *drone = e2->entity;
-                    killDrone(e, drone);
-                } else if (e2->type == SHIELD_ENTITY) {
-                    shieldEntity *shield = e2->entity;
-                    shield->health = 0.0f;
-                    destroyDroneShield(e, shield, true);
-                    e2 = NULL;
+            } else if (entityTypeIsWall(e1->type) && e2 != NULL) {
+                if (e1->type == DEATH_WALL_ENTITY) {
+                    if (e2->type == DRONE_ENTITY) {
+                        droneEntity *drone = e2->entity;
+                        killDrone(e, drone);
+                    } else if (e2->type == SHIELD_ENTITY) {
+                        shieldEntity *shield = e2->entity;
+                        shield->health = 0.0f;
+                        destroyDroneShield(e, shield, true);
+                        e2 = NULL;
+                    }
                 }
             }
         }
         if (e2 != NULL) {
             if (e2->type == PROJECTILE_ENTITY) {
                 handleProjectileBeginContact(e, e2, e1, event->contactId, false);
-            } else if (e2->type == DEATH_WALL_ENTITY && e1 != NULL) {
-                if (e1->type == DRONE_ENTITY) {
-                    droneEntity *drone = e1->entity;
-                    killDrone(e, drone);
-                } else if (e1->type == SHIELD_ENTITY) {
-                    shieldEntity *shield = e1->entity;
-                    shield->health = 0.0f;
-                    destroyDroneShield(e, shield, true);
+            } else if (entityTypeIsWall(e2->type) && e1 != NULL) {
+                if (e2->type == DEATH_WALL_ENTITY) {
+                    if (e1->type == DRONE_ENTITY) {
+                        droneEntity *drone = e1->entity;
+                        killDrone(e, drone);
+                    } else if (e1->type == SHIELD_ENTITY) {
+                        shieldEntity *shield = e1->entity;
+                        shield->health = 0.0f;
+                        destroyDroneShield(e, shield, true);
+                    }
                 }
             }
         }

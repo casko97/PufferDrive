@@ -827,6 +827,13 @@ void renderUI(const iwEnv *e, const bool starting) {
         }
 
         DrawText(droneInfo, x, y, fontSize, textColor);
+
+        if (drone->killedBy != -1) {
+            y += textSize.y + e->client->scale;
+            const char *killedBy = TextFormat("Killed by Player %d", drone->killedBy + 1);
+
+            DrawText(killedBy, x, y, fontSize, getDroneColor(drone->killedBy));
+        }
     }
 
     // render timer
@@ -1418,24 +1425,25 @@ void renderProjectile(const projectileEntity *projectile) {
 }
 
 void renderBannerText(iwEnv *e, const bool starting, const int8_t winner, const int8_t winningTeam) {
-    char *winStr;
-    Color color = PUFF_WHITE;
+    const uint16_t fontSize = 5 * e->client->scale;
+
+    char *bannerStr = NULL;
+    Color winColor = PUFF_WHITE;
 
     if (starting) {
-        winStr = "Ready?";
+        bannerStr = "Ready?";
     } else if (winner == -1 && winningTeam == -1) {
-        winStr = "Tie";
+        bannerStr = "Tie";
     } else if (e->teamsEnabled) {
-        winStr = (char *)TextFormat("Team %d wins!", winningTeam + 1);
+        bannerStr = (char *)TextFormat("Team %d wins!", winningTeam + 1);
     } else {
-        winStr = (char *)TextFormat("Player %d wins!", winner + 1);
-        color = getDroneColor(winner);
+        bannerStr = (char *)TextFormat("Player %d wins!", winner + 1);
+        winColor = getDroneColor(winner);
     }
 
-    uint16_t fontSize = 5 * e->client->scale;
-    uint16_t textWidth = MeasureText(winStr, fontSize);
-    uint16_t posX = (e->client->halfWidth - (textWidth / 2));
-    DrawText(winStr, posX, e->client->halfHeight, fontSize, color);
+    uint16_t textWidth = MeasureText(bannerStr, fontSize);
+    const uint16_t posX = (e->client->halfWidth - (textWidth / 2));
+    DrawText(bannerStr, posX, e->client->halfHeight, fontSize, winColor);
 }
 
 void applyBloom(const iwEnv *e, RenderTexture2D srcTex, RenderTexture2D dstTex, const float bloomIntensity) {

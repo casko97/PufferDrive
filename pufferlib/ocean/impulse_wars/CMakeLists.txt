@@ -108,7 +108,7 @@ function(configure_target target_name)
 	target_link_libraries(${target_name} PRIVATE raylib box2d)
 
 	target_compile_options(${target_name} PRIVATE
-		"-Wall" "-Wextra" "-Wpedantic"
+		"-Werror" "-Wall" "-Wextra" "-Wpedantic"
 		"-Wno-implicit-fallthrough" "-Wno-variadic-macros" "-Wno-strict-prototypes" "-Wno-gnu-statement-expression"
 	)
 endfunction()

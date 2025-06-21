@@ -244,6 +244,14 @@ typedef struct dronePieceEntity {
     uint16_t lifetime;
 } dronePieceEntity;
 
+typedef struct physicsStepInfo {
+    uint8_t srcIdx;
+    b2Vec2 impulse;
+    b2Vec2 force;
+    bool brakeToggled;
+    uint16_t step;
+} physicsStepInfo;
+
 typedef struct droneEntity {
     b2BodyId bodyID;
     b2ShapeId shapeID;
@@ -278,6 +286,10 @@ typedef struct droneEntity {
     float respawnWait;
     uint8_t livesLeft;
     bool dead;
+
+    CC_Array *physicsTracking;
+    int8_t killedBy;
+    bool killed[_MAX_DRONES];
 
     shieldEntity *shield;
     entity *ent;
