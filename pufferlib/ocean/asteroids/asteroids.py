@@ -8,7 +8,7 @@ class Asteroids(pufferlib.PufferEnv):
     def __init__(self, num_envs=1, render_mode=None, log_interval=128, buf=None, seed=0, size=100):
         self.single_observation_space = gymnasium.spaces.Box(low=0, high=1,
             shape=(1,), dtype=np.uint8)
-        self.single_action_space = gymnasium.spaces.Discrete(3)
+        self.single_action_space = gymnasium.spaces.Discrete(4)
         self.render_mode = render_mode
         self.num_agents = num_envs
 

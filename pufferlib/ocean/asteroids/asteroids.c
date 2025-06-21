@@ -17,11 +17,13 @@ int main() {
         env.actions[0] = 1;
       } else if (IsKeyDown(KEY_D) || IsKeyDown(KEY_RIGHT)) {
         env.actions[0] = 2;
+      } else if (IsKeyDown(KEY_SPACE)) {
+        env.actions[0] = 3;
       } else {
         env.actions[0] = -1;
       }
     } else {
-      env.actions[0] = rand() % 3;
+      env.actions[0] = rand() % 4;
     }
     c_step(&env);
     c_render(&env);
