@@ -11,15 +11,17 @@ int main() {
   c_render(&env);
   while (!WindowShouldClose()) {
     if (IsKeyDown(KEY_LEFT_SHIFT)) {
-      if (IsKeyDown(KEY_A) || IsKeyDown(KEY_LEFT)) {
+      if (IsKeyDown(KEY_W) || IsKeyDown(KEY_UP)) {
         env.actions[0] = 0;
-      } else if (IsKeyDown(KEY_D) || IsKeyDown(KEY_RIGHT)) {
+      } else if (IsKeyDown(KEY_A) || IsKeyDown(KEY_LEFT)) {
         env.actions[0] = 1;
+      } else if (IsKeyDown(KEY_D) || IsKeyDown(KEY_RIGHT)) {
+        env.actions[0] = 2;
       } else {
         env.actions[0] = -1;
       }
     } else {
-      env.actions[0] = rand() % 2;
+      env.actions[0] = rand() % 3;
     }
     c_step(&env);
     c_render(&env);
