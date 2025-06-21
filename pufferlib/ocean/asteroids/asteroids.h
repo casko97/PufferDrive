@@ -15,9 +15,11 @@ const float FRICTION = 0.95f;
 const float SPEED = 0.6f;
 const float PARTICLE_SPEED = 7.0f;
 const float ROTATION_SPEED = 0.1f;
+const float ASTEROID_SPEED = 3.0f;
 const float SHOOT_DELAY = 0.3f;
 
-const int MAX_PARTICLES = 50;
+const int MAX_PARTICLES = 10;
+const int MAX_ASTEROIDS = 50;
 
 const int DEBUG = 1;
 
@@ -52,6 +54,8 @@ typedef struct {
   int thruster_on;
   Particle particles[MAX_PARTICLES];
   int particle_index;
+  Asteroid asteroids[MAX_ASTEROIDS];
+  int asteroid_index;
   struct timeval last_shot;
 } Asteroids;
 
@@ -91,13 +95,87 @@ void move_particles(Asteroids *env) {
   }
 }
 
+void move_asteroids(Asteroids *env) {
+  Asteroid as;
+  for (int i = 0; i < MAX_ASTEROIDS; i++) {
+    as = env->asteroids[i];
+    as.position.x += as.velocity.x * ASTEROID_SPEED;
+    as.position.y += as.velocity.y * ASTEROID_SPEED;
+    env->asteroids[i] = as;
+  }
+}
+
+float random_float(float low, float high) {
+  return low + (high - low) * ((float)rand() / (float)RAND_MAX);
+}
+
+Vector2 angle_to_vector(float angle) {
+  Vector2 v;
+  v.x = cosf(angle);
+  v.y = sinf(angle);
+  return v;
+}
+
+void spawn_asteroids(Asteroids *env) {
+  float px, py;
+  float angle;
+  if (rand() % 10 == 0) {
+    switch (rand() % 4) {
+    case 0:
+      // left edge
+      px = 0;
+      py = rand() % env->size;
+      angle = random_float(-PI / 2, PI / 2);
+      break;
+    case 1:
+      // right edge
+      px = env->size;
+      py = rand() % env->size;
+      angle = random_float(PI / 2, 3 * PI / 2);
+      break;
+    case 2:
+      // top edge
+      px = rand() % env->size;
+      py = 0;
+      angle = random_float(PI, 2 * PI);
+      break;
+    default:
+      // bottom edge
+      px = rand() % env->size;
+      py = env->size;
+      angle = random_float(0, PI);
+      break;
+    }
+
+    Vector2 direction = angle_to_vector(angle);
+    env->asteroid_index = (env->asteroid_index + 1) % MAX_ASTEROIDS;
+    Vector2 start_pos = (Vector2){px, py};
+    Asteroid as;
+    switch (rand() % 3) {
+    case 0:
+      // small
+      as = (Asteroid){start_pos, direction, 10};
+      break;
+    case 1:
+      // medium
+      as = (Asteroid){start_pos, direction, 20};
+      break;
+    default:
+      // big
+      as = (Asteroid){start_pos, direction, 40};
+      break;
+    }
+    env->asteroids[env->asteroid_index] = as;
+  }
+}
+
 void c_reset(Asteroids *env) {
   env->player_position = (Vector2){env->size / 2.0f, env->size / 2.0f};
   env->player_angle = 0.5f;
   env->player_radius = 12;
   env->thruster_on = 0;
   env->particle_index = 0;
-  env->particle_index = 0.0f;
+  env->asteroid_index = 0;
 }
 
 void c_step(Asteroids *env) {
@@ -131,7 +209,9 @@ void c_step(Asteroids *env) {
   if (action == SHOOT && elapsed >= SHOOT_DELAY) {
     gettimeofday(&env->last_shot, NULL);
     env->particle_index = (env->particle_index + 1) % MAX_PARTICLES;
-    env->particles[env->particle_index] = (Particle){env->player_position, dir};
+    Vector2 start_pos = (Vector2){env->player_position.x + 20 * dir.x,
+                                  env->player_position.y + 20 * dir.y};
+    env->particles[env->particle_index] = (Particle){start_pos, dir};
   }
 
   // Explicit Euler
@@ -139,6 +219,8 @@ void c_step(Asteroids *env) {
   env->player_position.y += env->player_vel.y;
 
   move_particles(env);
+  spawn_asteroids(env);
+  move_asteroids(env);
 
   if (env->player_position.x < 0)
     env->player_position.x = env->size;
@@ -196,9 +278,18 @@ void draw_particles(Asteroids *env) {
   }
 }
 
+void draw_asteroids(Asteroids *env) {
+  Asteroid as;
+  for (int i = 0; i < MAX_ASTEROIDS; i++) {
+    as = env->asteroids[i];
+    DrawCircleLines(as.position.x, as.position.y, as.radius, RED);
+  }
+}
+
 void c_render(Asteroids *env) {
   if (!IsWindowReady()) {
     InitWindow(env->size, env->size, "PufferLib Asteroids");
+    SetConfigFlags(FLAG_MSAA_4X_HINT);
     SetTargetFPS(60);
   }
 
@@ -210,6 +301,7 @@ void c_render(Asteroids *env) {
   ClearBackground(BLACK);
   draw_player(env);
   draw_particles(env);
+  draw_asteroids(env);
   EndDrawing();
 }
 
