@@ -12,7 +12,7 @@ class Drone(pufferlib.PufferEnv):
         report_interval=1,
         buf=None,
         seed=0,
-        max_rings=5,
+        max_rings=10,
         max_moves=1000,
     ):
         self.single_observation_space = gymnasium.spaces.Box(

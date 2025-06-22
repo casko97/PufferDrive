@@ -20,9 +20,10 @@
 // Simulation properties
 #define GRID_SIZE 10.0f
 #define RING_RAD 2.0f
+#define RING_MARGIN 4.0f
 #define DT 0.02f
 
-// Physical constants for the dronex
+// Physical constants for the drone
 #define MASS 1.0f       // kg
 #define IXX 0.01f       // kgm^2
 #define IYY 0.01f       // kgm^2
@@ -158,10 +159,9 @@ Quat rndquat() {
 Ring rndring(void) {
     Ring ring;
 
-    float margin = 3.0f;
-    ring.position.x = rndf(-GRID_SIZE + margin, GRID_SIZE - margin);
-    ring.position.y = rndf(-GRID_SIZE + margin, GRID_SIZE - margin);
-    ring.position.z = rndf(-GRID_SIZE + margin, GRID_SIZE - margin);
+    ring.position.x = rndf(-GRID_SIZE + RING_MARGIN, GRID_SIZE - RING_MARGIN);
+    ring.position.y = rndf(-GRID_SIZE + RING_MARGIN, GRID_SIZE - RING_MARGIN);
+    ring.position.z = rndf(-GRID_SIZE + RING_MARGIN, GRID_SIZE - RING_MARGIN);
 
     ring.orientation = rndquat();
 
@@ -292,13 +292,24 @@ void c_reset(Drone *env) {
     env->moves_left = env->max_moves;
 
     env->ring_idx = 0;
-    for (int i = 0; i < env->max_rings+1; i++) {
-        env->ring_buffer[i] = rndring();
+
+    // creates rings at least MARGIN apart
+    if (env->max_rings + 1 > 0) {
+        env->ring_buffer[0] = rndring();
     }
 
-    env->pos = (Vec3){rndf(-9, 9), rndf(-9, 9), rndf(-9, 9)};
-    env->prev_pos = env->pos;
+    for (int i = 1; i < env->max_rings + 1; i++) {
+        do {
+            env->ring_buffer[i] = rndring();
+        } while (norm3(sub3(env->ring_buffer[i].position, env->ring_buffer[i - 1].position)) < RING_MARGIN);
+    }
 
+    // start drone at least MARGIN away from the first ring
+    do {
+        env->pos = (Vec3){rndf(-9, 9), rndf(-9, 9), rndf(-9, 9)};
+    } while (norm3(sub3(env->pos, env->ring_buffer[0].position)) < RING_MARGIN);
+
+    env->prev_pos = env->pos;
     env->vel = (Vec3){0.0f, 0.0f, 0.0f};
     env->omega = (Vec3){0.0f, 0.0f, 0.0f};
     env->quat = (Quat){1.0f, 0.0f, 0.0f, 0.0f};
@@ -410,7 +421,8 @@ void c_step(Drone *env) {
     if (valid_dir || invalid_dir) {
         // find intesection with ring's plane
         Vec3 dir = sub3(env->pos, env->prev_pos);
-        float t = -prev_dot / dot3(env->ring_buffer[env->ring_idx].normal, dir);
+        float t = -prev_dot / dot3(env->ring_buffer[env->ring_idx].normal, dir); // possible nan
+
         Vec3 intersection = add3(env->prev_pos, scalmul3(dir, t));
         float dist = norm3(sub3(intersection, env->ring_buffer[env->ring_idx].position));
 
