@@ -5,7 +5,7 @@ import pufferlib
 from pufferlib.ocean.asteroids import binding
 
 class Asteroids(pufferlib.PufferEnv):
-    def __init__(self, num_envs=1, render_mode=None, log_interval=128, buf=None, seed=0, size=100):
+    def __init__(self, num_envs=1, render_mode=None, log_interval=128, buf=None, seed=0, size=500):
         self.single_observation_space = gymnasium.spaces.Box(low=0, high=1,
             shape=(1,), dtype=np.uint8)
         self.single_action_space = gymnasium.spaces.Discrete(4)
