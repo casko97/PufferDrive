@@ -51,7 +51,7 @@ typedef struct {
 
 typedef struct {
   Log log;
-  unsigned char *observations;
+  float *observations;
   int *actions;
   float *rewards;
   unsigned char *terminals;
@@ -304,6 +304,24 @@ void check_player_asteroid_collision(Asteroids *env) {
   }
 }
 
+void compute_observations(Asteroids *env) {
+  int observation_indx = 0;
+  env->observations[observation_indx++] = env->player_position.x / env->size;
+  env->observations[observation_indx++] = env->player_position.y / env->size;
+  env->observations[observation_indx++] = env->player_vel.x;
+  env->observations[observation_indx++] = env->player_vel.y;
+  Asteroid as;
+  for (int i = 0; i < MAX_ASTEROIDS; i++) {
+    as = env->asteroids[i];
+    if (as.radius == 0)
+      continue;
+    env->observations[observation_indx++] =
+        (as.position.x - env->player_position.x) / env->size;
+    env->observations[observation_indx++] =
+        (as.position.y - env->player_position.y) / env->size;
+  }
+}
+
 void add_log(Asteroids *env) {
   env->log.perf += (env->rewards[0] > 0) ? 1 : 0;
   env->log.score += env->rewards[0];
@@ -394,6 +412,7 @@ void c_step(Asteroids *env) {
   }
 
   env->rewards[0] = env->score;
+  compute_observations(env);
 }
 
 void draw_player(Asteroids *env) {

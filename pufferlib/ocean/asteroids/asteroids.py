@@ -6,8 +6,9 @@ from pufferlib.ocean.asteroids import binding
 
 class Asteroids(pufferlib.PufferEnv):
     def __init__(self, num_envs=1, render_mode=None, log_interval=128, buf=None, seed=0, size=500):
-        self.single_observation_space = gymnasium.spaces.Box(low=0, high=1,
-            shape=(1,), dtype=np.uint8)
+        obs_shape = 4 + 2 * 50
+        self.single_observation_space = gymnasium.spaces.Box(low=-5, high=5,
+            shape=(obs_shape,), dtype=np.float32)
         self.single_action_space = gymnasium.spaces.Discrete(4)
         self.render_mode = render_mode
         self.num_agents = num_envs
@@ -34,7 +35,7 @@ class Asteroids(pufferlib.PufferEnv):
         binding.vec_close(self.c_envs)
 
 if __name__ == '__main__':
-    N = 4096
+    N = 1
     env = Asteroids(num_envs=N)
     env.reset()
     steps = 0
