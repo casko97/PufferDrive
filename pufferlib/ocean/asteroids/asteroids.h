@@ -2,6 +2,7 @@
 
 #include "raylib.h"
 #include <math.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/time.h>
@@ -148,7 +149,6 @@ void spawn_asteroids(Asteroids *env) {
     }
 
     Vector2 direction = angle_to_vector(angle);
-    env->asteroid_index = (env->asteroid_index + 1) % MAX_ASTEROIDS;
     Vector2 start_pos = (Vector2){px, py};
     Asteroid as;
     switch (rand() % 3) {
@@ -165,7 +165,67 @@ void spawn_asteroids(Asteroids *env) {
       as = (Asteroid){start_pos, direction, 40};
       break;
     }
+    env->asteroid_index = (env->asteroid_index + 1) % MAX_ASTEROIDS;
     env->asteroids[env->asteroid_index] = as;
+  }
+}
+
+int particle_asteroid_collision(Asteroids *env, Particle p, Asteroid as) {
+  float dx = p.position.x - as.position.x;
+  float dy = p.position.y - as.position.y;
+  return as.radius * as.radius > dx * dx + dy * dy;
+}
+
+void split_asteroid(Asteroids *env, int size, int j) {
+  Asteroid as = env->asteroids[j];
+  int new_radius = size == 40 ? 20 : 10;
+  env->asteroid_index = (env->asteroid_index + 1) % MAX_ASTEROIDS;
+  float angle1 = random_float(0.0f, 2 * PI);
+  Vector2 direction1 = angle_to_vector(angle1);
+  float angle2 = random_float(0.0f, 2 * PI);
+  Vector2 direction2 = angle_to_vector(angle2);
+  Vector2 start_pos = (Vector2){as.position.x, as.position.y};
+  env->asteroids[env->asteroid_index] = as;
+  env->asteroids[j] = (Asteroid){start_pos, direction1, new_radius};
+  env->asteroids[env->asteroid_index] =
+      (Asteroid){start_pos, direction2, new_radius};
+}
+
+void check_particle_asteroid_collision(Asteroids *env) {
+  Particle p;
+  Asteroid as;
+  for (int i = 0; i < MAX_PARTICLES; i++) {
+    for (int j = 0; j < MAX_ASTEROIDS; j++) {
+      p = env->particles[i];
+      as = env->asteroids[j];
+      if (particle_asteroid_collision(env, p, as)) {
+        switch (as.radius) {
+        case 10:
+          env->asteroids[j] = (Asteroid){};
+          break;
+        default:
+          split_asteroid(env, as.radius, j);
+          break;
+        }
+      }
+    }
+  }
+}
+
+void check_player_asteroid_collision(Asteroids *env) {
+  float min_dist;
+  float dx, dy;
+  Asteroid as;
+  for (int i = 0; i < MAX_ASTEROIDS; i++) {
+    as = env->asteroids[i];
+    min_dist = env->player_radius + as.radius;
+    dx = env->player_position.x - as.position.x;
+    dy = env->player_position.y - as.position.y;
+    if (min_dist * min_dist > dx * dx + dy * dy) {
+      env->terminals[0] = 1;
+      printf("HERe\n");
+      return;
+    }
   }
 }
 
@@ -173,7 +233,10 @@ void c_reset(Asteroids *env) {
   env->player_position = (Vector2){env->size / 2.0f, env->size / 2.0f};
   env->player_angle = 0.5f;
   env->player_radius = 12;
+  env->player_vel = (Vector2){0, 0};
   env->thruster_on = 0;
+  memset(env->particles, 0, sizeof(Particle) * MAX_PARTICLES);
+  memset(env->asteroids, 0, sizeof(Asteroid) * MAX_ASTEROIDS);
   env->particle_index = 0;
   env->asteroid_index = 0;
 }
@@ -221,6 +284,8 @@ void c_step(Asteroids *env) {
   move_particles(env);
   spawn_asteroids(env);
   move_asteroids(env);
+  check_particle_asteroid_collision(env);
+  check_player_asteroid_collision(env);
 
   if (env->player_position.x < 0)
     env->player_position.x = env->size;
@@ -230,6 +295,11 @@ void c_step(Asteroids *env) {
     env->player_position.x = 0;
   if (env->player_position.y > env->size)
     env->player_position.y = 0;
+
+  if (env->terminals[0] == 1) {
+    c_reset(env);
+    return;
+  }
 }
 
 void draw_player(Asteroids *env) {
