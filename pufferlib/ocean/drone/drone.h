@@ -56,7 +56,7 @@ typedef struct {
 } Vec3;
 
 typedef struct {
-    Vec3 position;
+    Vec3 pos;
     Quat orientation;
     Vec3 normal;
     float radius;
@@ -159,9 +159,9 @@ Quat rndquat() {
 Ring rndring(void) {
     Ring ring;
 
-    ring.position.x = rndf(-GRID_SIZE + RING_MARGIN, GRID_SIZE - RING_MARGIN);
-    ring.position.y = rndf(-GRID_SIZE + RING_MARGIN, GRID_SIZE - RING_MARGIN);
-    ring.position.z = rndf(-GRID_SIZE + RING_MARGIN, GRID_SIZE - RING_MARGIN);
+    ring.pos.x = rndf(-GRID_SIZE + RING_MARGIN, GRID_SIZE - RING_MARGIN);
+    ring.pos.y = rndf(-GRID_SIZE + RING_MARGIN, GRID_SIZE - RING_MARGIN);
+    ring.pos.z = rndf(-GRID_SIZE + RING_MARGIN, GRID_SIZE - RING_MARGIN);
 
     ring.orientation = rndquat();
 
@@ -241,8 +241,8 @@ void compute_observations(Drone *env) {
     Ring curr_ring = env->ring_buffer[env->ring_idx];
     Ring next_ring = env->ring_buffer[env->ring_idx+1];
 
-    Vec3 to_curr_ring = quat_rotate(q_inv, sub3(curr_ring.position, env->pos));
-    Vec3 to_next_ring = quat_rotate(q_inv, sub3(next_ring.position, env->pos));
+    Vec3 to_curr_ring = quat_rotate(q_inv, sub3(curr_ring.pos, env->pos));
+    Vec3 to_next_ring = quat_rotate(q_inv, sub3(next_ring.pos, env->pos));
 
     Vec3 curr_ring_norm = quat_rotate(q_inv, curr_ring.normal);
     Vec3 next_ring_norm = quat_rotate(q_inv, next_ring.normal);
@@ -301,13 +301,13 @@ void c_reset(Drone *env) {
     for (int i = 1; i < env->max_rings + 1; i++) {
         do {
             env->ring_buffer[i] = rndring();
-        } while (norm3(sub3(env->ring_buffer[i].position, env->ring_buffer[i - 1].position)) < RING_MARGIN);
+        } while (norm3(sub3(env->ring_buffer[i].pos, env->ring_buffer[i - 1].pos)) < RING_MARGIN);
     }
 
     // start drone at least MARGIN away from the first ring
     do {
         env->pos = (Vec3){rndf(-9, 9), rndf(-9, 9), rndf(-9, 9)};
-    } while (norm3(sub3(env->pos, env->ring_buffer[0].position)) < RING_MARGIN);
+    } while (norm3(sub3(env->pos, env->ring_buffer[0].pos)) < RING_MARGIN);
 
     env->prev_pos = env->pos;
     env->vel = (Vec3){0.0f, 0.0f, 0.0f};
@@ -404,13 +404,13 @@ void c_step(Drone *env) {
 
     // previous dot product negative if on the 'entry' side of the ring's plane
     float prev_dot = dot3(
-        sub3(env->prev_pos, env->ring_buffer[env->ring_idx].position), 
+        sub3(env->prev_pos, env->ring_buffer[env->ring_idx].pos), 
         env->ring_buffer[env->ring_idx].normal
     );
 
     // new dot product positive if on the 'exit' side of the ring's plane
     float new_dot = dot3(
-        sub3(env->pos, env->ring_buffer[env->ring_idx].position), 
+        sub3(env->pos, env->ring_buffer[env->ring_idx].pos), 
         env->ring_buffer[env->ring_idx].normal
     );
 
@@ -424,7 +424,7 @@ void c_step(Drone *env) {
         float t = -prev_dot / dot3(env->ring_buffer[env->ring_idx].normal, dir); // possible nan
 
         Vec3 intersection = add3(env->prev_pos, scalmul3(dir, t));
-        float dist = norm3(sub3(intersection, env->ring_buffer[env->ring_idx].position));
+        float dist = norm3(sub3(intersection, env->ring_buffer[env->ring_idx].pos));
 
         // reward or terminate based on distance to ring center
         if (dist < (env->ring_buffer[env->ring_idx].radius - 0.5) && valid_dir) {
@@ -558,7 +558,7 @@ Client *make_client(Drone *env) {
 void DrawRing3D(Ring ring, float thickness, Color entryColor, Color exitColor) {
     float half_thick = thickness / 2.0f;
 
-    Vector3 center_pos = {ring.position.x, ring.position.y, ring.position.z};
+    Vector3 center_pos = {ring.pos.x, ring.pos.y, ring.pos.z};
 
     Vector3 entry_start_pos = {
         center_pos.x - half_thick * ring.normal.x,
@@ -609,11 +609,14 @@ void c_render(Drone *env) {
 
     BeginMode3D(client->camera);
 
+    // draws bounding cube
     DrawCubeWires((Vector3){0.0f, 0.0f, 0.0f}, GRID_SIZE * 2.0f,
                   GRID_SIZE * 2.0f, GRID_SIZE * 2.0f, WHITE);
 
+    // draws drone body
     DrawSphere((Vector3){env->pos.x, env->pos.y, env->pos.z}, 0.3f, RED);
 
+    // draws rotors according to thrust
     float T[4];
     for (int i = 0; i < 4; i++) {
         float rpm = (env->actions[i] + 1.0f) * 0.5f * MAX_RPM;
@@ -649,15 +652,8 @@ void c_render(Drone *env) {
         DrawCylinderEx((Vector3){env->pos.x, env->pos.y, env->pos.z}, rotor_pos,
                        0.02f, 0.02f, 8, BLACK);
     }
-
-    Vec3 forward_body = {1.0f, 0.0f, 0.0f};
-    Vec3 forward_world = quat_rotate(env->quat, forward_body);
-    DrawLine3D((Vector3){env->pos.x, env->pos.y, env->pos.z},
-               (Vector3){env->pos.x + forward_world.x * 0.5f,
-                         env->pos.y + forward_world.y * 0.5f,
-                         env->pos.z + forward_world.z * 0.5f},
-               YELLOW);
-
+    
+    // draws line with direction and magnitude of velocity / 10
     if (norm3(env->vel) > 0.1f) {
         DrawLine3D((Vector3){env->pos.x, env->pos.y, env->pos.z},
                    (Vector3){env->pos.x + env->vel.x * 0.1f,
@@ -665,11 +661,6 @@ void c_render(Drone *env) {
                              env->pos.z + env->vel.z * 0.1f},
                    MAGENTA);
     }
-
-    DrawLine3D(
-        (Vector3){env->pos.x, env->pos.y, env->pos.z},
-        (Vector3){env->ring_buffer[env->ring_idx].position.x, env->ring_buffer[env->ring_idx].position.y, env->ring_buffer[env->ring_idx].position.z},
-        ColorAlpha(BLUE, 0.3f));
 
     // Draw trailing path
     for (int i = 1; i < client->trail_count; i++) {
@@ -683,6 +674,7 @@ void c_render(Drone *env) {
             trail_color);
     }
 
+    // draws current and previous ring
     float ring_thickness = 0.2f;
     DrawRing3D(env->ring_buffer[env->ring_idx], ring_thickness, GREEN, BLUE);
     if (env->ring_idx > 0) {
@@ -690,11 +682,11 @@ void c_render(Drone *env) {
     }
 
     EndMode3D();
-
+    
+    // Draw 2D stats
     DrawText(TextFormat("Targets left: %d", env->max_rings - env->ring_idx), 10, 10, 20, WHITE);
     DrawText(TextFormat("Moves left: %d", env->moves_left), 10, 40, 20, WHITE);
-    DrawText(TextFormat("Episode Return: %.2f", env->episodic_return), 10, 70,
-             20, WHITE);
+    DrawText(TextFormat("Episode Return: %.2f", env->episodic_return), 10, 70, 20, WHITE);
 
     DrawText("Motor Thrusts:", 10, 110, 20, WHITE);
     DrawText(TextFormat("Front: %.3f", T[0]), 10, 135, 18, ORANGE);
@@ -702,9 +694,7 @@ void c_render(Drone *env) {
     DrawText(TextFormat("Right: %.3f", T[2]), 10, 175, 18, LIME);
     DrawText(TextFormat("Left:  %.3f", T[3]), 10, 195, 18, SKYBLUE);
 
-    DrawText(TextFormat("Pos: (%.1f, %.1f, %.1f)", env->pos.x, env->pos.y,
-                        env->pos.z),
-             10, 225, 18, WHITE);
+    DrawText(TextFormat("Pos: (%.1f, %.1f, %.1f)", env->pos.x, env->pos.y, env->pos.z), 10, 225, 18, WHITE);
     DrawText(TextFormat("Vel: %.2f m/s", norm3(env->vel)), 10, 245, 18, WHITE);
 
     DrawText("Left click + drag: Rotate camera", 10, 275, 16, LIGHTGRAY);
