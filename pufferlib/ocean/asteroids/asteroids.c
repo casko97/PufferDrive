@@ -2,7 +2,7 @@
 
 int main() {
   Asteroids env = {.size = 500};
-  env.observations = (unsigned char *)calloc(1, sizeof(unsigned char));
+  env.observations = (float *)calloc(4 + 2 * 50, sizeof(float));
   env.actions = (int *)calloc(1, sizeof(int));
   env.rewards = (float *)calloc(1, sizeof(float));
   env.terminals = (unsigned char *)calloc(1, sizeof(unsigned char));
