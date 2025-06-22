@@ -462,6 +462,8 @@ void c_close_client(Client *client) {
 }
 
 void c_close(Drone *env) {
+    free(env->ring_buffer);
+    
     if (env->client != NULL) {
         c_close_client(env->client);
     }
