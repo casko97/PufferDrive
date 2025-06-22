@@ -24,6 +24,10 @@ const float SHOOT_DELAY = 0.3f;
 
 const int DEBUG = 0;
 
+// for render only game over state
+static int global_game_over_timer = 0;
+static int global_game_over_started = 0;
+
 typedef struct {
   float perf;
   float score;
@@ -310,7 +314,7 @@ void add_log(Asteroids *env) {
 
 void c_reset(Asteroids *env) {
   env->player_position = (Vector2){env->size / 2.0f, env->size / 2.0f};
-  env->player_angle = 0.5f;
+  env->player_angle = 0.0f;
   env->player_radius = 12;
   env->player_vel = (Vector2){0, 0};
   env->thruster_on = 0;
@@ -328,6 +332,9 @@ void c_step(Asteroids *env) {
   env->terminals[0] = 0;
   env->thruster_on = 0;
   env->tick += 1;
+
+  if (global_game_over_timer > 0)
+    return;
 
   // slow down each step
   env->player_vel.x *= FRICTION;
@@ -379,7 +386,7 @@ void c_step(Asteroids *env) {
   if (env->player_position.y > env->size)
     env->player_position.y = 0;
 
-  if (env->terminals[0] == 1 || env->tick > 500) {
+  if (env->terminals[0] == 1 || env->tick > 1500) {
     env->terminals[0] = 1;
     add_log(env);
     c_reset(env);
@@ -387,11 +394,12 @@ void c_step(Asteroids *env) {
   }
 
   env->rewards[0] = env->score;
-  // printf("env->rewards[0]: %f\n", env->rewards[0]);
-  // env->rewards[0] = clamp(env->rewards[0], -1.0f, 1.0f);
 }
 
 void draw_player(Asteroids *env) {
+  if (global_game_over_timer > 0)
+    return;
+
   float px = env->player_position.x;
   float py = env->player_position.y;
 
@@ -469,6 +477,17 @@ void c_render(Asteroids *env) {
     exit(0);
   }
 
+  if (env->terminals[0] == 1 && !global_game_over_started) {
+    global_game_over_started = 1;
+    global_game_over_timer = 120;
+  }
+
+  if (global_game_over_timer > 0) {
+    global_game_over_timer--;
+  } else {
+    global_game_over_started = 0;
+  }
+
   BeginDrawing();
   ClearBackground(BLACK);
   draw_player(env);
@@ -476,6 +495,21 @@ void c_render(Asteroids *env) {
   draw_asteroids(env);
 
   DrawText(TextFormat("Score: %d", env->score), 10, 10, 20, RAYWHITE);
+
+  if (global_game_over_timer > 0) {
+    const char *game_over_text = "GAME OVER";
+    int text_width = MeasureText(game_over_text, 40);
+    int x = (env->size - text_width) / 2;
+    int y = env->size / 2 - 20;
+
+    float alpha = (float)global_game_over_timer / 120.0f;
+    int alpha_value = (int)(alpha * 255);
+
+    Color text_color = (Color){230, 41, 55, alpha_value};
+    DrawTextEx(GetFontDefault(), game_over_text, (Vector2){x, y}, 40, 2,
+               text_color);
+  }
+
   EndDrawing();
 }
 
