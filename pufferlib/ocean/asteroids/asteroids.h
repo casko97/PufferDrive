@@ -2,7 +2,6 @@
 
 #include "raylib.h"
 #include <math.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/time.h>
@@ -24,10 +23,12 @@ const int MAX_ASTEROIDS = 50;
 
 const int DEBUG = 1;
 
-// Only use floats!
 typedef struct {
+  float perf;
   float score;
-  float n; // Required as the last field
+  float episode_return;
+  float episode_length;
+  float n;
 } Log;
 
 typedef struct {
@@ -58,6 +59,8 @@ typedef struct {
   Asteroid asteroids[MAX_ASTEROIDS];
   int asteroid_index;
   struct timeval last_shot;
+  int tick;
+  int score;
 } Asteroids;
 
 Vector2 rotate_vector(Vector2 point, Vector2 center, float angle) {
@@ -201,9 +204,18 @@ void check_particle_asteroid_collision(Asteroids *env) {
       if (particle_asteroid_collision(env, p, as)) {
         switch (as.radius) {
         case 10:
+          env->score += 1;
+          env->rewards[0] += 0.1;
           env->asteroids[j] = (Asteroid){};
           break;
+        case 20:
+          env->score += 1;
+          env->rewards[0] += 0.1;
+          split_asteroid(env, as.radius, j);
+          break;
         default:
+          env->score += 1;
+          env->rewards[0] += 0.1;
           split_asteroid(env, as.radius, j);
           break;
         }
@@ -223,10 +235,17 @@ void check_player_asteroid_collision(Asteroids *env) {
     dy = env->player_position.y - as.position.y;
     if (min_dist * min_dist > dx * dx + dy * dy) {
       env->terminals[0] = 1;
-      printf("HERe\n");
       return;
     }
   }
+}
+
+void add_log(Asteroids *env) {
+  env->log.perf += (env->rewards[0] > 0) ? 1 : 0;
+  env->log.score += env->rewards[0];
+  env->log.episode_length += env->tick;
+  env->log.episode_return += env->rewards[0];
+  env->log.n++;
 }
 
 void c_reset(Asteroids *env) {
@@ -239,6 +258,8 @@ void c_reset(Asteroids *env) {
   memset(env->asteroids, 0, sizeof(Asteroid) * MAX_ASTEROIDS);
   env->particle_index = 0;
   env->asteroid_index = 0;
+  env->tick = 0;
+  env->score = 0;
 }
 
 void c_step(Asteroids *env) {
@@ -296,7 +317,9 @@ void c_step(Asteroids *env) {
   if (env->player_position.y > env->size)
     env->player_position.y = 0;
 
-  if (env->terminals[0] == 1) {
+  if (env->terminals[0] == 1 || env->tick > 500) {
+    env->terminals[0] = 1;
+    add_log(env);
     c_reset(env);
     return;
   }
@@ -372,6 +395,8 @@ void c_render(Asteroids *env) {
   draw_player(env);
   draw_particles(env);
   draw_asteroids(env);
+
+  DrawText(TextFormat("Score: %d", env->score), 10, 10, 20, RAYWHITE);
   EndDrawing();
 }
 
