@@ -2,6 +2,7 @@
 
 #include "raylib.h"
 #include <math.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/time.h>
@@ -270,6 +271,7 @@ void c_step(Asteroids *env) {
   env->rewards[0] = 0;
   env->terminals[0] = 0;
   env->thruster_on = 0;
+  env->tick += 1;
 
   // slow down each step
   env->player_vel.x *= FRICTION;
@@ -328,7 +330,9 @@ void c_step(Asteroids *env) {
     return;
   }
 
-  env->rewards[0] = clamp(env->rewards[0], -1.0f, 1.0f);
+  env->rewards[0] = env->score;
+  // printf("env->rewards[0]: %f\n", env->rewards[0]);
+  // env->rewards[0] = clamp(env->rewards[0], -1.0f, 1.0f);
 }
 
 void draw_player(Asteroids *env) {
