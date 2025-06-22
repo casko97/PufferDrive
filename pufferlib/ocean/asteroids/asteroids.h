@@ -63,6 +63,10 @@ typedef struct {
   int score;
 } Asteroids;
 
+float clamp(float val, float low, float high) {
+  return fmin(fmax(val, low), high);
+}
+
 Vector2 rotate_vector(Vector2 point, Vector2 center, float angle) {
   float s = sinf(angle);
   float c = cosf(angle);
@@ -205,17 +209,17 @@ void check_particle_asteroid_collision(Asteroids *env) {
         switch (as.radius) {
         case 10:
           env->score += 1;
-          env->rewards[0] += 0.1;
+          env->rewards[0] += 1.0f;
           env->asteroids[j] = (Asteroid){};
           break;
         case 20:
           env->score += 1;
-          env->rewards[0] += 0.1;
+          env->rewards[0] += 1.0f;
           split_asteroid(env, as.radius, j);
           break;
         default:
           env->score += 1;
-          env->rewards[0] += 0.1;
+          env->rewards[0] += 1.0f;
           split_asteroid(env, as.radius, j);
           break;
         }
@@ -323,6 +327,8 @@ void c_step(Asteroids *env) {
     c_reset(env);
     return;
   }
+
+  env->rewards[0] = clamp(env->rewards[0], -1.0f, 1.0f);
 }
 
 void draw_player(Asteroids *env) {
