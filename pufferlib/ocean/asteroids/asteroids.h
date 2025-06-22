@@ -41,8 +41,8 @@ typedef struct {
   Vector2 position;
   Vector2 velocity;
   int radius;
-  Vector2 shape[12];  // Store the jagged shape vertices
-  int num_vertices;   // Number of vertices in the shape
+  Vector2 shape[12];
+  int num_vertices;
 } Asteroid;
 
 typedef struct {
@@ -71,12 +71,12 @@ float random_float(float low, float high) {
 }
 
 void generate_asteroid_shape(Asteroid *as) {
-  as->num_vertices = 8 + (as->radius / 10); // More vertices for larger asteroids
-  
+  as->num_vertices = 8 + (as->radius / 10);
+
   for (int v = 0; v < as->num_vertices; v++) {
     float angle = (2.0f * PI * v) / as->num_vertices;
-    // Add some randomness to make it look jagged
-    float radius_variation = as->radius * (0.7f + 0.6f * random_float(0.0f, 1.0f));
+    float radius_variation =
+        as->radius * (0.7f + 0.6f * random_float(0.0f, 1.0f));
     as->shape[v].x = cosf(angle) * radius_variation;
     as->shape[v].y = sinf(angle) * radius_variation;
   }
@@ -126,15 +126,14 @@ void move_asteroids(Asteroids *env) {
   Asteroid as;
   for (int i = 0; i < MAX_ASTEROIDS; i++) {
     as = env->asteroids[i];
-    // Skip destroyed asteroids (radius 0)
-    if (as.radius == 0) continue;
-    
+    if (as.radius == 0)
+      continue;
+
     as.position.x += as.velocity.x * ASTEROID_SPEED;
     as.position.y += as.velocity.y * ASTEROID_SPEED;
     env->asteroids[i] = as;
   }
 }
-
 
 Vector2 angle_to_vector(float angle) {
   Vector2 v;
@@ -209,8 +208,8 @@ void split_asteroid(Asteroids *env, int size, int j) {
 
   float original_angle = atan2f(as.velocity.y, as.velocity.x);
 
-  float offset1 = random_float(-PI/4, PI/4);
-  float offset2 = random_float(-PI/4, PI/4);
+  float offset1 = random_float(-PI / 4, PI / 4);
+  float offset2 = random_float(-PI / 4, PI / 4);
 
   float angle1 = original_angle + offset1;
   float angle2 = original_angle + offset2;
@@ -220,8 +219,14 @@ void split_asteroid(Asteroids *env, int size, int j) {
 
   float len1 = sqrtf(direction1.x * direction1.x + direction1.y * direction1.y);
   float len2 = sqrtf(direction2.x * direction2.x + direction2.y * direction2.y);
-  if (len1 > 0) { direction1.x /= len1; direction1.y /= len1; }
-  if (len2 > 0) { direction2.x /= len2; direction2.y /= len2; }
+  if (len1 > 0) {
+    direction1.x /= len1;
+    direction1.y /= len1;
+  }
+  if (len2 > 0) {
+    direction2.x /= len2;
+    direction2.y /= len2;
+  }
 
   Vector2 start_pos = (Vector2){as.position.x, as.position.y};
 
@@ -231,7 +236,7 @@ void split_asteroid(Asteroids *env, int size, int j) {
   env->asteroids[j] = (Asteroid){start_pos, direction1, new_radius};
   env->asteroids[new_index1] = (Asteroid){start_pos, direction2, new_radius};
   env->asteroid_index = new_index2;
-  
+
   // Generate shapes for the new asteroids
   generate_asteroid_shape(&env->asteroids[j]);
   generate_asteroid_shape(&env->asteroids[new_index1]);
@@ -242,17 +247,17 @@ void check_particle_asteroid_collision(Asteroids *env) {
   Asteroid as;
   for (int i = 0; i < MAX_PARTICLES; i++) {
     p = env->particles[i];
-    // Skip null particles (position 0,0)
-    if (p.position.x == 0 && p.position.y == 0) continue;
-    
+    if (p.position.x == 0 && p.position.y == 0)
+      continue;
+
     for (int j = 0; j < MAX_ASTEROIDS; j++) {
       as = env->asteroids[j];
-      // Skip destroyed asteroids (radius 0)
-      if (as.radius == 0) continue;
-      
+      if (as.radius == 0)
+        continue;
+
       if (particle_asteroid_collision(env, p, as)) {
         env->particles[i] = (Particle){};
-        
+
         switch (as.radius) {
         case 10:
           env->score += 1;
@@ -270,7 +275,6 @@ void check_particle_asteroid_collision(Asteroids *env) {
           split_asteroid(env, as.radius, j);
           break;
         }
-        // Break out of asteroid loop since this particle is now absorbed
         break;
       }
     }
@@ -283,9 +287,9 @@ void check_player_asteroid_collision(Asteroids *env) {
   Asteroid as;
   for (int i = 0; i < MAX_ASTEROIDS; i++) {
     as = env->asteroids[i];
-    // Skip destroyed asteroids (radius 0)
-    if (as.radius == 0) continue;
-    
+    if (as.radius == 0)
+      continue;
+
     min_dist = env->player_radius + as.radius;
     dx = env->player_position.x - as.position.x;
     dy = env->player_position.y - as.position.y;
@@ -437,16 +441,18 @@ void draw_asteroids(Asteroids *env) {
   Asteroid as;
   for (int i = 0; i < MAX_ASTEROIDS; i++) {
     as = env->asteroids[i];
-    // Skip destroyed asteroids (radius 0)
-    if (as.radius == 0) continue;
-    
+    if (as.radius == 0)
+      continue;
+
     if (DEBUG)
       DrawCircleLines(as.position.x, as.position.y, as.radius, RED);
 
     for (int v = 0; v < as.num_vertices; v++) {
       int next_v = (v + 1) % as.num_vertices;
-      Vector2 pos1 = {as.position.x + as.shape[v].x, as.position.y + as.shape[v].y};
-      Vector2 pos2 = {as.position.x + as.shape[next_v].x, as.position.y + as.shape[next_v].y};
+      Vector2 pos1 = {as.position.x + as.shape[v].x,
+                      as.position.y + as.shape[v].y};
+      Vector2 pos2 = {as.position.x + as.shape[next_v].x,
+                      as.position.y + as.shape[next_v].y};
       DrawLineV(pos1, pos2, (Color){245, 245, 245, 175});
     }
   }
