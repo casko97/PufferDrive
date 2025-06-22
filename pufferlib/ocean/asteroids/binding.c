@@ -1,6 +1,6 @@
 #include "asteroids.h"
 
-#define Env Template
+#define Env Asteroids
 #include "../env_binding.h"
 
 static int my_init(Env *env, PyObject *args, PyObject *kwargs) {

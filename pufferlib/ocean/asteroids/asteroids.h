@@ -6,6 +6,9 @@
 #include <string.h>
 #include <sys/time.h>
 
+#define MAX_PARTICLES 10
+#define MAX_ASTEROIDS 50
+
 const unsigned char FORWARD = 0;
 const unsigned char TURN_LEFT = 1;
 const unsigned char TURN_RIGHT = 2;
@@ -17,9 +20,6 @@ const float PARTICLE_SPEED = 7.0f;
 const float ROTATION_SPEED = 0.1f;
 const float ASTEROID_SPEED = 3.0f;
 const float SHOOT_DELAY = 0.3f;
-
-const int MAX_PARTICLES = 10;
-const int MAX_ASTEROIDS = 50;
 
 const int DEBUG = 1;
 
