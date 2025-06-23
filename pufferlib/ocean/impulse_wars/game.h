@@ -2557,6 +2557,19 @@ void handleContactEvents(iwEnv *e) {
             ASSERT(e2 != NULL);
         }
 
+        if (e1 != NULL && e1->type == DRONE_ENTITY && e2 != NULL && e2->type == DRONE_ENTITY) {
+            droneEntity *drone1 = e1->entity;
+            droneEntity *drone2 = e2->entity;
+
+            if (b2Contact_IsValid(event->contactId)) {
+                const b2Manifold manifold = b2Contact_GetData(event->contactId).manifold;
+                ASSERT(manifold.pointCount == 1);
+                b2Vec2 hitImpulse = b2MulSV(manifold.points[0].normalImpulse, manifold.normal);
+                droneTrackImpulse(e, drone2, hitImpulse, drone1->idx);
+                droneTrackImpulse(e, drone1, b2Neg(hitImpulse), drone2->idx);
+            }
+        }
+
         if (e1 != NULL) {
             if (e1->type == PROJECTILE_ENTITY) {
                 uint8_t numDestroyed = handleProjectileBeginContact(e, e1, e2, event->contactId, true);
