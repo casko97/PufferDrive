@@ -70,6 +70,7 @@ typedef struct {
   struct timeval last_shot;
   int tick;
   int score;
+  int frameskip;
 } Asteroids;
 
 float random_float(float low, float high) {
@@ -347,22 +348,13 @@ void c_reset(Asteroids *env) {
   gettimeofday(&env->last_shot, NULL);
 }
 
-void c_step(Asteroids *env) {
-  env->rewards[0] = 0;
-  env->terminals[0] = 0;
-  env->thruster_on = 0;
-  env->tick += 1;
-
-  if (global_game_over_timer > 0)
-    return;
-
+void step_frame(Asteroids *env, int action) {
   // slow down each step
   env->player_vel.x *= FRICTION;
   env->player_vel.y *= FRICTION;
 
   Vector2 dir = get_direction_vector(env);
 
-  int action = env->actions[0];
   if (action == TURN_LEFT)
     env->player_angle -= ROTATION_SPEED;
   if (action == TURN_RIGHT)
@@ -405,6 +397,22 @@ void c_step(Asteroids *env) {
     env->player_position.x = 0;
   if (env->player_position.y > env->size)
     env->player_position.y = 0;
+}
+
+void c_step(Asteroids *env) {
+  env->rewards[0] = 0;
+  env->terminals[0] = 0;
+  env->thruster_on = 0;
+
+  // only when rendering
+  if (global_game_over_timer > 0)
+    return;
+
+  int action = env->actions[0];
+  for (int i = 0; i < env->frameskip; i++) {
+    env->tick += 1;
+    step_frame(env, action);
+  }
 
   if (env->terminals[0] == 1 || env->tick > MAX_TICK) {
     env->terminals[0] = 1;

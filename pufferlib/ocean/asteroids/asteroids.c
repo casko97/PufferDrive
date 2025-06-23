@@ -1,7 +1,7 @@
 #include "asteroids.h"
 
 int main() {
-  Asteroids env = {.size = 500};
+  Asteroids env = {.size = 500, .frameskip = 1};
   env.observations = (float *)calloc(4 + 2 * 50, sizeof(float));
   env.actions = (int *)calloc(1, sizeof(int));
   env.rewards = (float *)calloc(1, sizeof(float));

@@ -5,7 +5,7 @@ import pufferlib
 from pufferlib.ocean.asteroids import binding
 
 class Asteroids(pufferlib.PufferEnv):
-    def __init__(self, num_envs=1, render_mode=None, log_interval=128, buf=None, seed=0, size=500):
+    def __init__(self, num_envs=1, render_mode=None, log_interval=128, buf=None, seed=0, size=500, frameskip=4):
         obs_shape = 4 + 2 * 50
         self.single_observation_space = gymnasium.spaces.Box(low=-5, high=5,
             shape=(obs_shape,), dtype=np.float32)
@@ -15,7 +15,7 @@ class Asteroids(pufferlib.PufferEnv):
 
         super().__init__(buf)
         self.c_envs = binding.vec_init(self.observations, self.actions, self.rewards,
-            self.terminals, self.truncations, num_envs, seed, size=size)
+            self.terminals, self.truncations, num_envs, seed, size=size, frameskip=framskip)
  
     def reset(self, seed=0):
         binding.vec_reset(self.c_envs, seed)
