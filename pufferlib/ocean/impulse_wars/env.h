@@ -735,8 +735,14 @@ float computeReward(iwEnv *e, droneEntity *drone) {
         if (enemyDrone->dead && enemyDrone->diedThisStep) {
             if (!onTeam) {
                 reward += ENEMY_DEATH_REWARD;
+                if (drone->killed[i]) {
+                    reward += ENEMY_KILL_REWARD;
+                }
             } else {
                 reward += TEAMMATE_DEATH_PUNISHMENT;
+                if (drone->killed[i]) {
+                    reward += TEAMMATE_KILL_PUNISHMENT;
+                }
             }
             continue;
         }
@@ -773,6 +779,9 @@ void computeRewards(iwEnv *e, const bool roundOver, const int8_t winner, const i
             }
         } else if (drone->diedThisStep) {
             reward = DEATH_PUNISHMENT;
+            if (drone->killedBy == drone->idx) {
+                reward += SELF_KILL_PUNISHMENT;
+            }
         }
         if (i < e->numAgents) {
             e->rewards[i] += reward;
@@ -1057,6 +1066,7 @@ void stepEnv(iwEnv *e) {
                 if (drone->dead) {
                     drone->diedThisStep = false;
                 }
+                memset(&drone->killed, 0x0, sizeof(drone->killed));
             }
 
             for (uint8_t i = 0; i < e->numDrones; i++) {
@@ -1085,7 +1095,7 @@ void stepEnv(iwEnv *e) {
                     droneBurst(e, drone);
                 }
                 if (!b2VecEqual(actions.move, b2Vec2_zero)) {
-                    droneMove(drone, actions.move);
+                    droneMove(e, drone, actions.move);
                 }
                 droneBrake(e, drone, actions.brake);
 
@@ -1222,15 +1232,15 @@ void stepEnv(iwEnv *e) {
 #ifndef NDEBUG
     bool gotReward = false;
     for (uint8_t i = 0; i < e->numDrones; i++) {
-        if (e->stats[i].returns > REWARD_EPS || e->stats[i].returns < -REWARD_EPS) {
+        if (e->rewards[i] > REWARD_EPS || e->rewards[i] < -REWARD_EPS) {
             gotReward = true;
             break;
         }
     }
     if (gotReward) {
-        DEBUG_RAW_LOG("rewards: [");
+        DEBUG_RAW_LOG("!!! rewards: [");
         for (uint8_t i = 0; i < e->numDrones; i++) {
-            const float reward = e->stats[i].returns;
+            const float reward = e->rewards[i];
             DEBUG_RAW_LOGF("%f", reward);
             if (i < e->numDrones - 1) {
                 DEBUG_RAW_LOG(", ");
