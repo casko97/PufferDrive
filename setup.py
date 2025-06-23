@@ -489,7 +489,7 @@ if not NO_TRAIN:
 
 setup(
     name="pufferlib",
-    version="3.0.0a1",
+    version="3.0.0",
     long_description_content_type="text/markdown",
     packages=find_namespace_packages() + find_packages() + c_extension_paths + ['pufferlib/extensions'],
     package_data={

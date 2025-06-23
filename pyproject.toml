@@ -1,6 +1,6 @@
 [project]
 name = "pufferlib"
-version = "3.0.0a1"
+version = "3.0.0"
 description = "Fast and sane reinforcement learning"
 requires-python = ">=3.9"
 license= {file = "LICENSE"}
