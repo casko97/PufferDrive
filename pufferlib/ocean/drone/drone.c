@@ -94,8 +94,11 @@ void generate_dummy_actions(Drone *env) {
 }
 
 void demo() {
-    Drone env = {0};
-
+    Drone env = {
+        .max_moves = 1000,
+        .max_rings = 10,
+    };
+ 
     size_t obs_size = 16;
     size_t act_size = 4;
     env.observations = (float *)calloc(obs_size, sizeof(float));
@@ -103,9 +106,9 @@ void demo() {
     env.rewards = (float *)calloc(1, sizeof(float));
     env.terminals = (unsigned char *)calloc(1, sizeof(float));
 
-    Weights* weights = load_weights("resources/drone/drone_weights.bin", 134921);
+    Weights* weights = load_weights("resources/drone/drone_weights.bin", 136073);
     int logit_sizes[1] = {4};
-    LinearContLSTM* net = make_linearcontlstm(weights, 1, 16, logit_sizes, 1);
+    LinearContLSTM* net = make_linearcontlstm(weights, 1, 25, logit_sizes, 1);
 
 
     if (!env.observations || !env.actions || !env.rewards) {
