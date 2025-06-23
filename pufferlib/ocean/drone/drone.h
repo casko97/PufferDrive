@@ -74,21 +74,13 @@ static inline float rndf(float a, float b) {
     return a + ((float)rand() / (float)RAND_MAX) * (b - a);
 }
 
-static inline Vec3 add3(Vec3 a, Vec3 b) {
-    return (Vec3){a.x+b.x, a.y+b.y, a.z+b.z};
-}
+static inline Vec3 add3(Vec3 a, Vec3 b) { return (Vec3){a.x + b.x, a.y + b.y, a.z + b.z}; }
 
-static inline Vec3 sub3(Vec3 a, Vec3 b) {
-    return (Vec3){a.x-b.x, a.y-b.y, a.z-b.z};
-}
+static inline Vec3 sub3(Vec3 a, Vec3 b) { return (Vec3){a.x - b.x, a.y - b.y, a.z - b.z}; }
 
-static inline Vec3 scalmul3(Vec3 a, float b) {
-    return (Vec3){a.x*b, a.y*b, a.z*b};
-}
+static inline Vec3 scalmul3(Vec3 a, float b) { return (Vec3){a.x * b, a.y * b, a.z * b}; }
 
-static inline float dot3(Vec3 a, Vec3 b) {
-    return a.x * b.x + a.y * b.y + a.z * b.z;
-}
+static inline float dot3(Vec3 a, Vec3 b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
 
 static inline float norm3(Vec3 a) { return sqrtf(dot3(a, a)); }
 
@@ -132,9 +124,7 @@ static inline Vec3 quat_rotate(Quat q, Vec3 v) {
     return (Vec3){res.x, res.y, res.z};
 }
 
-static inline Quat quat_inverse(Quat q) {
-    return (Quat){q.w, -q.x, -q.y, -q.z};
-}
+static inline Quat quat_inverse(Quat q) { return (Quat){q.w, -q.x, -q.y, -q.z}; }
 
 Quat rndquat() {
     float u1 = rndf(0.0f, 1.0f);
@@ -143,7 +133,7 @@ Quat rndquat() {
 
     float sqrt_1_minus_u1 = sqrtf(1.0f - u1);
     float sqrt_u1 = sqrtf(u1);
-    
+
     float pi_2_u2 = 2.0f * M_PI * u2;
     float pi_2_u3 = 2.0f * M_PI * u3;
 
@@ -206,12 +196,12 @@ struct Drone {
 
     int max_rings;
     int ring_idx;
-    Ring* ring_buffer;
-    
+    Ring *ring_buffer;
+
     int max_moves;
     int moves_left;
 
-    Vec3 pos;   // global position (x, y, z)
+    Vec3 pos; // global position (x, y, z)
     Vec3 prev_pos;
     Vec3 vel;   // linear velocity (u, v, w)
     Quat quat;  // roll/pitch/yaw (phi/theta/psi) as a quaternion
@@ -225,7 +215,7 @@ void init(Drone *env) {
     env->tick = 0;
     // one extra ring for observation (requires current ring, next ring)
     // max_rings and moves_left are initialised in binding.c
-    env->ring_buffer = (Ring*)malloc((env->max_rings + 1) * sizeof(Ring));
+    env->ring_buffer = (Ring *)malloc((env->max_rings + 1) * sizeof(Ring));
 }
 
 void add_log(Drone *env) {
@@ -239,7 +229,7 @@ void add_log(Drone *env) {
 void compute_observations(Drone *env) {
     Quat q_inv = quat_inverse(env->quat);
     Ring curr_ring = env->ring_buffer[env->ring_idx];
-    Ring next_ring = env->ring_buffer[env->ring_idx+1];
+    Ring next_ring = env->ring_buffer[env->ring_idx + 1];
 
     Vec3 to_curr_ring = quat_rotate(q_inv, sub3(curr_ring.pos, env->pos));
     Vec3 to_next_ring = quat_rotate(q_inv, sub3(next_ring.pos, env->pos));
@@ -273,7 +263,7 @@ void compute_observations(Drone *env) {
     env->observations[15] = env->omega.x / MAX_OMEGA;
     env->observations[16] = env->omega.y / MAX_OMEGA;
     env->observations[17] = env->omega.z / MAX_OMEGA;
-    
+
     env->observations[18] = drone_up_world.x;
     env->observations[19] = drone_up_world.y;
     env->observations[20] = drone_up_world.z;
@@ -352,8 +342,7 @@ void c_step(Drone *env) {
     F_world.z -= B_DRAG * env->vel.z;
 
     // world frame gravity
-    Vec3 accel = {F_world.x / MASS, F_world.y / MASS,
-                  (F_world.z / MASS) - GRAVITY};
+    Vec3 accel = {F_world.x / MASS, F_world.y / MASS, (F_world.z / MASS) - GRAVITY};
 
     // from the definition of q dot
     Quat omega_q = {0.0f, env->omega.x, env->omega.y, env->omega.z};
@@ -403,16 +392,12 @@ void c_step(Drone *env) {
     }
 
     // previous dot product negative if on the 'entry' side of the ring's plane
-    float prev_dot = dot3(
-        sub3(env->prev_pos, env->ring_buffer[env->ring_idx].pos), 
-        env->ring_buffer[env->ring_idx].normal
-    );
+    float prev_dot = dot3(sub3(env->prev_pos, env->ring_buffer[env->ring_idx].pos),
+                          env->ring_buffer[env->ring_idx].normal);
 
     // new dot product positive if on the 'exit' side of the ring's plane
-    float new_dot = dot3(
-        sub3(env->pos, env->ring_buffer[env->ring_idx].pos), 
-        env->ring_buffer[env->ring_idx].normal
-    );
+    float new_dot = dot3(sub3(env->pos, env->ring_buffer[env->ring_idx].pos),
+                         env->ring_buffer[env->ring_idx].normal);
 
     bool valid_dir = (prev_dot < 0.0f && new_dot > 0.0f);
     bool invalid_dir = (prev_dot > 0.0f && new_dot < 0.0f);
@@ -421,7 +406,8 @@ void c_step(Drone *env) {
     if (valid_dir || invalid_dir) {
         // find intesection with ring's plane
         Vec3 dir = sub3(env->pos, env->prev_pos);
-        float t = -prev_dot / dot3(env->ring_buffer[env->ring_idx].normal, dir); // possible nan
+        float t = -prev_dot / dot3(env->ring_buffer[env->ring_idx].normal,
+                                   dir); // possible nan
 
         Vec3 intersection = add3(env->prev_pos, scalmul3(dir, t));
         float dist = norm3(sub3(intersection, env->ring_buffer[env->ring_idx].pos));
@@ -463,7 +449,7 @@ void c_close_client(Client *client) {
 
 void c_close(Drone *env) {
     free(env->ring_buffer);
-    
+
     if (env->client != NULL) {
         c_close_client(env->client);
     }
@@ -525,9 +511,12 @@ Client *make_client(Drone *env) {
     client->width = WIDTH;
     client->height = HEIGHT;
 
-    SetConfigFlags(FLAG_MSAA_4X_HINT);  // antialiasing
+    SetConfigFlags(FLAG_MSAA_4X_HINT); // antialiasing
     InitWindow(WIDTH, HEIGHT, "PufferLib Drone");
+
+#ifndef __EMSCRIPTEN__
     SetTargetFPS(60);
+#endif
 
     if (!IsWindowReady()) {
         TraceLog(LOG_ERROR, "Window failed to initialize\n");
@@ -562,20 +551,15 @@ void DrawRing3D(Ring ring, float thickness, Color entryColor, Color exitColor) {
 
     Vector3 center_pos = {ring.pos.x, ring.pos.y, ring.pos.z};
 
-    Vector3 entry_start_pos = {
-        center_pos.x - half_thick * ring.normal.x,
-        center_pos.y - half_thick * ring.normal.y,
-        center_pos.z - half_thick * ring.normal.z
-    };
+    Vector3 entry_start_pos = {center_pos.x - half_thick * ring.normal.x,
+                               center_pos.y - half_thick * ring.normal.y,
+                               center_pos.z - half_thick * ring.normal.z};
 
     DrawCylinderWiresEx(entry_start_pos, center_pos, ring.radius, ring.radius, 32, entryColor);
 
-
-    Vector3 exit_end_pos = {
-        center_pos.x + half_thick * ring.normal.x,
-        center_pos.y + half_thick * ring.normal.y,
-        center_pos.z + half_thick * ring.normal.z
-    };
+    Vector3 exit_end_pos = {center_pos.x + half_thick * ring.normal.x,
+                            center_pos.y + half_thick * ring.normal.y,
+                            center_pos.z + half_thick * ring.normal.z};
 
     DrawCylinderWiresEx(center_pos, exit_end_pos, ring.radius, ring.radius, 32, exitColor);
 }
@@ -604,7 +588,8 @@ void c_render(Drone *env) {
     Client *client = env->client;
     client->trail[client->trail_index] = env->pos;
     client->trail_index = (client->trail_index + 1) % TRAIL_LENGTH;
-    if (client->trail_count < TRAIL_LENGTH) client->trail_count++;
+    if (client->trail_count < TRAIL_LENGTH)
+        client->trail_count++;
 
     BeginDrawing();
     ClearBackground((Color){6, 24, 24, 255});
@@ -612,8 +597,8 @@ void c_render(Drone *env) {
     BeginMode3D(client->camera);
 
     // draws bounding cube
-    DrawCubeWires((Vector3){0.0f, 0.0f, 0.0f}, GRID_SIZE * 2.0f,
-                  GRID_SIZE * 2.0f, GRID_SIZE * 2.0f, WHITE);
+    DrawCubeWires((Vector3){0.0f, 0.0f, 0.0f}, GRID_SIZE * 2.0f, GRID_SIZE * 2.0f, GRID_SIZE * 2.0f,
+                  WHITE);
 
     // draws drone body
     DrawSphere((Vector3){env->pos.x, env->pos.y, env->pos.z}, 0.3f, RED);
@@ -644,22 +629,20 @@ void c_render(Drone *env) {
         float rpm = (env->actions[i] + 1.0f) * 0.5f * MAX_RPM;
         float intensity = 0.75f + 0.25f * (rpm / MAX_RPM);
 
-        Color rotor_color =
-            (Color){(unsigned char)(base_colors[i].r * intensity),
-                    (unsigned char)(base_colors[i].g * intensity),
-                    (unsigned char)(base_colors[i].b * intensity), 255};
+        Color rotor_color = (Color){(unsigned char)(base_colors[i].r * intensity),
+                                    (unsigned char)(base_colors[i].g * intensity),
+                                    (unsigned char)(base_colors[i].b * intensity), 255};
 
         DrawSphere(rotor_pos, rotor_radius, rotor_color);
 
-        DrawCylinderEx((Vector3){env->pos.x, env->pos.y, env->pos.z}, rotor_pos,
-                       0.02f, 0.02f, 8, BLACK);
+        DrawCylinderEx((Vector3){env->pos.x, env->pos.y, env->pos.z}, rotor_pos, 0.02f, 0.02f, 8,
+                       BLACK);
     }
-    
+
     // draws line with direction and magnitude of velocity / 10
     if (norm3(env->vel) > 0.1f) {
         DrawLine3D((Vector3){env->pos.x, env->pos.y, env->pos.z},
-                   (Vector3){env->pos.x + env->vel.x * 0.1f,
-                             env->pos.y + env->vel.y * 0.1f,
+                   (Vector3){env->pos.x + env->vel.x * 0.1f, env->pos.y + env->vel.y * 0.1f,
                              env->pos.z + env->vel.z * 0.1f},
                    MAGENTA);
     }
@@ -670,21 +653,20 @@ void c_render(Drone *env) {
         int idx1 = (client->trail_index + i - 1) % TRAIL_LENGTH;
         float alpha = (float)i / client->trail_count * 0.8f; // fade out
         Color trail_color = ColorAlpha(YELLOW, alpha);
-        DrawLine3D(
-            (Vector3){client->trail[idx0].x, client->trail[idx0].y, client->trail[idx0].z},
-            (Vector3){client->trail[idx1].x, client->trail[idx1].y, client->trail[idx1].z},
-            trail_color);
+        DrawLine3D((Vector3){client->trail[idx0].x, client->trail[idx0].y, client->trail[idx0].z},
+                   (Vector3){client->trail[idx1].x, client->trail[idx1].y, client->trail[idx1].z},
+                   trail_color);
     }
 
     // draws current and previous ring
     float ring_thickness = 0.2f;
     DrawRing3D(env->ring_buffer[env->ring_idx], ring_thickness, GREEN, BLUE);
     if (env->ring_idx > 0) {
-        DrawRing3D(env->ring_buffer[env->ring_idx-1], ring_thickness, GREEN, BLUE);
+        DrawRing3D(env->ring_buffer[env->ring_idx - 1], ring_thickness, GREEN, BLUE);
     }
 
     EndMode3D();
-    
+
     // Draw 2D stats
     DrawText(TextFormat("Targets left: %d", env->max_rings - env->ring_idx), 10, 10, 20, WHITE);
     DrawText(TextFormat("Moves left: %d", env->moves_left), 10, 40, 20, WHITE);
@@ -696,7 +678,8 @@ void c_render(Drone *env) {
     DrawText(TextFormat("Right: %.3f", T[2]), 10, 175, 18, LIME);
     DrawText(TextFormat("Left:  %.3f", T[3]), 10, 195, 18, SKYBLUE);
 
-    DrawText(TextFormat("Pos: (%.1f, %.1f, %.1f)", env->pos.x, env->pos.y, env->pos.z), 10, 225, 18, WHITE);
+    DrawText(TextFormat("Pos: (%.1f, %.1f, %.1f)", env->pos.x, env->pos.y, env->pos.z), 10, 225, 18,
+             WHITE);
     DrawText(TextFormat("Vel: %.2f m/s", norm3(env->vel)), 10, 245, 18, WHITE);
 
     DrawText("Left click + drag: Rotate camera", 10, 275, 16, LIGHTGRAY);
