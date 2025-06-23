@@ -465,7 +465,7 @@ for key, value in cfg_vars.items():
         cfg_vars[key] = value.replace('-fno-strict-overflow', '')
 
 install_requires = [
-    'numpy',
+    'numpy<2.0',
     f'gym<={GYM_VERSION}',
     f'gymnasium<={GYMNASIUM_VERSION}',
     f'pettingzoo<={PETTINGZOO_VERSION}',
