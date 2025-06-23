@@ -318,6 +318,9 @@ void compute_observations(Asteroids *env) {
         (as.position.x - env->player_position.x) / env->size;
     env->observations[observation_indx++] =
         (as.position.y - env->player_position.y) / env->size;
+    env->observations[observation_indx++] = as.velocity.x;
+    env->observations[observation_indx++] = as.velocity.y;
+    env->observations[observation_indx++] = (float)as.radius / 40;
   }
 }
 

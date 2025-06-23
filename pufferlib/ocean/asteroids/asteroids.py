@@ -6,10 +6,10 @@ from pufferlib.ocean.asteroids import binding
 
 class Asteroids(pufferlib.PufferEnv):
     def __init__(self, num_envs=1, render_mode=None, log_interval=128, buf=None, seed=0, size=500, frameskip=4):
-        obs_shape = 4 + 2 * 50
+        obs_shape = 4 + 5 * 20  # player pos, player vel, [asteroid pos, asteroid vel, asteroid size] x num asteroids
         self.single_observation_space = gymnasium.spaces.Box(low=-5, high=5,
             shape=(obs_shape,), dtype=np.float32)
-        self.single_action_space = gymnasium.spaces.Discrete(4)
+        self.single_action_space = gymnasium.spaces.Discrete(4)  # forward, left, right, shoot
         self.render_mode = render_mode
         self.num_agents = num_envs
 
