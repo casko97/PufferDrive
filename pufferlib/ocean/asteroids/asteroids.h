@@ -47,6 +47,7 @@ typedef struct {
   Vector2 position;
   Vector2 velocity;
   int radius;
+  int radius_sq;
   Vector2 shape[12];
   int num_vertices;
 } Asteroid;
@@ -186,15 +187,15 @@ void spawn_asteroids(Asteroids *env) {
     switch (rand() % 3) {
     case 0:
       // small
-      as = (Asteroid){start_pos, direction, 10};
+      as = (Asteroid){start_pos, direction, 10, 100};
       break;
     case 1:
       // medium
-      as = (Asteroid){start_pos, direction, 20};
+      as = (Asteroid){start_pos, direction, 20, 400};
       break;
     default:
       // big
-      as = (Asteroid){start_pos, direction, 40};
+      as = (Asteroid){start_pos, direction, 40, 1600};
       break;
     }
     env->asteroid_index = (env->asteroid_index + 1) % MAX_ASTEROIDS;
@@ -204,10 +205,10 @@ void spawn_asteroids(Asteroids *env) {
   }
 }
 
-int particle_asteroid_collision(Asteroids *env, Particle p, Asteroid as) {
-  float dx = p.position.x - as.position.x;
-  float dy = p.position.y - as.position.y;
-  return as.radius * as.radius > dx * dx + dy * dy;
+int particle_asteroid_collision(Asteroids *env, int i, int j) {
+  float dx = env->particles[i].position.x - env->asteroids[j].position.x;
+  float dy = env->particles[i].position.y - env->asteroids[j].position.y;
+  return env->asteroids[j].radius_sq > dx * dx + dy * dy;
 }
 
 void split_asteroid(Asteroids *env, int size, int j) {
@@ -251,36 +252,30 @@ void split_asteroid(Asteroids *env, int size, int j) {
 }
 
 void check_particle_asteroid_collision(Asteroids *env) {
-  Particle p;
-  Asteroid as;
   for (int i = 0; i < MAX_PARTICLES; i++) {
-    p = env->particles[i];
-    if (p.position.x == 0 && p.position.y == 0)
+    if (env->particles[i].position.x == 0 && env->particles[i].position.y == 0)
       continue;
 
     for (int j = 0; j < MAX_ASTEROIDS; j++) {
-      as = env->asteroids[j];
-      if (as.radius == 0)
+      if (env->asteroids[j].radius == 0)
         continue;
 
-      if (particle_asteroid_collision(env, p, as)) {
-        env->particles[i] = (Particle){};
+      if (particle_asteroid_collision(env, i, j)) {
+        // env->particles[i] = (Particle){};
+        memset(&env->particles[i], 0, sizeof(env->particles[i]));
+        env->score += 1;
+        env->rewards[0] += 1.0f;
 
-        switch (as.radius) {
+        switch (env->asteroids[j].radius) {
         case 10:
-          env->score += 1;
-          env->rewards[0] += 1.0f;
-          env->asteroids[j] = (Asteroid){};
+          // env->asteroids[j] = (Asteroid){};
+          memset(&env->asteroids[j], 0, sizeof(env->asteroids[j]));
           break;
         case 20:
-          env->score += 1;
-          env->rewards[0] += 1.0f;
-          split_asteroid(env, as.radius, j);
+          split_asteroid(env, env->asteroids[j].radius, j);
           break;
         default:
-          env->score += 1;
-          env->rewards[0] += 1.0f;
-          split_asteroid(env, as.radius, j);
+          split_asteroid(env, env->asteroids[j].radius, j);
           break;
         }
         break;
