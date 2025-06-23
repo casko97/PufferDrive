@@ -35,7 +35,7 @@ class Asteroids(pufferlib.PufferEnv):
         binding.vec_close(self.c_envs)
 
 if __name__ == '__main__':
-    N = 1
+    N = 4096
     env = Asteroids(num_envs=N)
     env.reset()
     steps = 0
@@ -49,4 +49,5 @@ if __name__ == '__main__':
         env.step(actions[steps % CACHE])
         steps += 1
 
-    print('Asteroids SPS:', int(env.num_agents*steps / (time.time() - start)))
+    sps = int(env.num_agents*steps / (time.time() - start))
+    print(f'Asteroids SPS: {sps:,}')

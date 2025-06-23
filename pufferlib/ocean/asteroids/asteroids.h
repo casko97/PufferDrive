@@ -8,7 +8,7 @@
 #include <sys/time.h>
 
 #define MAX_PARTICLES 10
-#define MAX_ASTEROIDS 50
+#define MAX_ASTEROIDS 20
 
 const unsigned char FORWARD = 0;
 const unsigned char TURN_LEFT = 1;
@@ -21,6 +21,8 @@ const float PARTICLE_SPEED = 7.0f;
 const float ROTATION_SPEED = 0.1f;
 const float ASTEROID_SPEED = 3.0f;
 const float SHOOT_DELAY = 0.3f;
+
+const int MAX_TICK = 60;
 
 const int DEBUG = 0;
 
@@ -404,7 +406,7 @@ void c_step(Asteroids *env) {
   if (env->player_position.y > env->size)
     env->player_position.y = 0;
 
-  if (env->terminals[0] == 1 || env->tick > 1500) {
+  if (env->terminals[0] == 1 || env->tick > MAX_TICK) {
     env->terminals[0] = 1;
     add_log(env);
     c_reset(env);
@@ -514,6 +516,7 @@ void c_render(Asteroids *env) {
   draw_asteroids(env);
 
   DrawText(TextFormat("Score: %d", env->score), 10, 10, 20, RAYWHITE);
+  DrawText(TextFormat("%d s", (int)(env->tick / 60)), env->size - 40, 10, 20, RAYWHITE);
 
   if (global_game_over_timer > 0) {
     const char *game_over_text = "GAME OVER";
@@ -524,7 +527,7 @@ void c_render(Asteroids *env) {
     float alpha = (float)global_game_over_timer / 120.0f;
     int alpha_value = (int)(alpha * 255);
 
-    Color text_color = (Color){230, 41, 55, alpha_value};
+    Color text_color = ColorAlpha(RED, alpha_value);
     DrawTextEx(GetFontDefault(), game_over_text, (Vector2){x, y}, 40, 2,
                text_color);
   }
