@@ -5,7 +5,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/time.h>
 
 #define MAX_PARTICLES 10
 #define MAX_ASTEROIDS 20
@@ -20,7 +19,7 @@ const float SPEED = 0.6f;
 const float PARTICLE_SPEED = 7.0f;
 const float ROTATION_SPEED = 0.1f;
 const float ASTEROID_SPEED = 3.0f;
-const float SHOOT_DELAY = 0.3f;
+const int SHOOT_DELAY = 18;
 
 const int MAX_TICK = 3600;
 
@@ -29,6 +28,7 @@ const int DEBUG = 0;
 // for render only game over state
 static int global_game_over_timer = 0;
 static int global_game_over_started = 0;
+static int global_render_flag = 0;
 
 typedef struct {
   float perf;
@@ -67,7 +67,7 @@ typedef struct {
   int particle_index;
   Asteroid asteroids[MAX_ASTEROIDS];
   int asteroid_index;
-  struct timeval last_shot;
+  int last_shot;
   int tick;
   int score;
   int frameskip;
@@ -199,7 +199,8 @@ void spawn_asteroids(Asteroids *env) {
     }
     env->asteroid_index = (env->asteroid_index + 1) % MAX_ASTEROIDS;
     env->asteroids[env->asteroid_index] = as;
-    generate_asteroid_shape(&env->asteroids[env->asteroid_index]);
+    if (global_render_flag)
+      generate_asteroid_shape(&env->asteroids[env->asteroid_index]);
   }
 }
 
@@ -345,7 +346,7 @@ void c_reset(Asteroids *env) {
   env->asteroid_index = 0;
   env->tick = 0;
   env->score = 0;
-  gettimeofday(&env->last_shot, NULL);
+  env->last_shot = 0;
 }
 
 void step_frame(Asteroids *env, int action) {
@@ -365,14 +366,10 @@ void step_frame(Asteroids *env, int action) {
     env->thruster_on = 1;
   }
 
-  struct timeval now;
-  struct timeval start = env->last_shot;
-  gettimeofday(&now, NULL);
+  int elapsed = env->tick - env->last_shot;
 
-  double elapsed =
-      (now.tv_sec - start.tv_sec) + (now.tv_usec - start.tv_usec) / 1e6;
   if (action == SHOOT && elapsed >= SHOOT_DELAY) {
-    gettimeofday(&env->last_shot, NULL);
+    env->last_shot = env->tick;
     env->particle_index = (env->particle_index + 1) % MAX_PARTICLES;
     Vector2 start_pos = (Vector2){env->player_position.x + 20 * dir.x,
                                   env->player_position.y + 20 * dir.y};
@@ -500,6 +497,7 @@ void c_render(Asteroids *env) {
     InitWindow(env->size, env->size, "PufferLib Asteroids");
     SetConfigFlags(FLAG_MSAA_4X_HINT);
     SetTargetFPS(60);
+    global_render_flag = 1;
   }
 
   if (IsKeyDown(KEY_ESCAPE)) {

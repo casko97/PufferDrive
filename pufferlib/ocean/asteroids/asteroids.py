@@ -15,7 +15,7 @@ class Asteroids(pufferlib.PufferEnv):
 
         super().__init__(buf)
         self.c_envs = binding.vec_init(self.observations, self.actions, self.rewards,
-            self.terminals, self.truncations, num_envs, seed, size=size, frameskip=framskip)
+            self.terminals, self.truncations, num_envs, seed, size=size, frameskip=frameskip)
  
     def reset(self, seed=0):
         binding.vec_reset(self.c_envs, seed)
