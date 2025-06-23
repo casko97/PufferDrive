@@ -137,6 +137,7 @@ const float discAimToContAimMap[2][16] = {
 };
 
 const float MIN_SPAWN_DISTANCE = 6.0f;
+const float MIN_SD_SPAWN_DISTANCE = 3.0f;
 
 // wall settings
 const float WALL_THICKNESS = 4.0f;

@@ -93,6 +93,7 @@ typedef struct mapEntry {
     const bool hasSetFloatingWalls;
     const uint16_t weaponPickups;
     const enum weaponType defaultWeapon;
+    const uint8_t maxSuddenDeathWalls;
 
     mapBounds bounds;
     mapBounds spawnQuads[4];

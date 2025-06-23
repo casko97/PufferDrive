@@ -86,12 +86,11 @@ rayClient *createRayClient() {
 #ifndef __EMSCRIPTEN__
         const int monitor = GetCurrentMonitor();
         client->height = GetMonitorHeight(monitor) - HEIGHT_LEEWAY;
+        client->width = ((float)client->height * ((float)DEFAULT_WIDTH / (float)DEFAULT_HEIGHT));
 #else
+        client->width = DEFAULT_WIDTH;
         client->height = DEFAULT_HEIGHT;
 #endif
-    }
-    if (client->width == 0) {
-        client->width = ((float)client->height * ((float)DEFAULT_WIDTH / (float)DEFAULT_HEIGHT));
     }
     client->scale = (float)client->height * (float)(DEFAULT_SCALE / DEFAULT_HEIGHT);
 

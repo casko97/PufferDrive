@@ -311,7 +311,8 @@ bool findOpenPos(iwEnv *e, const enum shapeCategory shapeType, b2Vec2 *emptyPos,
     uint8_t checkedCells[BITNSLOTS(MAX_CELLS)] = {0};
     const size_t nCells = cc_array_size(e->cells) - 1;
     uint16_t attempts = 0;
-    bool skipDistanceChecks = false;
+    bool laxDroneDistanceChecks = false;
+    float minSpawnDistance = MIN_SPAWN_DISTANCE;
 
     while (true) {
         if (attempts == nCells) {
@@ -319,10 +320,11 @@ bool findOpenPos(iwEnv *e, const enum shapeCategory shapeType, b2Vec2 *emptyPos,
             // death walls have been placed, try again this time ignoring
             // distance checks; the drone must be spawned next
             // to a death wall in this case
-            if (shapeType == DRONE_SHAPE && e->suddenDeathWallsPlaced && !skipDistanceChecks) {
+            if (shapeType == DRONE_SHAPE && e->suddenDeathWallsPlaced && !laxDroneDistanceChecks) {
                 attempts = 0;
                 memset(checkedCells, 0x0, BITNSLOTS(MAX_CELLS));
-                skipDistanceChecks = true;
+                laxDroneDistanceChecks = true;
+                minSpawnDistance = MIN_SD_SPAWN_DISTANCE;
                 continue;
             }
             return false;
@@ -350,13 +352,11 @@ bool findOpenPos(iwEnv *e, const enum shapeCategory shapeType, b2Vec2 *emptyPos,
         if (cell->ent != NULL) {
             continue;
         }
-        if (skipDistanceChecks) {
-            return true;
-        }
 
-        if (shapeType == WEAPON_PICKUP_SHAPE) {
+        bool tooClose = false;
+        switch (shapeType) {
+        case WEAPON_PICKUP_SHAPE:
             // ensure pickups don't spawn too close to other pickups
-            bool tooClose = false;
             for (uint8_t i = 0; i < cc_array_size(e->pickups); i++) {
                 const weaponPickupEntity *pickup = safe_array_get_at(e->pickups, i);
                 if (b2DistanceSquared(cell->pos, pickup->pos) < PICKUP_SPAWN_DISTANCE_SQUARED) {
@@ -367,29 +367,47 @@ bool findOpenPos(iwEnv *e, const enum shapeCategory shapeType, b2Vec2 *emptyPos,
             if (tooClose) {
                 continue;
             }
-        } else if (shapeType == DRONE_SHAPE) {
+            break;
+        case DRONE_SHAPE:
             if (e->suddenDeathWallsPlaced) {
-                // if sudden death walls have been placed, ignore the
-                // spawn points as they may be covered by death walls;
-                // instead just try and find a cell that doesn't neighbor
-                // a death wall
-                const uint8_t cellCol = cellIdx / e->map->columns;
-                const uint8_t cellRow = cellIdx % e->map->columns;
-                bool deathWallNeighboring = false;
-                for (uint8_t i = 0; i < 8; i++) {
-                    const int8_t col = cellCol + cellOffsets[i][0];
-                    const int8_t row = cellRow + cellOffsets[i][1];
-                    if (row < 0 || row >= e->map->rows || col < 0 || col >= e->map->columns) {
+                if (!laxDroneDistanceChecks) {
+                    // if sudden death walls have been placed, ignore the
+                    // spawn points as they may be covered by death walls;
+                    // instead just try and find a cell that doesn't neighbor
+                    // a death wall
+                    const uint8_t cellCol = cellIdx / e->map->columns;
+                    const uint8_t cellRow = cellIdx % e->map->columns;
+                    bool deathWallNeighboring = false;
+                    for (uint8_t i = 0; i < 8; i++) {
+                        const int8_t col = cellCol + cellOffsets[i][0];
+                        const int8_t row = cellRow + cellOffsets[i][1];
+                        if (row < 0 || row >= e->map->rows || col < 0 || col >= e->map->columns) {
+                            continue;
+                        }
+                        const int16_t testCellIdx = cellIndex(e, col, row);
+                        const mapCell *testCell = safe_array_get_at(e->cells, testCellIdx);
+                        if (testCell->ent != NULL && testCell->ent->type == DEATH_WALL_ENTITY) {
+                            deathWallNeighboring = true;
+                            break;
+                        }
+                    }
+                    if (deathWallNeighboring) {
                         continue;
                     }
-                    const int16_t testCellIdx = cellIndex(e, col, row);
-                    const mapCell *testCell = safe_array_get_at(e->cells, testCellIdx);
-                    if (testCell->ent != NULL && testCell->ent->type == DEATH_WALL_ENTITY) {
-                        deathWallNeighboring = true;
+                }
+
+                // ensure drones aren't spawning on top of each other
+                for (uint8_t i = 0; i < cc_array_size(e->drones); i++) {
+                    const droneEntity *drone = safe_array_get_at(e->drones, i);
+                    if (drone->dead) {
+                        continue;
+                    }
+                    if (b2DistanceSquared(cell->pos, drone->pos) == 0.0f) {
+                        tooClose = true;
                         break;
                     }
                 }
-                if (deathWallNeighboring) {
+                if (tooClose) {
                     continue;
                 }
             } else {
@@ -398,9 +416,11 @@ bool findOpenPos(iwEnv *e, const enum shapeCategory shapeType, b2Vec2 *emptyPos,
                 }
 
                 // ensure drones don't spawn too close to other drones
-                bool tooClose = false;
                 for (uint8_t i = 0; i < cc_array_size(e->drones); i++) {
                     const droneEntity *drone = safe_array_get_at(e->drones, i);
+                    if (drone->dead) {
+                        continue;
+                    }
                     if (b2DistanceSquared(cell->pos, drone->pos) < DRONE_DRONE_SPAWN_DISTANCE_SQUARED) {
                         tooClose = true;
                         break;
@@ -410,17 +430,20 @@ bool findOpenPos(iwEnv *e, const enum shapeCategory shapeType, b2Vec2 *emptyPos,
                     continue;
                 }
             }
+            break;
+        default:
+            break;
         }
 
         uint64_t maskBits = FLOATING_WALL_SHAPE | WEAPON_PICKUP_SHAPE | DRONE_SHAPE;
-        if (shapeType != FLOATING_WALL_SHAPE) {
+        if (shapeType != FLOATING_WALL_SHAPE && !laxDroneDistanceChecks) {
             maskBits &= ~shapeType;
         }
         const b2QueryFilter filter = {
             .categoryBits = shapeType,
             .maskBits = maskBits,
         };
-        if (!isOverlappingAABB(e, cell->pos, MIN_SPAWN_DISTANCE, filter)) {
+        if (!isOverlappingAABB(e, cell->pos, minSpawnDistance, filter)) {
             *emptyPos = cell->pos;
             return true;
         }
@@ -958,7 +981,9 @@ void findDroneKiller(const iwEnv *e, droneEntity *drone) {
             killer = i;
         }
     }
-    ASSERT(killer != -1);
+    if (killer == -1) {
+        return;
+    }
 
     DEBUG_LOGF(">>> drone %d killed by drone %d", drone->idx, killer);
 
@@ -1647,9 +1672,11 @@ void createSuddenDeathWalls(iwEnv *e, const b2Vec2 startPos, const b2Vec2 size) 
     }
 }
 
-// TODO: handle when all walls are placed
 void handleSuddenDeath(iwEnv *e) {
     ASSERT(e->suddenDeathSteps == 0);
+    if (e->suddenDeathWallCounter >= e->map->maxSuddenDeathWalls) {
+        return;
+    }
 
     // create new walls that will close in on the arena
     e->suddenDeathWallCounter++;
