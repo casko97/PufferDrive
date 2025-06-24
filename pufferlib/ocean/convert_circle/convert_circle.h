@@ -6,7 +6,6 @@
 
 #include "raylib.h"
 #include <math.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -117,7 +116,6 @@ void c_reset(ConvertCircle *env) {
     }
     env->factories[i].x = env->width / 2.0f + env->radius * cosf(angle);
     env->factories[i].y = env->height / 2.0f + env->radius * sinf(angle);
-    printf("%f, %f\n", env->factories[i].x, env->factories[i].y);
     env->factories[i].item = i % env->num_resources;
     env->factories[i].heading = (rand() % 360) * PI / 180.0f;
   }
