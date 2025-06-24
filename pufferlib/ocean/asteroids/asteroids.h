@@ -131,15 +131,14 @@ void move_particles(Asteroids *env) {
 }
 
 void move_asteroids(Asteroids *env) {
-  Asteroid as;
+  Asteroid *as;
   for (int i = 0; i < MAX_ASTEROIDS; i++) {
-    as = env->asteroids[i];
-    if (as.radius == 0)
+    as = &env->asteroids[i];
+    if (as->radius == 0)
       continue;
 
-    as.position.x += as.velocity.x * ASTEROID_SPEED;
-    as.position.y += as.velocity.y * ASTEROID_SPEED;
-    env->asteroids[i] = as;
+    as->position.x += as->velocity.x * ASTEROID_SPEED;
+    as->position.y += as->velocity.y * ASTEROID_SPEED;
   }
 }
 
@@ -205,17 +204,16 @@ void spawn_asteroids(Asteroids *env) {
   }
 }
 
-int particle_asteroid_collision(Asteroids *env, int i, int j) {
-  float dx = env->particles[i].position.x - env->asteroids[j].position.x;
-  float dy = env->particles[i].position.y - env->asteroids[j].position.y;
-  return env->asteroids[j].radius_sq > dx * dx + dy * dy;
+int particle_asteroid_collision(Asteroids *env, Particle *p, Asteroid *as) {
+  float dx = p->position.x - as->position.x;
+  float dy = p->position.y - as->position.y;
+  return as->radius_sq > dx * dx + dy * dy;
 }
 
-void split_asteroid(Asteroids *env, int size, int j) {
-  Asteroid as = env->asteroids[j];
-  int new_radius = size == 40 ? 20 : 10;
+void split_asteroid(Asteroids *env, Asteroid *as) {
+  int new_radius = as->radius == 40 ? 20 : 10;
 
-  float original_angle = atan2f(as.velocity.y, as.velocity.x);
+  float original_angle = atan2f(as->velocity.y, as->velocity.x);
 
   float offset1 = random_float(-PI / 4, PI / 4);
   float offset2 = random_float(-PI / 4, PI / 4);
@@ -237,45 +235,50 @@ void split_asteroid(Asteroids *env, int size, int j) {
     direction2.y /= len2;
   }
 
-  Vector2 start_pos = (Vector2){as.position.x, as.position.y};
+  Vector2 start_pos = (Vector2){as->position.x, as->position.y};
 
   int new_index1 = (env->asteroid_index + 1) % MAX_ASTEROIDS;
   int new_index2 = (new_index1 + 1) % MAX_ASTEROIDS;
 
-  env->asteroids[j] = (Asteroid){start_pos, direction1, new_radius};
+  as->position = start_pos;
+  as->velocity = direction1;
+  as->radius = new_radius;
+  as->radius_sq = new_radius * new_radius;
   env->asteroids[new_index1] = (Asteroid){start_pos, direction2, new_radius};
   env->asteroid_index = new_index2;
 
   // Generate shapes for the new asteroids
-  generate_asteroid_shape(&env->asteroids[j]);
+  generate_asteroid_shape(as);
   generate_asteroid_shape(&env->asteroids[new_index1]);
 }
 
 void check_particle_asteroid_collision(Asteroids *env) {
+  Particle *p;
+  Asteroid *as;
   for (int i = 0; i < MAX_PARTICLES; i++) {
-    if (env->particles[i].position.x == 0 && env->particles[i].position.y == 0)
+    p = &env->particles[i];
+    if (p->position.x == 0 && p->position.y == 0)
       continue;
 
     for (int j = 0; j < MAX_ASTEROIDS; j++) {
-      if (env->asteroids[j].radius == 0)
+      as = &env->asteroids[j];
+      if (as->radius == 0)
         continue;
 
-      if (particle_asteroid_collision(env, i, j)) {
-        // env->particles[i] = (Particle){};
-        memset(&env->particles[i], 0, sizeof(env->particles[i]));
+      if (particle_asteroid_collision(env, p, as)) {
+        memset(p, 0, sizeof(*p));
         env->score += 1;
         env->rewards[0] += 1.0f;
 
-        switch (env->asteroids[j].radius) {
+        switch (as->radius) {
         case 10:
-          // env->asteroids[j] = (Asteroid){};
-          memset(&env->asteroids[j], 0, sizeof(env->asteroids[j]));
+          memset(as, 0, sizeof(*as));
           break;
         case 20:
-          split_asteroid(env, env->asteroids[j].radius, j);
+          split_asteroid(env, as);
           break;
         default:
-          split_asteroid(env, env->asteroids[j].radius, j);
+          split_asteroid(env, as);
           break;
         }
         break;
@@ -287,15 +290,15 @@ void check_particle_asteroid_collision(Asteroids *env) {
 void check_player_asteroid_collision(Asteroids *env) {
   float min_dist;
   float dx, dy;
-  Asteroid as;
+  Asteroid *as;
   for (int i = 0; i < MAX_ASTEROIDS; i++) {
-    as = env->asteroids[i];
-    if (as.radius == 0)
+    as = &env->asteroids[i];
+    if (as->radius == 0)
       continue;
 
-    min_dist = env->player_radius + as.radius;
-    dx = env->player_position.x - as.position.x;
-    dy = env->player_position.y - as.position.y;
+    min_dist = env->player_radius + as->radius;
+    dx = env->player_position.x - as->position.x;
+    dy = env->player_position.y - as->position.y;
     if (min_dist * min_dist > dx * dx + dy * dy) {
       env->terminals[0] = 1;
       return;
