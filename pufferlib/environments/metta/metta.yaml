@@ -7,7 +7,7 @@ normalize_rewards: false
 sampling: 0
 desync_episodes: true
 game:
-  num_agents: 24
+  num_agents: 512
   obs_width: 11
   obs_height: 11
   num_observation_tokens: 128
@@ -19,7 +19,7 @@ game:
     diversity_coef: 0.5   # Coefficient for between-group diversity
 
   agent:
-    default_item_max: 50
+    default_item_max: 10
     # the agent should be able to pick up as many hearts as they want, even if
     # "normal" item limits are lower
     heart_max: 255
@@ -226,21 +226,21 @@ game:
 
   map_builder:
     _target_: metta.mettagrid.room.multi_room.MultiRoom
-    num_rooms: 4
+    num_rooms: 1
     border_width: 6
 
     room:
       _target_: metta.mettagrid.room.random.Random
-      width: 25
-      height: 25
+      width: 256
+      height: 256
       border_width: 0
 
-      agents: 6
+      agents: 512
 
       objects:
-        mine: 10
-        generator: 2
-        altar: 1
+        mine: 1024
+        generator: 512
+        altar: 256
         armory: 0
         lasery: 0
         lab: 0
