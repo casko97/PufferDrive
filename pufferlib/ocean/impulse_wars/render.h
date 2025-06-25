@@ -86,12 +86,11 @@ rayClient *createRayClient() {
 #ifndef __EMSCRIPTEN__
         const int monitor = GetCurrentMonitor();
         client->height = GetMonitorHeight(monitor) - HEIGHT_LEEWAY;
+        client->width = ((float)client->height * ((float)DEFAULT_WIDTH / (float)DEFAULT_HEIGHT));
 #else
+        client->width = DEFAULT_WIDTH;
         client->height = DEFAULT_HEIGHT;
 #endif
-    }
-    if (client->width == 0) {
-        client->width = ((float)client->height * ((float)DEFAULT_WIDTH / (float)DEFAULT_HEIGHT));
     }
     client->scale = (float)client->height * (float)(DEFAULT_SCALE / DEFAULT_HEIGHT);
 
@@ -127,7 +126,7 @@ rayClient *createRayClient() {
     client->projRawTex = LoadRenderTexture(client->width, client->height);
     client->projBloomTex = LoadRenderTexture(client->width, client->height);
 
-    const char *gridVSPath = TextFormat("resources/impulse_wars/shaders/gls%i/grid.vs", GLSL_VERSION);
+    const char *gridVSPath = TextFormat("resources/impulse_wars/shaders/gls%i/shader.vs", GLSL_VERSION);
     const char *gridFSPath = TextFormat("resources/impulse_wars/shaders/gls%i/grid.fs", GLSL_VERSION);
     client->gridShader = LoadShader(gridVSPath, gridFSPath);
     for (int i = 0; i < 4; i++) {
@@ -135,12 +134,12 @@ rayClient *createRayClient() {
         client->gridShaderColorLoc[i] = GetShaderLocation(client->gridShader, TextFormat("color[%i]", i));
     }
 
-    const char *blurVSPath = TextFormat("resources/impulse_wars/shaders/gls%i/blur.vs", GLSL_VERSION);
+    const char *blurVSPath = TextFormat("resources/impulse_wars/shaders/gls%i/shader.vs", GLSL_VERSION);
     const char *blurFSPath = TextFormat("resources/impulse_wars/shaders/gls%i/blur.fs", GLSL_VERSION);
     client->blurShader = LoadShader(blurVSPath, blurFSPath);
     client->blurShaderDirLoc = GetShaderLocation(client->blurShader, "uTexelDir");
 
-    const char *bloomVSPath = TextFormat("resources/impulse_wars/shaders/gls%i/bloom.vs", GLSL_VERSION);
+    const char *bloomVSPath = TextFormat("resources/impulse_wars/shaders/gls%i/shader.vs", GLSL_VERSION);
     const char *bloomFSPath = TextFormat("resources/impulse_wars/shaders/gls%i/bloom.fs", GLSL_VERSION);
     client->bloomShader = LoadShader(bloomVSPath, bloomFSPath);
     int32_t bloomModeLoc = GetShaderLocation(client->bloomShader, "uBloomMode");
@@ -827,6 +826,13 @@ void renderUI(const iwEnv *e, const bool starting) {
         }
 
         DrawText(droneInfo, x, y, fontSize, textColor);
+
+        if (drone->killedBy != -1) {
+            y += textSize.y + e->client->scale;
+            const char *killedBy = TextFormat("Killed by Player %d", drone->killedBy + 1);
+
+            DrawText(killedBy, x, y, fontSize, getDroneColor(drone->killedBy));
+        }
     }
 
     // render timer
@@ -1418,24 +1424,25 @@ void renderProjectile(const projectileEntity *projectile) {
 }
 
 void renderBannerText(iwEnv *e, const bool starting, const int8_t winner, const int8_t winningTeam) {
-    char *winStr;
-    Color color = PUFF_WHITE;
+    const uint16_t fontSize = 5 * e->client->scale;
+
+    char *bannerStr = NULL;
+    Color winColor = PUFF_WHITE;
 
     if (starting) {
-        winStr = "Ready?";
+        bannerStr = "Ready?";
     } else if (winner == -1 && winningTeam == -1) {
-        winStr = "Tie";
+        bannerStr = "Tie";
     } else if (e->teamsEnabled) {
-        winStr = (char *)TextFormat("Team %d wins!", winningTeam + 1);
+        bannerStr = (char *)TextFormat("Team %d wins!", winningTeam + 1);
     } else {
-        winStr = (char *)TextFormat("Player %d wins!", winner + 1);
-        color = getDroneColor(winner);
+        bannerStr = (char *)TextFormat("Player %d wins!", winner + 1);
+        winColor = getDroneColor(winner);
     }
 
-    uint16_t fontSize = 5 * e->client->scale;
-    uint16_t textWidth = MeasureText(winStr, fontSize);
-    uint16_t posX = (e->client->halfWidth - (textWidth / 2));
-    DrawText(winStr, posX, e->client->halfHeight, fontSize, color);
+    uint16_t textWidth = MeasureText(bannerStr, fontSize);
+    const uint16_t posX = (e->client->halfWidth - (textWidth / 2));
+    DrawText(bannerStr, posX, e->client->halfHeight, fontSize, winColor);
 }
 
 void applyBloom(const iwEnv *e, RenderTexture2D srcTex, RenderTexture2D dstTex, const float bloomIntensity) {

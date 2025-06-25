@@ -12,13 +12,13 @@ class Drone(pufferlib.PufferEnv):
         report_interval=1,
         buf=None,
         seed=0,
-        n_targets=5,
-        moves_left=1000,
+        max_rings=10,
+        max_moves=1000,
     ):
         self.single_observation_space = gymnasium.spaces.Box(
             low=-1,
             high=1,
-            shape=(16,),
+            shape=(25,),
             dtype=np.float32,
         )
 
@@ -44,8 +44,8 @@ class Drone(pufferlib.PufferEnv):
                 self.truncations[env_num:(env_num+1)],
                 env_num,
                 report_interval=self.report_interval,
-                n_targets=n_targets,
-                moves_left=moves_left,
+                max_rings=max_rings,
+                max_moves=max_moves,
             ))
 
         self.c_envs = binding.vectorize(*c_envs)

@@ -43,6 +43,7 @@ mapEntry boringMap = {
     .hasSetFloatingWalls = false,
     .weaponPickups = 8,
     .defaultWeapon = STANDARD_WEAPON,
+    .maxSuddenDeathWalls = 5,
 };
 
 const char prototypeArenaLayout[] = {
@@ -78,6 +79,7 @@ mapEntry prototypeArenaMap = {
     .hasSetFloatingWalls = true,
     .weaponPickups = 6,
     .defaultWeapon = STANDARD_WEAPON,
+    .maxSuddenDeathWalls = 4,
 };
 
 const char snipersLayout[] = {
@@ -114,6 +116,7 @@ mapEntry snipersMap = {
     .hasSetFloatingWalls = false,
     .weaponPickups = 6,
     .defaultWeapon = SNIPER_WEAPON,
+    .maxSuddenDeathWalls = 4,
 };
 
 const char roomsLayout[] = {
@@ -150,6 +153,7 @@ mapEntry roomsMap = {
     .hasSetFloatingWalls = false,
     .weaponPickups = 10,
     .defaultWeapon = STANDARD_WEAPON,
+    .maxSuddenDeathWalls = 5,
 };
 
 const char xArenaLayout[] = {
@@ -188,6 +192,7 @@ mapEntry xArena = {
     .hasSetFloatingWalls = true,
     .weaponPickups = 8,
     .defaultWeapon = STANDARD_WEAPON,
+    .maxSuddenDeathWalls = 6,
 };
 
 const char crossBounceLayout[] = {
@@ -227,6 +232,7 @@ mapEntry crossBounce = {
     .hasSetFloatingWalls = true,
     .weaponPickups = 8,
     .defaultWeapon = STANDARD_WEAPON,// TODO: make this exploding weapon
+    .maxSuddenDeathWalls = 6,
 };
 
 const char asteriskArenaLayout[]= {
@@ -265,6 +271,7 @@ mapEntry asteriskArena = {
     .hasSetFloatingWalls = false,
     .weaponPickups = 8,
     .defaultWeapon = STANDARD_WEAPON,
+    .maxSuddenDeathWalls = 7,
 };
 
 const char foamPitLayout[] = {
@@ -300,6 +307,7 @@ mapEntry foamPitMap = {
     .hasSetFloatingWalls = true,
     .weaponPickups = 6,
     .defaultWeapon = STANDARD_WEAPON,
+    .maxSuddenDeathWalls = 5,
 };
 
 const char siegeLayout[] = {
@@ -339,6 +347,7 @@ mapEntry siegeMap = {
     .hasSetFloatingWalls = true,
     .weaponPickups = 5,
     .defaultWeapon = STANDARD_WEAPON,
+    .maxSuddenDeathWalls = 8,
 };
 
 // clang-format on

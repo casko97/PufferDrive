@@ -465,7 +465,7 @@ for key, value in cfg_vars.items():
         cfg_vars[key] = value.replace('-fno-strict-overflow', '')
 
 install_requires = [
-    'numpy',
+    'numpy<2.0',
     f'gym<={GYM_VERSION}',
     f'gymnasium<={GYMNASIUM_VERSION}',
     f'pettingzoo<={PETTINGZOO_VERSION}',
@@ -489,7 +489,7 @@ if not NO_TRAIN:
 
 setup(
     name="pufferlib",
-    version="3.0.0a1",
+    version="3.0.0",
     long_description_content_type="text/markdown",
     packages=find_namespace_packages() + find_packages() + c_extension_paths + ['pufferlib/extensions'],
     package_data={
