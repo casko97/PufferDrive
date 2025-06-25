@@ -19,6 +19,8 @@
 
 // Simulation properties
 #define GRID_SIZE 10.0f
+#define RING_RAD 2.0f
+#define RING_MARGIN 4.0f
 #define DT 0.02f
 
 // Physical constants for the drone
@@ -53,6 +55,13 @@ typedef struct {
     float x, y, z;
 } Vec3;
 
+typedef struct {
+    Vec3 pos;
+    Quat orientation;
+    Vec3 normal;
+    float radius;
+} Ring;
+
 static inline float clampf(float v, float min, float max) {
     if (v < min)
         return min;
@@ -65,9 +74,13 @@ static inline float rndf(float a, float b) {
     return a + ((float)rand() / (float)RAND_MAX) * (b - a);
 }
 
-static inline float dot3(Vec3 a, Vec3 b) {
-    return a.x * b.x + a.y * b.y + a.z * b.z;
-}
+static inline Vec3 add3(Vec3 a, Vec3 b) { return (Vec3){a.x + b.x, a.y + b.y, a.z + b.z}; }
+
+static inline Vec3 sub3(Vec3 a, Vec3 b) { return (Vec3){a.x - b.x, a.y - b.y, a.z - b.z}; }
+
+static inline Vec3 scalmul3(Vec3 a, float b) { return (Vec3){a.x * b, a.y * b, a.z * b}; }
+
+static inline float dot3(Vec3 a, Vec3 b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
 
 static inline float norm3(Vec3 a) { return sqrtf(dot3(a, a)); }
 
@@ -111,6 +124,45 @@ static inline Vec3 quat_rotate(Quat q, Vec3 v) {
     return (Vec3){res.x, res.y, res.z};
 }
 
+static inline Quat quat_inverse(Quat q) { return (Quat){q.w, -q.x, -q.y, -q.z}; }
+
+Quat rndquat() {
+    float u1 = rndf(0.0f, 1.0f);
+    float u2 = rndf(0.0f, 1.0f);
+    float u3 = rndf(0.0f, 1.0f);
+
+    float sqrt_1_minus_u1 = sqrtf(1.0f - u1);
+    float sqrt_u1 = sqrtf(u1);
+
+    float pi_2_u2 = 2.0f * M_PI * u2;
+    float pi_2_u3 = 2.0f * M_PI * u3;
+
+    Quat q;
+    q.w = sqrt_1_minus_u1 * sinf(pi_2_u2);
+    q.x = sqrt_1_minus_u1 * cosf(pi_2_u2);
+    q.y = sqrt_u1 * sinf(pi_2_u3);
+    q.z = sqrt_u1 * cosf(pi_2_u3);
+
+    return q;
+}
+
+Ring rndring(void) {
+    Ring ring;
+
+    ring.pos.x = rndf(-GRID_SIZE + RING_MARGIN, GRID_SIZE - RING_MARGIN);
+    ring.pos.y = rndf(-GRID_SIZE + RING_MARGIN, GRID_SIZE - RING_MARGIN);
+    ring.pos.z = rndf(-GRID_SIZE + RING_MARGIN, GRID_SIZE - RING_MARGIN);
+
+    ring.orientation = rndquat();
+
+    Vec3 base_normal = {0.0f, 0.0f, 1.0f};
+    ring.normal = quat_rotate(ring.orientation, base_normal);
+
+    ring.radius = RING_RAD;
+
+    return ring;
+}
+
 typedef struct Client Client;
 struct Client {
     Camera3D camera;
@@ -137,21 +189,23 @@ struct Drone {
     unsigned char *terminals;
 
     Log log;
-    unsigned int tick;
-    unsigned int report_interval;
-    unsigned int score;
+    int tick;
+    int report_interval;
+    int score;
     float episodic_return;
 
-    unsigned int n_targets;
+    int max_rings;
+    int ring_idx;
+    Ring *ring_buffer;
+
+    int max_moves;
     int moves_left;
 
-    Vec3 pos;   // global position (x, y, z)
+    Vec3 pos; // global position (x, y, z)
+    Vec3 prev_pos;
     Vec3 vel;   // linear velocity (u, v, w)
     Quat quat;  // roll/pitch/yaw (phi/theta/psi) as a quaternion
     Vec3 omega; // angular velocity (p, q, r)
-
-    Vec3 move_target;   // move target position
-    Vec3 vec_to_target; // vector to target from drone's current pos
 
     Client *client;
 };
@@ -159,37 +213,65 @@ struct Drone {
 void init(Drone *env) {
     env->log = (Log){0};
     env->tick = 0;
+    // one extra ring for observation (requires current ring, next ring)
+    // max_rings and moves_left are initialised in binding.c
+    env->ring_buffer = (Ring *)malloc((env->max_rings + 1) * sizeof(Ring));
 }
 
 void add_log(Drone *env) {
     env->log.score += env->score;
     env->log.episode_return += env->episodic_return;
     env->log.episode_length += env->tick;
-    env->log.perf += (float)env->score / (float)env->n_targets;
+    env->log.perf += (float)env->ring_idx / (float)env->max_rings;
     env->log.n += 1.0f;
 }
 
 void compute_observations(Drone *env) {
-    env->observations[0] = (env->pos.x - env->move_target.x) / GRID_SIZE;
-    env->observations[1] = (env->pos.y - env->move_target.y) / GRID_SIZE;
-    env->observations[2] = (env->pos.z - env->move_target.z) / GRID_SIZE;
+    Quat q_inv = quat_inverse(env->quat);
+    Ring curr_ring = env->ring_buffer[env->ring_idx];
+    Ring next_ring = env->ring_buffer[env->ring_idx + 1];
 
-    env->observations[3] = env->pos.x / GRID_SIZE;
-    env->observations[4] = env->pos.y / GRID_SIZE;
-    env->observations[5] = env->pos.z / GRID_SIZE;
+    Vec3 to_curr_ring = quat_rotate(q_inv, sub3(curr_ring.pos, env->pos));
+    Vec3 to_next_ring = quat_rotate(q_inv, sub3(next_ring.pos, env->pos));
 
-    env->observations[6] = env->quat.w;
-    env->observations[7] = env->quat.x;
-    env->observations[8] = env->quat.y;
-    env->observations[9] = env->quat.z;
+    Vec3 curr_ring_norm = quat_rotate(q_inv, curr_ring.normal);
+    Vec3 next_ring_norm = quat_rotate(q_inv, next_ring.normal);
 
-    env->observations[10] = env->vel.x / MAX_VEL;
-    env->observations[11] = env->vel.y / MAX_VEL;
-    env->observations[12] = env->vel.z / MAX_VEL;
+    Vec3 linear_vel_body = quat_rotate(q_inv, env->vel);
+    Vec3 drone_up_world = quat_rotate(env->quat, (Vec3){0.0f, 0.0f, 1.0f});
 
-    env->observations[13] = env->omega.x / MAX_OMEGA;
-    env->observations[14] = env->omega.y / MAX_OMEGA;
-    env->observations[15] = env->omega.z / MAX_OMEGA;
+    env->observations[0] = to_curr_ring.x / GRID_SIZE;
+    env->observations[1] = to_curr_ring.y / GRID_SIZE;
+    env->observations[2] = to_curr_ring.z / GRID_SIZE;
+
+    env->observations[3] = curr_ring_norm.x;
+    env->observations[4] = curr_ring_norm.y;
+    env->observations[5] = curr_ring_norm.z;
+
+    env->observations[6] = to_next_ring.x / GRID_SIZE;
+    env->observations[7] = to_next_ring.y / GRID_SIZE;
+    env->observations[8] = to_next_ring.z / GRID_SIZE;
+
+    env->observations[9] = next_ring_norm.x;
+    env->observations[10] = next_ring_norm.y;
+    env->observations[11] = next_ring_norm.z;
+
+    env->observations[12] = linear_vel_body.x / MAX_VEL;
+    env->observations[13] = linear_vel_body.y / MAX_VEL;
+    env->observations[14] = linear_vel_body.z / MAX_VEL;
+
+    env->observations[15] = env->omega.x / MAX_OMEGA;
+    env->observations[16] = env->omega.y / MAX_OMEGA;
+    env->observations[17] = env->omega.z / MAX_OMEGA;
+
+    env->observations[18] = drone_up_world.x;
+    env->observations[19] = drone_up_world.y;
+    env->observations[20] = drone_up_world.z;
+
+    env->observations[21] = env->quat.w;
+    env->observations[22] = env->quat.x;
+    env->observations[23] = env->quat.y;
+    env->observations[24] = env->quat.z;
 }
 
 void c_reset(Drone *env) {
@@ -197,29 +279,30 @@ void c_reset(Drone *env) {
     env->score = 0;
     env->episodic_return = 0.0f;
 
-    env->n_targets = 5;
-    env->moves_left = 1000;
+    env->moves_left = env->max_moves;
 
-    env->move_target.x = rndf(-9, 9);
-    env->move_target.y = rndf(-9, 9);
-    env->move_target.z = rndf(-9, 9);
+    env->ring_idx = 0;
 
-    env->pos.x = rndf(-9, 9);
-    env->pos.y = rndf(-9, 9);
-    env->pos.z = rndf(-9, 9);
+    // creates rings at least MARGIN apart
+    if (env->max_rings + 1 > 0) {
+        env->ring_buffer[0] = rndring();
+    }
 
-    env->vel.x = 0.0f;
-    env->vel.y = 0.0f;
-    env->vel.z = 0.0f;
+    for (int i = 1; i < env->max_rings + 1; i++) {
+        do {
+            env->ring_buffer[i] = rndring();
+        } while (norm3(sub3(env->ring_buffer[i].pos, env->ring_buffer[i - 1].pos)) < RING_MARGIN);
+    }
 
-    env->quat.w = 1.0f;
-    env->quat.x = 0.0f;
-    env->quat.y = 0.0f;
-    env->quat.z = 0.0f;
+    // start drone at least MARGIN away from the first ring
+    do {
+        env->pos = (Vec3){rndf(-9, 9), rndf(-9, 9), rndf(-9, 9)};
+    } while (norm3(sub3(env->pos, env->ring_buffer[0].pos)) < RING_MARGIN);
 
-    env->omega.x = 0.0f;
-    env->omega.y = 0.0f;
-    env->omega.z = 0.0f;
+    env->prev_pos = env->pos;
+    env->vel = (Vec3){0.0f, 0.0f, 0.0f};
+    env->omega = (Vec3){0.0f, 0.0f, 0.0f};
+    env->quat = (Quat){1.0f, 0.0f, 0.0f, 0.0f};
 
     compute_observations(env);
 }
@@ -259,8 +342,7 @@ void c_step(Drone *env) {
     F_world.z -= B_DRAG * env->vel.z;
 
     // world frame gravity
-    Vec3 accel = {F_world.x / MASS, F_world.y / MASS,
-                  (F_world.z / MASS) - GRAVITY};
+    Vec3 accel = {F_world.x / MASS, F_world.y / MASS, (F_world.z / MASS) - GRAVITY};
 
     // from the definition of q dot
     Quat omega_q = {0.0f, env->omega.x, env->omega.y, env->omega.z};
@@ -299,7 +381,6 @@ void c_step(Drone *env) {
                          env->pos.y < -GRID_SIZE || env->pos.y > GRID_SIZE ||
                          env->pos.z < -GRID_SIZE || env->pos.z > GRID_SIZE;
 
-    // give rewards
     if (out_of_bounds) {
         env->rewards[0] -= 1;
         env->episodic_return -= 1;
@@ -310,26 +391,53 @@ void c_step(Drone *env) {
         return;
     }
 
-    env->vec_to_target.x = env->pos.x - env->move_target.x;
-    env->vec_to_target.y = env->pos.y - env->move_target.y;
-    env->vec_to_target.z = env->pos.z - env->move_target.z;
+    // previous dot product negative if on the 'entry' side of the ring's plane
+    float prev_dot = dot3(sub3(env->prev_pos, env->ring_buffer[env->ring_idx].pos),
+                          env->ring_buffer[env->ring_idx].normal);
 
-    if (norm3(env->vec_to_target) < 1.5f) {
-        env->rewards[0] += 1;
-        env->episodic_return += 1;
-        env->score++;
+    // new dot product positive if on the 'exit' side of the ring's plane
+    float new_dot = dot3(sub3(env->pos, env->ring_buffer[env->ring_idx].pos),
+                         env->ring_buffer[env->ring_idx].normal);
 
-        env->move_target.x = rndf(-9, 9);
-        env->move_target.y = rndf(-9, 9);
-        env->move_target.z = rndf(-9, 9);
+    bool valid_dir = (prev_dot < 0.0f && new_dot > 0.0f);
+    bool invalid_dir = (prev_dot > 0.0f && new_dot < 0.0f);
+
+    // if we have crossed the plane of the ring
+    if (valid_dir || invalid_dir) {
+        // find intesection with ring's plane
+        Vec3 dir = sub3(env->pos, env->prev_pos);
+        float t = -prev_dot / dot3(env->ring_buffer[env->ring_idx].normal,
+                                   dir); // possible nan
+
+        Vec3 intersection = add3(env->prev_pos, scalmul3(dir, t));
+        float dist = norm3(sub3(intersection, env->ring_buffer[env->ring_idx].pos));
+
+        // reward or terminate based on distance to ring center
+        if (dist < (env->ring_buffer[env->ring_idx].radius - 0.5) && valid_dir) {
+            env->rewards[0] += 1;
+            env->episodic_return += 1;
+            env->score++;
+            env->ring_idx++;
+        } else if (dist < env->ring_buffer[env->ring_idx].radius + 0.5) {
+            env->rewards[0] -= 1;
+            env->episodic_return -= 1;
+            env->terminals[0] = 1;
+            add_log(env);
+            c_reset(env);
+            return;
+        }
     }
 
+    // truncate
     env->moves_left -= 1;
-    if (env->moves_left == 0 || env->n_targets == env->score) {
+    if (env->moves_left == 0 || env->ring_idx == env->max_rings) {
         env->terminals[0] = 1;
         add_log(env);
         c_reset(env);
+        return;
     }
+
+    env->prev_pos = env->pos;
 
     compute_observations(env);
 }
@@ -340,6 +448,8 @@ void c_close_client(Client *client) {
 }
 
 void c_close(Drone *env) {
+    free(env->ring_buffer);
+
     if (env->client != NULL) {
         c_close_client(env->client);
     }
@@ -401,9 +511,12 @@ Client *make_client(Drone *env) {
     client->width = WIDTH;
     client->height = HEIGHT;
 
-    SetConfigFlags(FLAG_MSAA_4X_HINT);  // antialiasing
+    SetConfigFlags(FLAG_MSAA_4X_HINT); // antialiasing
     InitWindow(WIDTH, HEIGHT, "PufferLib Drone");
+
+#ifndef __EMSCRIPTEN__
     SetTargetFPS(60);
+#endif
 
     if (!IsWindowReady()) {
         TraceLog(LOG_ERROR, "Window failed to initialize\n");
@@ -433,6 +546,24 @@ Client *make_client(Drone *env) {
     return client;
 }
 
+void DrawRing3D(Ring ring, float thickness, Color entryColor, Color exitColor) {
+    float half_thick = thickness / 2.0f;
+
+    Vector3 center_pos = {ring.pos.x, ring.pos.y, ring.pos.z};
+
+    Vector3 entry_start_pos = {center_pos.x - half_thick * ring.normal.x,
+                               center_pos.y - half_thick * ring.normal.y,
+                               center_pos.z - half_thick * ring.normal.z};
+
+    DrawCylinderWiresEx(entry_start_pos, center_pos, ring.radius, ring.radius, 32, entryColor);
+
+    Vector3 exit_end_pos = {center_pos.x + half_thick * ring.normal.x,
+                            center_pos.y + half_thick * ring.normal.y,
+                            center_pos.z + half_thick * ring.normal.z};
+
+    DrawCylinderWiresEx(center_pos, exit_end_pos, ring.radius, ring.radius, 32, exitColor);
+}
+
 void c_render(Drone *env) {
     if (env->client == NULL) {
         env->client = make_client(env);
@@ -457,22 +588,22 @@ void c_render(Drone *env) {
     Client *client = env->client;
     client->trail[client->trail_index] = env->pos;
     client->trail_index = (client->trail_index + 1) % TRAIL_LENGTH;
-    if (client->trail_count < TRAIL_LENGTH) client->trail_count++;
+    if (client->trail_count < TRAIL_LENGTH)
+        client->trail_count++;
 
     BeginDrawing();
     ClearBackground((Color){6, 24, 24, 255});
 
     BeginMode3D(client->camera);
 
-    DrawCubeWires((Vector3){0.0f, 0.0f, 0.0f}, GRID_SIZE * 2.0f,
-                  GRID_SIZE * 2.0f, GRID_SIZE * 2.0f, WHITE);
+    // draws bounding cube
+    DrawCubeWires((Vector3){0.0f, 0.0f, 0.0f}, GRID_SIZE * 2.0f, GRID_SIZE * 2.0f, GRID_SIZE * 2.0f,
+                  WHITE);
 
-    DrawSphere(
-        (Vector3){env->move_target.x, env->move_target.y, env->move_target.z},
-        0.3f, BLUE);
-
+    // draws drone body
     DrawSphere((Vector3){env->pos.x, env->pos.y, env->pos.z}, 0.3f, RED);
 
+    // draws rotors according to thrust
     float T[4];
     for (int i = 0; i < 4; i++) {
         float rpm = (env->actions[i] + 1.0f) * 0.5f * MAX_RPM;
@@ -498,37 +629,23 @@ void c_render(Drone *env) {
         float rpm = (env->actions[i] + 1.0f) * 0.5f * MAX_RPM;
         float intensity = 0.75f + 0.25f * (rpm / MAX_RPM);
 
-        Color rotor_color =
-            (Color){(unsigned char)(base_colors[i].r * intensity),
-                    (unsigned char)(base_colors[i].g * intensity),
-                    (unsigned char)(base_colors[i].b * intensity), 255};
+        Color rotor_color = (Color){(unsigned char)(base_colors[i].r * intensity),
+                                    (unsigned char)(base_colors[i].g * intensity),
+                                    (unsigned char)(base_colors[i].b * intensity), 255};
 
         DrawSphere(rotor_pos, rotor_radius, rotor_color);
 
-        DrawCylinderEx((Vector3){env->pos.x, env->pos.y, env->pos.z}, rotor_pos,
-                       0.02f, 0.02f, 8, BLACK);
+        DrawCylinderEx((Vector3){env->pos.x, env->pos.y, env->pos.z}, rotor_pos, 0.02f, 0.02f, 8,
+                       BLACK);
     }
 
-    Vec3 forward_body = {1.0f, 0.0f, 0.0f};
-    Vec3 forward_world = quat_rotate(env->quat, forward_body);
-    DrawLine3D((Vector3){env->pos.x, env->pos.y, env->pos.z},
-               (Vector3){env->pos.x + forward_world.x * 0.5f,
-                         env->pos.y + forward_world.y * 0.5f,
-                         env->pos.z + forward_world.z * 0.5f},
-               YELLOW);
-
+    // draws line with direction and magnitude of velocity / 10
     if (norm3(env->vel) > 0.1f) {
         DrawLine3D((Vector3){env->pos.x, env->pos.y, env->pos.z},
-                   (Vector3){env->pos.x + env->vel.x * 0.1f,
-                             env->pos.y + env->vel.y * 0.1f,
+                   (Vector3){env->pos.x + env->vel.x * 0.1f, env->pos.y + env->vel.y * 0.1f,
                              env->pos.z + env->vel.z * 0.1f},
                    MAGENTA);
     }
-
-    DrawLine3D(
-        (Vector3){env->pos.x, env->pos.y, env->pos.z},
-        (Vector3){env->move_target.x, env->move_target.y, env->move_target.z},
-        ColorAlpha(BLUE, 0.3f));
 
     // Draw trailing path
     for (int i = 1; i < client->trail_count; i++) {
@@ -536,18 +653,24 @@ void c_render(Drone *env) {
         int idx1 = (client->trail_index + i - 1) % TRAIL_LENGTH;
         float alpha = (float)i / client->trail_count * 0.8f; // fade out
         Color trail_color = ColorAlpha(YELLOW, alpha);
-        DrawLine3D(
-            (Vector3){client->trail[idx0].x, client->trail[idx0].y, client->trail[idx0].z},
-            (Vector3){client->trail[idx1].x, client->trail[idx1].y, client->trail[idx1].z},
-            trail_color);
+        DrawLine3D((Vector3){client->trail[idx0].x, client->trail[idx0].y, client->trail[idx0].z},
+                   (Vector3){client->trail[idx1].x, client->trail[idx1].y, client->trail[idx1].z},
+                   trail_color);
+    }
+
+    // draws current and previous ring
+    float ring_thickness = 0.2f;
+    DrawRing3D(env->ring_buffer[env->ring_idx], ring_thickness, GREEN, BLUE);
+    if (env->ring_idx > 0) {
+        DrawRing3D(env->ring_buffer[env->ring_idx - 1], ring_thickness, GREEN, BLUE);
     }
 
     EndMode3D();
 
-    DrawText(TextFormat("Targets left: %d", env->n_targets), 10, 10, 20, WHITE);
+    // Draw 2D stats
+    DrawText(TextFormat("Targets left: %d", env->max_rings - env->ring_idx), 10, 10, 20, WHITE);
     DrawText(TextFormat("Moves left: %d", env->moves_left), 10, 40, 20, WHITE);
-    DrawText(TextFormat("Episode Return: %.2f", env->episodic_return), 10, 70,
-             20, WHITE);
+    DrawText(TextFormat("Episode Return: %.2f", env->episodic_return), 10, 70, 20, WHITE);
 
     DrawText("Motor Thrusts:", 10, 110, 20, WHITE);
     DrawText(TextFormat("Front: %.3f", T[0]), 10, 135, 18, ORANGE);
@@ -555,9 +678,8 @@ void c_render(Drone *env) {
     DrawText(TextFormat("Right: %.3f", T[2]), 10, 175, 18, LIME);
     DrawText(TextFormat("Left:  %.3f", T[3]), 10, 195, 18, SKYBLUE);
 
-    DrawText(TextFormat("Pos: (%.1f, %.1f, %.1f)", env->pos.x, env->pos.y,
-                        env->pos.z),
-             10, 225, 18, WHITE);
+    DrawText(TextFormat("Pos: (%.1f, %.1f, %.1f)", env->pos.x, env->pos.y, env->pos.z), 10, 225, 18,
+             WHITE);
     DrawText(TextFormat("Vel: %.2f m/s", norm3(env->vel)), 10, 245, 18, WHITE);
 
     DrawText("Left click + drag: Rotate camera", 10, 275, 16, LIGHTGRAY);

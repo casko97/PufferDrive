@@ -120,6 +120,7 @@ MAKE_FUNCTIONS = {
     'breakout': 'Breakout',
     'blastar': 'Blastar',
     'convert': 'Convert',
+    'convert_circle': 'ConvertCircle',
     'pong': 'Pong',
     'freeway': 'Freeway',
     'enduro': 'Enduro',
