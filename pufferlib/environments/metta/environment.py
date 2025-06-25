@@ -38,11 +38,9 @@ def make(name, config='pufferlib/environments/metta/metta.yaml', render_mode='au
             }
         }
     '''
-    #reward_cfg['ore.red'] = float(ore_reward)
-    #reward_cfg['ore.blue'] = float(ore_reward)
-    #reward_cfg['ore.green'] = float(ore_reward)
-    #reward_cfg['heart'] = float(heart_reward)
-    #reward_cfg['battery'] = float(battery_reward)
+    reward_cfg['ore.red'] = float(ore_reward)
+    reward_cfg['heart'] = float(heart_reward)
+    reward_cfg['battery.red'] = float(battery_reward)
     cfg = SingleTaskCurriculum('puffer', cfg)
     return MettaPuff(cfg, render_mode=render_mode, buf=buf)
 
