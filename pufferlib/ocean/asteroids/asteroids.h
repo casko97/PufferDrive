@@ -53,6 +53,11 @@ typedef struct {
 } Asteroid;
 
 typedef struct {
+  Asteroid asteroid;
+  float distance;
+} AsteroidDistance;
+
+typedef struct {
   Log log;
   float *observations;
   int *actions;
@@ -312,18 +317,57 @@ void compute_observations(Asteroids *env) {
   env->observations[observation_indx++] = env->player_position.y / env->size;
   env->observations[observation_indx++] = env->player_vel.x;
   env->observations[observation_indx++] = env->player_vel.y;
-  Asteroid as;
+  
+  // Create temporary array to store asteroids with their distances
+  AsteroidDistance asteroid_distances[MAX_ASTEROIDS];
+  
+  int num_active_asteroids = 0;
+  
+  // Calculate distances and store active asteroids
   for (int i = 0; i < MAX_ASTEROIDS; i++) {
-    as = env->asteroids[i];
+    Asteroid as = env->asteroids[i];
     if (as.radius == 0)
       continue;
-    env->observations[observation_indx++] =
-        (as.position.x - env->player_position.x) / env->size;
-    env->observations[observation_indx++] =
-        (as.position.y - env->player_position.y) / env->size;
-    env->observations[observation_indx++] = as.velocity.x;
-    env->observations[observation_indx++] = as.velocity.y;
-    env->observations[observation_indx++] = (float)as.radius / 40;
+    
+    float dx = as.position.x - env->player_position.x;
+    float dy = as.position.y - env->player_position.y;
+    float distance = dx * dx + dy * dy;
+    
+    asteroid_distances[num_active_asteroids].asteroid = as;
+    asteroid_distances[num_active_asteroids].distance = distance;
+    num_active_asteroids++;
+  }
+  
+  // Sort asteroids by distance (bubble sort for simplicity)
+  for (int i = 0; i < num_active_asteroids - 1; i++) {
+    for (int j = 0; j < num_active_asteroids - i - 1; j++) {
+      if (asteroid_distances[j].distance > asteroid_distances[j + 1].distance) {
+        AsteroidDistance temp = asteroid_distances[j];
+        asteroid_distances[j] = asteroid_distances[j + 1];
+        asteroid_distances[j + 1] = temp;
+      }
+    }
+  }
+  
+  // Output sorted asteroids to observations (up to MAX_ASTEROIDS)
+  for (int i = 0; i < MAX_ASTEROIDS; i++) {
+    if (i < num_active_asteroids) {
+      Asteroid as = asteroid_distances[i].asteroid;
+      env->observations[observation_indx++] =
+          (as.position.x - env->player_position.x) / env->size;
+      env->observations[observation_indx++] =
+          (as.position.y - env->player_position.y) / env->size;
+      env->observations[observation_indx++] = as.velocity.x;
+      env->observations[observation_indx++] = as.velocity.y;
+      env->observations[observation_indx++] = (float)as.radius / 40;
+    } else {
+      // Pad with zeros for missing asteroids to ensure fixed observation size
+      env->observations[observation_indx++] = 0.0f; // relative x
+      env->observations[observation_indx++] = 0.0f; // relative y
+      env->observations[observation_indx++] = 0.0f; // velocity x
+      env->observations[observation_indx++] = 0.0f; // velocity y
+      env->observations[observation_indx++] = 0.0f; // radius
+    }
   }
 }
 
@@ -419,7 +463,7 @@ void c_step(Asteroids *env) {
     return;
   }
 
-  env->rewards[0] = env->score;
+  // env->rewards[0] = env->score;
   compute_observations(env);
 }
 
