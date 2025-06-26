@@ -61,10 +61,9 @@ def make_continuous(discretize=False, buf=None, **kwargs):
     env = pufferlib.EpisodeStats(env)
     return pufferlib.emulation.GymnasiumPufferEnv(env=env, buf=buf)
 
-
-def make_g2048(buf=None, **kwargs):
+def make_squared(distance_to_target=3, num_targets=1, buf=None, **kwargs):
     from . import sanity
-    env = sanity.g2048(**kwargs)
+    env = sanity.Squared(distance_to_target=distance_to_target, num_targets=num_targets, **kwargs)
     env = pufferlib.EpisodeStats(env)
     return pufferlib.emulation.GymnasiumPufferEnv(env=env, buf=buf, **kwargs)
 
@@ -133,7 +132,6 @@ MAKE_FUNCTIONS = {
     'nmmo3': 'NMMO3',
     'snake': 'Snake',
     'squared': 'Squared',
-    'g2048': 'G2048',
     'school': 'School',
     'pysquared': 'PySquared',
     'connect4': 'Connect4',
