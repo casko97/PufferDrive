@@ -8,9 +8,8 @@ from pufferlib.ocean.g2048 import binding
 
 class G2048(pufferlib.PufferEnv):
     def __init__(self, num_envs=1, render_mode=None, log_interval=128, buf=None, seed=0):
-        # Observation space is now 16 tiles * 16 one-hot = 256 floats
         self.single_observation_space = gymnasium.spaces.Box(
-            low=0, high=1, shape=(16 * 16,), dtype=np.float32
+            low=0, high=100, shape=(4 * 4,), dtype=np.uint8
         )
         self.single_action_space = gymnasium.spaces.Discrete(4)
         self.render_mode = render_mode
@@ -57,7 +56,7 @@ if __name__ == '__main__':
     steps = 0
 
     CACHE = 1024
-    actions = np.random.randint(0, 5, (CACHE, N))
+    actions = np.random.randint(0, 4, (CACHE, N))
 
     i = 0
     import time

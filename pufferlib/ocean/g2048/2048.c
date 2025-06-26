@@ -5,32 +5,10 @@
 #include <unistd.h>
 #include <time.h>
 
-// Helper to get a single character from stdin without waiting for Enter
-int getch() {
-    struct termios oldt, newt;
-    int ch;
-    tcgetattr(STDIN_FILENO, &oldt);
-    newt = oldt;
-    newt.c_lflag &= ~(ICANON | ECHO);
-    tcsetattr(STDIN_FILENO, TCSANOW, &newt);
-    ch = getchar();
-    tcsetattr(STDIN_FILENO, TCSANOW, &oldt);
-    return ch;
-}
-
-// Map key to action
-int key_to_action(int key) {
-    if (key == 'w' || key == 'W' || key == 65) return UP;
-    if (key == 's' || key == 'S' || key == 66) return DOWN;
-    if (key == 'a' || key == 'A' || key == 68) return LEFT;
-    if (key == 'd' || key == 'D' || key == 67) return RIGHT;
-    return 0;
-}
-
 int main() {
     srand(time(NULL));
     Game env;
-    float observations[SIZE * SIZE] = {0};
+    __uint8_t observations[SIZE * SIZE] = {0};
     unsigned char terminals[1] = {0};
     int actions[1] = {0};
     float rewards[1] = {0};

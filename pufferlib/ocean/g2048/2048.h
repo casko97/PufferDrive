@@ -2,6 +2,7 @@
 #include <stdbool.h>
 #include <stdio.h>
 #include <time.h>
+#include <math.h>
 #include "raylib.h"
 
 #define SIZE 4
@@ -22,13 +23,13 @@ typedef struct {
 // Required struct for env_binding.h compatibility
 typedef struct {
     Log log;                        // Required
-    float* observations;            // Required (flattened 256 floats: 16 tiles * 16 one-hot)
+    unsigned char* observations;            // Required (flattened 256 floats: 16 tiles * 16 one-hot)
     int* actions;                   // Required
     float* rewards;                 // Required
     unsigned char* terminals;       // Required
     int score;
     int tick;
-    float grid[SIZE][SIZE];         // Store tile values directly as floats
+    unsigned char grid[SIZE][SIZE];         // Store tile values directly as floats
     float episode_reward;           // Accumulate episode reward
 } Game;
 
@@ -41,27 +42,11 @@ void c_step(Game* env);
 void c_render(Game* env);
 void c_close(Game* env);
 
-// --- Helper: one-hot encode a tile value into a 16-length vector
-static void one_hot_tile(float* out, int value) {
-    for (int i = 0; i < 16; i++) out[i] = 0.0f;
-    if (value > 0) {
-        int idx = 0;
-        int v = value;
-        while (v > 1) {
-            v >>= 1;
-            idx++;
-        }
-        if (idx >= 0 && idx < 16)
-            out[idx] = 1.0f;
-    }
-}
-
 // Update the observation vector to be one-hot encoded for all tiles
 static void update_observations(Game* game) {
     for (int i = 0; i < SIZE; i++) {
         for (int j = 0; j < SIZE; j++) {
-            int tile = (int)(game->grid[i][j]);
-            one_hot_tile(game->observations + (i * SIZE + j) * 16, tile);
+            game->observations[i * SIZE + j] = game->grid[i][j];
         }
     }
 }
@@ -76,7 +61,7 @@ void add_log(Game* game) {
             if (tile > max_tile) max_tile = tile;
         }
     }
-    game->log.score = (float)max_tile;
+    game->log.score = (float)pow(2,max_tile);
     game->log.perf += (game->rewards[0] > 0) ? 1 : 0;
     game->log.episode_length += game->tick;
     game->log.episode_return += game->episode_reward;
@@ -84,11 +69,8 @@ void add_log(Game* game) {
 }
 
 void c_reset(Game* game) {
-    for (int i = 0; i < SIZE; i++) {
-        for (int j = 0; j < SIZE; j++) {
-            game->grid[i][j] = EMPTY;
-        }
-    }
+    memset(game->grid, EMPTY, sizeof(game->grid));
+
     game->score = 0;
     game->tick = 0;
     game->episode_reward = 0;
@@ -99,7 +81,7 @@ void c_reset(Game* game) {
         int i = rand() % SIZE;
         int j = rand() % SIZE;
         if ((int)(game->grid[i][j]) == EMPTY) {
-            game->grid[i][j] = (rand() % 10 == 0) ? 4 : 2;
+            game->grid[i][j] = (rand() % 10 == 0) ? 2 : 1;
             added++;
         }
     }
@@ -136,47 +118,49 @@ void print_grid(Game* game) {
     printf("Score: %d\n", game->score);
 }
 
-bool slide_and_merge_row(float* row, int* reward) {
+bool slide_and_merge_row(float* row, float* reward) {
     bool moved = false;
     // Slide left
     for (int i = 0; i < SIZE - 1; i++) {
-        if ((int)row[i] == EMPTY) {
-            for (int j = i + 1; j < SIZE; j++) {
-                if ((int)row[j] != EMPTY) {
-                    row[i] = row[j];
-                    row[j] = EMPTY;
-                    moved = true;
-                    break;
-                }
+        if ((int)row[i] != EMPTY) {
+            continue;
+        }
+        for (int j = i + 1; j < SIZE; j++) {
+            if ((int)row[j] != EMPTY) {
+                row[i] = row[j];
+                row[j] = EMPTY;
+                moved = true;
+                break;
             }
         }
     }
     // Merge
     for (int i = 0; i < SIZE - 1; i++) {
         if ((int)row[i] != EMPTY && (int)row[i] == (int)row[i + 1]) {
-            row[i] *= 2;
-            *reward += (int)row[i];
+            row[i] += 1;
+            *reward += (row[i] / 11.0f); 
             row[i + 1] = EMPTY;
             moved = true;
         }
     }
     // Slide again
     for (int i = 0; i < SIZE - 1; i++) {
-        if ((int)row[i] == EMPTY) {
-            for (int j = i + 1; j < SIZE; j++) {
-                if ((int)row[j] != EMPTY) {
-                    row[i] = row[j];
-                    row[j] = EMPTY;
-                    moved = true;
-                    break;
-                }
+        if ((int)row[i] != EMPTY) {
+            continue;
+        }
+        for (int j = i + 1; j < SIZE; j++) {
+            if ((int)row[j] != EMPTY) {
+                row[i] = row[j];
+                row[j] = EMPTY;
+                moved = true;
+                break;
             }
         }
     }
     return moved;
 }
 
-bool move(Game* game, int direction, int* reward) {
+bool move(Game* game, int direction, float* reward) {
     bool moved = false;
     if (direction == UP || direction == DOWN) {
         for (int col = 0; col < SIZE; col++) {
@@ -230,7 +214,7 @@ bool move(Game* game, int direction, int* reward) {
         }
     }
     if (!moved) {
-        *reward = -1;
+        *reward = -0.5;
     }
     return moved;
 }
@@ -258,16 +242,20 @@ int calc_score(Game* game) {
 }
 
 void c_step(Game* game) {
-    int reward = 0;
+    float reward = 0.;
     bool did_move = move(game, game->actions[0]+1, &reward);
     game->tick += 1;
     if (did_move) {
         add_random_tile(game);
         game->score = calc_score(game);
     }
-    game->rewards[0] = (float)reward;
-    game->episode_reward += (float)reward;
+    
     game->terminals[0] = is_game_over(game) ? 1 : 0;
+    if (game->terminals[0] == 1) {
+        reward = -0.1; // punish for losing
+    }
+    game->rewards[0] = reward;
+    game->episode_reward += reward;
 
     update_observations(game);
 
@@ -294,6 +282,10 @@ void c_render(Game* game) {
     for (int i = 0; i < SIZE; i++) {
         for (int j = 0; j < SIZE; j++) {
             int val = (int)((game->grid[i][j]));
+            val = pow(2, val);
+            if (val == 1) {
+                val = 0;
+            }
             Color color = LIGHTGRAY;
             if (val == 2) color = (Color){238, 228, 218, 255};
             else if (val == 4) color = (Color){237, 224, 200, 255};
