@@ -135,6 +135,7 @@ MAKE_FUNCTIONS = {
     'school': 'School',
     'pysquared': 'PySquared',
     'connect4': 'Connect4',
+    'g2048': 'G2048',
     'terraform': 'Terraform',
     'template': 'Template',
     'tripletriad': 'TripleTriad',
