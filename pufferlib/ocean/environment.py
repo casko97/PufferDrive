@@ -151,6 +151,7 @@ MAKE_FUNCTIONS = {
     'gpudrive': 'GPUDrive',
     'pacman': 'Pacman',
     'checkers': 'Checkers',
+    'asteroids': 'Asteroids',
     'spaces': make_spaces,
     'multiagent': make_multiagent,
 }
