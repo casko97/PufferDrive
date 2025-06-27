@@ -189,6 +189,38 @@ class Terraform(nn.Module):
         value = self.value(hidden)
         return action, value
 
+class G2048(nn.Module):
+    def __init__(self, env, hidden_size=128):
+        super().__init__()
+        self.hidden_size = hidden_size
+        self.is_continuous = False
+
+        self.encoder= torch.nn.Sequential(
+            nn.Linear(12*np.prod(env.single_observation_space.shape), hidden_size),
+            nn.GELU(),
+        )
+        self.decoder = pufferlib.pytorch.layer_init(
+            nn.Linear(hidden_size, env.single_action_space.n), std=0.01)
+        self.value = pufferlib.pytorch.layer_init(
+            nn.Linear(hidden_size, 1), std=1)
+
+    def forward_eval(self, observations, state=None):
+        hidden = self.encode_observations(observations)
+        actions, value = self.decode_actions(hidden)
+        return actions, value
+
+    def forward(self, x, state=None):
+        return self.forward_eval(x, state)
+
+    def encode_observations(self, observations, state=None):
+        observations = F.one_hot(observations.long(), 12).view(-1, 12*16).float()
+        #observations = observations.float().view(-1, 16) / 11.0
+        return self.encoder(observations)
+
+    def decode_actions(self, hidden):
+        action = self.decoder(hidden)
+        value = self.value(hidden)
+        return action, value
 
 class Snake(nn.Module):
     def __init__(self, env, cnn_channels=32, hidden_size=128):

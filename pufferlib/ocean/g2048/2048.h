@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <time.h>
 #include <math.h>
+#include <string.h>
 #include "raylib.h"
 
 #define SIZE 4
@@ -138,7 +139,7 @@ bool slide_and_merge_row(float* row, float* reward) {
     for (int i = 0; i < SIZE - 1; i++) {
         if ((int)row[i] != EMPTY && (int)row[i] == (int)row[i + 1]) {
             row[i] += 1;
-            *reward += (row[i] / 11.0f); 
+            //*reward += (row[i] / 11.0f); 
             row[i + 1] = EMPTY;
             moved = true;
         }
@@ -252,7 +253,7 @@ void c_step(Game* game) {
     
     game->terminals[0] = is_game_over(game) ? 1 : 0;
     if (game->terminals[0] == 1) {
-        reward = -0.1; // punish for losing
+        reward = -1.0; // punish for losing
     }
     game->rewards[0] = reward;
     game->episode_reward += reward;

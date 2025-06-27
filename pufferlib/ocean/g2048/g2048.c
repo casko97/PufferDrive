@@ -8,7 +8,7 @@
 int main() {
     srand(time(NULL));
     Game env;
-    __uint8_t observations[SIZE * SIZE] = {0};
+    unsigned char observations[SIZE * SIZE] = {0};
     unsigned char terminals[1] = {0};
     int actions[1] = {0};
     float rewards[1] = {0};
@@ -30,14 +30,10 @@ int main() {
             else if (IsKeyPressed(KEY_S) || IsKeyPressed(KEY_DOWN)) action = DOWN;
             else if (IsKeyPressed(KEY_A) || IsKeyPressed(KEY_LEFT)) action = LEFT;
             else if (IsKeyPressed(KEY_D) || IsKeyPressed(KEY_RIGHT)) action = RIGHT;
-        } else {
-            printf("Move (WASD or arrows): ");
-            int key = getch();
-            action = key_to_action(key);
         }
 
         if (action != 0) {
-            env.actions[0] = action;
+            env.actions[0] = action - 1;
             c_step(&env);
             if (!IsWindowReady()) {
                 print_grid(&env);
