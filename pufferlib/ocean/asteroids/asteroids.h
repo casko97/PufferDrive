@@ -76,6 +76,7 @@ typedef struct {
   int last_shot;
   int tick;
   int score;
+  float episode_return;
   int frameskip;
 } Asteroids;
 
@@ -306,6 +307,7 @@ void check_player_asteroid_collision(Asteroids *env) {
     dy = env->player_position.y - as->position.y;
     if (min_dist * min_dist > dx * dx + dy * dy) {
       env->terminals[0] = 1;
+      env->rewards[0] = -1.0f;
       return;
     }
   }
@@ -372,10 +374,10 @@ void compute_observations(Asteroids *env) {
 }
 
 void add_log(Asteroids *env) {
-  env->log.perf += (env->rewards[0] > 0) ? 1 : 0;
-  env->log.score += env->rewards[0];
+  env->log.perf += env->score / 100.0f;
+  env->log.score += env->score;
   env->log.episode_length += env->tick;
-  env->log.episode_return += env->rewards[0];
+  env->log.episode_return += env->episode_return;
   env->log.n++;
 }
 
@@ -391,6 +393,7 @@ void c_reset(Asteroids *env) {
   env->asteroid_index = 0;
   env->tick = 0;
   env->score = 0;
+  env->episode_return = 0;
   env->last_shot = 0;
 }
 
@@ -456,6 +459,7 @@ void c_step(Asteroids *env) {
     step_frame(env, action);
   }
 
+  env->episode_return += env->rewards[0];
   if (env->terminals[0] == 1 || env->tick > MAX_TICK) {
     env->terminals[0] = 1;
     add_log(env);
@@ -466,6 +470,11 @@ void c_step(Asteroids *env) {
   // env->rewards[0] = env->score;
   compute_observations(env);
 }
+
+const Color PUFF_RED = (Color){187, 0, 0, 255};
+const Color PUFF_CYAN = (Color){0, 187, 187, 255};
+const Color PUFF_WHITE = (Color){241, 241, 241, 241};
+const Color PUFF_BACKGROUND = (Color){6, 24, 24, 255};
 
 void draw_player(Asteroids *env) {
   if (global_game_over_timer > 0)
@@ -498,21 +507,20 @@ void draw_player(Asteroids *env) {
   for (int i = 0; i < 8; i++)
     ps[i] = rotate_vector(ps[i], env->player_position, env->player_angle);
 
-  DrawLineV(ps[0], ps[2], RAYWHITE);
-  DrawLineV(ps[1], ps[2], RAYWHITE);
+  DrawLineV(ps[0], ps[2], PUFF_RED);
+  DrawLineV(ps[1], ps[2], PUFF_RED);
 
-  DrawLineV(ps[3], ps[4], RAYWHITE);
+  DrawLineV(ps[3], ps[4], PUFF_RED);
 
   if (env->thruster_on) {
-    DrawLineV(ps[5], ps[7], RAYWHITE);
-    DrawLineV(ps[6], ps[7], RAYWHITE);
+    DrawLineV(ps[5], ps[7], PUFF_RED);
+    DrawLineV(ps[6], ps[7], PUFF_RED);
   }
 }
 
 void draw_particles(Asteroids *env) {
   for (int i = 0; i < MAX_PARTICLES; i++) {
-    DrawPixel(env->particles[i].position.x, env->particles[i].position.y,
-              RAYWHITE);
+    DrawCircle(env->particles[i].position.x, env->particles[i].position.y, 2, PUFF_RED);
   }
 }
 
@@ -532,7 +540,7 @@ void draw_asteroids(Asteroids *env) {
                       as.position.y + as.shape[v].y};
       Vector2 pos2 = {as.position.x + as.shape[next_v].x,
                       as.position.y + as.shape[next_v].y};
-      DrawLineV(pos1, pos2, (Color){245, 245, 245, 175});
+      DrawLineV(pos1, pos2, PUFF_CYAN);
     }
   }
 }
@@ -561,14 +569,13 @@ void c_render(Asteroids *env) {
   }
 
   BeginDrawing();
-  ClearBackground(BLACK);
+  ClearBackground(PUFF_BACKGROUND);
   draw_player(env);
   draw_particles(env);
   draw_asteroids(env);
 
-  DrawText(TextFormat("Score: %d", env->score), 10, 10, 20, RAYWHITE);
-  DrawText(TextFormat("%d s", (int)(env->tick / 60)), env->size - 40, 10, 20,
-           RAYWHITE);
+  DrawText(TextFormat("Score: %d", env->score), 10, 10, 20, PUFF_WHITE);
+  DrawText(TextFormat("%d s", (int)(env->tick / 60)), env->size - 40, 10, 20, PUFF_WHITE);
 
   if (global_game_over_timer > 0) {
     const char *game_over_text = "GAME OVER";
@@ -579,9 +586,8 @@ void c_render(Asteroids *env) {
     float alpha = (float)global_game_over_timer / 120.0f;
     int alpha_value = (int)(alpha * 255);
 
-    Color text_color = ColorAlpha(RED, alpha_value);
-    DrawTextEx(GetFontDefault(), game_over_text, (Vector2){x, y}, 40, 2,
-               text_color);
+    Color text_color = ColorAlpha(PUFF_RED, alpha_value);
+    DrawTextEx(GetFontDefault(), game_over_text, (Vector2){x, y}, 40, 2, text_color);
   }
 
   EndDrawing();
