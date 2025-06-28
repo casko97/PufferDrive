@@ -12,6 +12,8 @@ import pufferlib
 
 ALIASES = {
     'mani_pickcube': 'PickCube-v1',
+    'mani_pushcube': 'PushCube-v1',
+    'mani_peginsertion': 'PegInsertionSide-v1',
 }
 
 def env_creator(name='PickCube-v1'):
@@ -27,7 +29,7 @@ def make(name, num_envs=1, render_mode='rgb_array', buf=None, seed=0):
 
 class ManiPufferEnv(pufferlib.PufferEnv):
     def __init__(self, name, num_envs=1, render_mode='rgb_array', log_interval=16, buf=None, seed=0):
-        self.env = gym.make(name, num_envs=num_envs, render_mode=render_mode)
+        self.env = gym.make(name, reward_mode='delta', num_envs=num_envs, render_mode=render_mode)
         self.env = ManiSkillVectorEnv(self.env, auto_reset=True, ignore_terminations=False, record_metrics=True)
         self.agents_per_batch = num_envs
 
