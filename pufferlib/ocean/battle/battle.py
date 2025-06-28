@@ -11,7 +11,7 @@ class Battle(pufferlib.PufferEnv):
             size_y=1.0, size_z=1.0, num_agents=1024, num_factories=32,
             num_armies=4, render_mode=None, log_interval=128, buf=None, seed=0):
         self.single_observation_space = gymnasium.spaces.Box(low=0, high=1,
-            shape=(6*num_armies + 19 + 8,), dtype=np.float32)
+            shape=(num_armies*3 + 4*16 + 22 + 8,), dtype=np.float32)
         #self.single_action_space = gymnasium.spaces.MultiDiscrete([9, 9, 9])
         self.single_action_space = gymnasium.spaces.Box(
                 low=-1, high=1, shape=(3,), dtype=np.float32)
@@ -34,7 +34,7 @@ class Battle(pufferlib.PufferEnv):
                 self.terminals[i*num_agents:(i+1)*num_agents],
                 self.truncations[i*num_agents:(i+1)*num_agents],
                 seed, width=width, height=height, size_x=size_x, size_y=size_y, size_z=size_z,
-                num_agents=num_agents, num_factories=num_factories,
+                num_agents=num_agents*2, num_factories=num_factories,
                 num_armies=num_armies)
             c_envs.append(c_env)
 

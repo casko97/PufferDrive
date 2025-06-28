@@ -37,6 +37,8 @@
 #define ARTILLERY 6
 #define BASE 7
 
+#define AGENT_OBS 16
+
 static inline float clampf(float v, float min, float max) {
   if (v < min)
     return min;
@@ -280,56 +282,6 @@ void respawn(Battle* env, int idx) {
     }
 
     return;
-
-
-    // Find farthest corner to spawn in
-    float dists[8];
-    for (int i=0; i<8; i++) {
-        dists[i] = 999999;
-    }
-
-    float sx = env->size_x;
-    //float sy = env->size_y;
-    float sz = env->size_z;
-    //float xx[8] = {-sx, -sx, -sx, -sx, sx, sx, sx, sx};
-    //float yy[8] = {-sy, -sy, sy, sy, -sy, -sy, sy, sy};
-    //float zz[8] = {-sz, sz, -sz, sz, -sz, sz, -sz, sz};
-
-    float xx[4] = {0, 0, -sx, sx};
-    float yy[4] = {0, 0, 0, 0};
-    float zz[4] = {-sz, sz, 0, 0};
-
-
-    // Distance of each corner to nearest opponent
-    for (int i=0; i<env->num_agents; i++) {
-        Entity* other = &env->agents[i];
-        int other_army = other->army;
-        if (other_army == army) {
-            continue;
-        }
-        for (int j=0; j<4; j++) {
-            float dx = other->x - xx[j];
-            float dy = other->y - yy[j];
-            float dz = other->z - zz[j];
-            float dd = dx*dx + dy*dy + dz*dz;
-            if (dd < dists[j]) {
-                dists[j] = dd;
-            }
-        }
-    }
-
-    int max_idx = 0;
-    float max_dist = 0;
-    for (int i=0; i<4; i++) {
-        if (dists[i] > max_dist) {
-            max_dist = dists[i];
-            max_idx = i;
-        }
-    }
-
-    agent->x = xx[max_idx];
-    agent->y = yy[max_idx];
-    agent->z = zz[max_idx];
 }
 
 
@@ -343,20 +295,15 @@ bool attack_air(Entity *agent, Entity *target) {
         return false;
     }
 
+    Vector3 forward = Vector3RotateByQuaternion((Vector3){0, 0, 1}, agent->orientation);
+    forward = Vector3Normalize(forward);
+
     // Unit vec to target
-    dy /= dd;
-    dz /= dd;
-    dx /= dd;
+    Vector3 to_target = {dx, dy, dz};
+    to_target = Vector3Normalize(to_target);
 
-    // Unit forward vec
-    float mag = sqrtf(agent->vx*agent->vx + agent->vy*agent->vy + agent->vz*agent->vz);
-    float fx = agent->vx / mag;
-    float fy = agent->vy / mag;
-    float fz = agent->vz / mag;
-
-    // Angle to target
-    float angle = acosf(dx*fx + dy*fy + dz*fz);
-    if (angle < PI/6) {
+    float angle = Vector3Angle(forward, to_target);
+    if (angle < PI/6.0f) {
         return true;
     }
     return false;
@@ -384,17 +331,14 @@ bool attack_ground(Entity *agent, Entity *target) {
         return false;
     }
 
+    Vector3 forward = Vector3RotateByQuaternion((Vector3){0, 0, 1}, agent->orientation);
+    forward = Vector3Normalize(forward);
+
     // Unit vec to target
-    dx /= dd;
-    dz /= dd;
+    Vector3 to_target = {dx, 0, dz};
+    to_target = Vector3Normalize(to_target);
 
-    // Unit forward vec
-    float mag = sqrtf(agent->vx*agent->vx + agent->vz*agent->vz);
-    float fx = agent->vx / mag;
-    float fz = agent->vz / mag;
-
-    // Angle to target
-    float angle = acosf(dx*fx + dz*fz);
+    float angle = Vector3Angle(forward, to_target);
     if (angle < PI/6) {
         return true;
     }
@@ -446,12 +390,17 @@ bool attack_aa(Entity *agent, Entity *target) {
         return false;
     }
 
-    // Angle to target (wrt y)
-    float angle = acosf(dy / dd);
+    Vector3 forward = Vector3RotateByQuaternion((Vector3){0, 0, 1}, agent->orientation);
+    forward = Vector3Normalize(forward);
+
+    // Unit vec to target
+    Vector3 to_target = {dx, dy, dz};
+    to_target = Vector3Normalize(to_target);
+
+    float angle = Vector3Angle(forward, to_target);
     if (angle < PI/6) {
         return true;
     }
-    return false;
 }
 
 void move_basic(Battle* env, Entity* agent, float* actions) {
@@ -497,6 +446,90 @@ void move_ground(Battle* env, Entity* agent, float* actions) {
     agent->x = clip(agent->x, -env->size_x, env->size_x);
     agent->z = clip(agent->z, -env->size_z, env->size_z);
     agent->y = ground_height(env, agent->x, agent->z);
+}
+
+Entity* nearest_enemy(Battle* env, Entity* agent) {
+    Entity* nearest = NULL;
+    float nearest_dist = 999999;
+    for (int i=0; i<env->num_agents; i++) {
+        Entity* other = &env->agents[i];
+        if (other->army == agent->army) {
+            continue;
+        }
+        float dx = other->x - agent->x;
+        float dy = other->y - agent->y;
+        float dz = other->z - agent->z;
+        float dd = dx*dx + dy*dy + dz*dz;
+        if (dd < nearest_dist) {
+            nearest_dist = dd;
+            nearest = other;
+        }
+    }
+    return nearest;
+}
+
+// Cheats physics and moves directly to the nearest enemy
+void scripted_move(Battle* env, Entity* agent, bool is_air) {
+    Entity* target = nearest_enemy(env, agent);
+    if (target == NULL) {
+        return;
+    }
+    float dx = target->x - agent->x;
+    float dy = target->y - agent->y;
+    float dz = target->z - agent->z;
+    float dd = dx*dx + dz*dz;
+    if (is_air) {
+        dd += dy*dy;
+    }
+
+    dd = sqrtf(dd);
+    dx /= dd;
+    dy /= dd;
+    dz /= dd;
+
+    
+    float target_x;
+    float target_y;
+    float target_z;
+    if (dd > 0.05f) {
+        target_x = agent->x + dx*agent->max_speed*MAX_SPEED;
+        target_y = agent->y + dy*agent->max_speed*MAX_SPEED;
+        target_z = agent->z + dz*agent->max_speed*MAX_SPEED;
+    } else {
+        target_x = agent->x - dx*agent->max_speed*MAX_SPEED;
+        target_y = agent->y - dy*agent->max_speed*MAX_SPEED;
+        target_z = agent->z - dz*agent->max_speed*MAX_SPEED;
+    }
+    
+    float height = ground_height(env, target_x, target_z);
+    if (is_air) {
+        if (target_y < height + 0.5f) {
+            target_y = height + 0.5f;
+        }
+    } else {
+        target_y = height;
+    }
+
+    agent->x = target_x;
+    agent->y = target_y;
+    agent->z = target_z;
+
+    agent->x = clip(agent->x, -env->size_x, env->size_x);
+    agent->y = clip(agent->y, -env->size_y, env->size_y);
+    agent->z = clip(agent->z, -env->size_z, env->size_z);
+
+    // Update orientation to target
+    Vector3 target_forward = {dx, 0, dz};
+    if (is_air) {
+        target_forward.y = dy;
+    }
+    target_forward = Vector3Normalize(target_forward);
+
+    Vector3 current_forward = Vector3RotateByQuaternion((Vector3){0, 0, 1}, agent->orientation);
+    current_forward = Vector3Normalize(current_forward);
+
+    Quaternion q = QuaternionFromVector3ToVector3(current_forward, target_forward);
+    agent->orientation = QuaternionMultiply(q, agent->orientation);
 }
 
 void move_ship(Battle* env, Entity* agent, float* actions, int i) {
@@ -571,19 +604,31 @@ void move_ship(Battle* env, Entity* agent, float* actions, int i) {
     agent->z = clampf(agent->z, -env->size_z, env->size_z);
 }
 
-void compute_observations(Battle* env) {
-    float centroids[env->num_armies][3];
-    memset(centroids, 0, env->num_armies*3*sizeof(float));
+typedef struct {
+    float distance;
+    float dx;
+    float dy;
+    float dz;
+    float same_team;
+    int idx;
+} AgentObs;
 
-    for (int i=0; i<env->num_agents; i++) {
-        int army = env->agents[i].army;
-        centroids[army][0] += env->num_armies * env->agents[i].x / env->num_agents;
-        centroids[army][1] += env->num_armies * env->agents[i].y / env->num_agents;
-        centroids[army][2] += env->num_armies * env->agents[i].z / env->num_agents;
+int compare_agent_obs(const void* a, const void* b) {
+    AgentObs* oa = (AgentObs*)a;
+    AgentObs* ob = (AgentObs*)b;
+    if (oa->distance < ob->distance) {
+        return -1;
+    } else if (oa->distance > ob->distance) {
+        return 1;
     }
+    return 0;
+}
+
+void compute_observations(Battle* env) {
+    AgentObs agent_obs[env->num_agents];
 
     int obs_idx = 0;
-    for (int a=0; a<env->num_agents; a++) {
+    for (int a=0; a<env->num_agents/2; a++) {
         assert(obs_idx == a*(6*env->num_armies + 19 + 8));
 
         // Distance to each base
@@ -610,17 +655,35 @@ void compute_observations(Battle* env) {
         obs_idx += 3*env->num_armies;
 
 
-        // Distance to each centroid, own team first
-        env->observations[obs_idx++] = agent->x - centroids[team][0];
-        env->observations[obs_idx++] = agent->y - centroids[team][1];
-        env->observations[obs_idx++] = agent->z - centroids[team][2];
-        for (int i=0; i<env->num_armies; i++) {
-            if (i == team) {
-                continue;
+        // Distance to each agent. Slow O(n^2) naive implementation
+        float x = agent->x;
+        float y = agent->y;
+        float z = agent->z;
+        for (int i=0; i<env->num_agents; i++) {
+            Entity* other = &env->agents[i];
+            float dx = other->x - x;
+            float dy = other->y - y;
+            float dz = other->z - z;
+            float distance = dx*dx + dy*dy + dz*dz;
+            AgentObs* o = &agent_obs[i];
+            o->dx = dx;
+            o->dy = dy;
+            o->dz = dz;
+            o->distance = distance;
+            if (other->army == agent->army) {
+                o->same_team = 1.0f;
+            } else {
+                o->same_team = 0.0f;
             }
-            env->observations[obs_idx++] = agent->x - centroids[i][0];
-            env->observations[obs_idx++] = agent->y - centroids[i][1];
-            env->observations[obs_idx++] = agent->z - centroids[i][2];
+            o->idx = i;
+        }
+        qsort(agent_obs, env->num_agents, sizeof(AgentObs), compare_agent_obs);
+
+        for (int i=0; i<AGENT_OBS; i++) {
+            env->observations[obs_idx++] = agent_obs[i].dx;
+            env->observations[obs_idx++] = agent_obs[i].dy;
+            env->observations[obs_idx++] = agent_obs[i].dz;
+            env->observations[obs_idx++] = agent_obs[i].same_team;
         }
 
         // Individual agent stats
@@ -635,6 +698,9 @@ void compute_observations(Battle* env) {
         env->observations[obs_idx++] = agent->y;
         env->observations[obs_idx++] = agent->z;
         env->observations[obs_idx++] = agent->y - ground_height(env, agent->x, agent->z);
+        env->observations[obs_idx++] = abs(agent->x) - 0.95f*env->size_x;
+        env->observations[obs_idx++] = abs(agent->z) - 0.95f*env->size_z;
+        env->observations[obs_idx++] = abs(agent->y) - 0.95f*env->size_y;
         env->observations[obs_idx++] = agent->speed;
         env->observations[obs_idx++] = agent->health;
         env->observations[obs_idx++] = agent->max_turn;
@@ -709,8 +775,8 @@ void c_reset(Battle* env) {
 }
 
 void c_step(Battle* env) {
-    memset(env->rewards, 0, env->num_agents*sizeof(float));
-    memset(env->terminals, 0, env->num_agents*sizeof(unsigned char));
+    memset(env->rewards, 0, env->num_agents/2*sizeof(float));
+    memset(env->terminals, 0, env->num_agents/2*sizeof(unsigned char));
 
     for (int i=0; i<env->num_agents; i++) {
         Entity* agent = &env->agents[i];
@@ -748,8 +814,10 @@ void c_step(Battle* env) {
             update_abilities(agent);
             respawn(env, i);
             agent->episode_return += reward;
-            env->rewards[i] = reward;
-            env->terminals[i] = 1;
+            if (i < env->num_agents/2) {
+                env->rewards[i] = reward;
+                env->terminals[i] = 1;
+            }
             env->log.score = (1.0f - collision) * env->log.episode_return;
             env->log.episode_length += agent->episode_length;
             env->log.episode_return += agent->episode_return;
@@ -762,9 +830,17 @@ void c_step(Battle* env) {
 
         //move_basic(env, agent, env->actions + 3*i);
         if (agent->unit == INFANTRY || agent->unit == TANK || agent->unit == ARTILLERY) {
-            move_ground(env, agent, env->actions + 3*i);
+            if (i < env->num_agents/2) {
+                move_ground(env, agent, env->actions + 3*i);
+            } else {
+                scripted_move(env, agent, false);
+            }
         } else {
-            move_ship(env, agent, env->actions + 3*i, i);
+            if (i < env->num_agents/2) {
+                move_ship(env, agent, env->actions + 3*i, i);
+            } else {
+                scripted_move(env, agent, true);
+            }
         }
     }
 
@@ -792,7 +868,9 @@ void c_step(Battle* env) {
                 continue;
             }
             agent->target = j;
-            env->rewards[i] += 0.25f;
+            if (i < env->num_agents/2) {
+                env->rewards[i] += 0.25f;
+            }
             agent->episode_return += 0.25f;
             target->health -= agent->attack_damage;
             break;

@@ -31,7 +31,7 @@ int main() {
     init(&env);
 
     // Allocate these manually since they aren't being passed from Python
-    int num_obs = 6*env.num_armies + 19 + 8;
+    int num_obs = 3*env.num_armies + 4*16 + 22 + 8;
     env.observations = calloc(env.num_agents*num_obs, sizeof(float));
     env.actions = calloc(3*env.num_agents, sizeof(int));
     env.rewards = calloc(env.num_agents, sizeof(float));
@@ -44,6 +44,7 @@ int main() {
     int ctrl = 0;
 
     while (!WindowShouldClose()) {
+        /*
         for (int i=0; i<env.num_agents; i++) {
             Entity* agent = &env.agents[i];
             int army = agent->army;
@@ -104,6 +105,7 @@ int main() {
             //env.actions[3*i + 1] = 4.0f;
             //env.actions[3*i + 2] = 4.0f;
         }
+        */
 
         if (IsKeyDown(KEY_LEFT_SHIFT)) {
             if (IsKeyPressed(KEY_TAB)) {
