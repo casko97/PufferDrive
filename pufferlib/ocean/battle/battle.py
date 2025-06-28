@@ -4,9 +4,9 @@ import gymnasium
 import numpy as np
 
 import pufferlib
-from pufferlib.ocean.school import binding
+from pufferlib.ocean.battle import binding
 
-class School(pufferlib.PufferEnv):
+class Battle(pufferlib.PufferEnv):
     def __init__(self, num_envs=1, width=1920, height=1080, size_x=1.0,
             size_y=1.0, size_z=1.0, num_agents=1024, num_factories=32,
             num_armies=4, render_mode=None, log_interval=128, buf=None, seed=0):
@@ -68,7 +68,7 @@ class School(pufferlib.PufferEnv):
 if __name__ == '__main__':
     N = 512
 
-    env = School(num_envs=N)
+    env = Battle(num_envs=N)
     env.reset()
     steps = 0
 
@@ -83,4 +83,4 @@ if __name__ == '__main__':
         steps += env.num_agents
         i += 1
 
-    print('School SPS:', int(steps / (time.time() - start)))
+    print('Battle SPS:', int(steps / (time.time() - start)))

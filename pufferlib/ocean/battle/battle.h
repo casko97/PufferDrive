@@ -1,4 +1,4 @@
-/* School: a sample multiagent env about puffers eating stars.
+/* Battle: a sample multiagent env about puffers eating stars.
  * Use this as a tutorial and template for your own multiagent envs.
  * We suggest starting with the Squared env for a simpler intro.
  * Star PufferLib on GitHub to support. It really, really helps!
@@ -135,13 +135,13 @@ typedef struct {
     int num_agents;
     int num_armies;
     float* terrain;
-} School;
+} Battle;
 
-int map_idx(School* env, float x, float y) {
+int map_idx(Battle* env, float x, float y) {
     return env->terrain_width*(int)y + (int)x;
 }
 
-float ground_height(School* env, float x, float z) {
+float ground_height(Battle* env, float x, float z) {
     int agent_map_x = 128*x + 128*env->size_x;
     int agent_map_z = 128*z + 128*env->size_z;
     if (agent_map_x == 256*env->size_x) {
@@ -195,7 +195,7 @@ void perlin_noise(float* map, int width, int height,
     }
 }
 
-void init(School* env) {
+void init(Battle* env) {
     env->agents = calloc(env->num_agents, sizeof(Entity));
     env->bases = calloc(env->num_armies, sizeof(Entity));
     env->terrain_width = 256*env->size_x;
@@ -250,7 +250,7 @@ void update_abilities(Entity* agent) {
     }
 }
 
-void respawn(School* env, int idx) {
+void respawn(Battle* env, int idx) {
     Entity* agent = &env->agents[idx];
     int army = agent->army;
     agent->orientation = QuaternionIdentity();
@@ -454,7 +454,7 @@ bool attack_aa(Entity *agent, Entity *target) {
     return false;
 }
 
-void move_basic(School* env, Entity* agent, float* actions) {
+void move_basic(Battle* env, Entity* agent, float* actions) {
     float d_vx = actions[0]/100.0f;
     float d_vy = actions[1]/100.0f;
     float d_vz = actions[2]/100.0f;
@@ -476,7 +476,7 @@ void move_basic(School* env, Entity* agent, float* actions) {
     agent->z = clip(agent->z, -env->size_z, env->size_z);
 }
 
-void move_ground(School* env, Entity* agent, float* actions) {
+void move_ground(Battle* env, Entity* agent, float* actions) {
     float d_theta = -actions[1]/10.0f;
 
     // Update speed and clamp
@@ -499,7 +499,7 @@ void move_ground(School* env, Entity* agent, float* actions) {
     agent->y = ground_height(env, agent->x, agent->z);
 }
 
-void move_ship(School* env, Entity* agent, float* actions, int i) {
+void move_ship(Battle* env, Entity* agent, float* actions, int i) {
     // Compute deltas from actions (same as original)
     float d_pitch = agent->max_turn * actions[0] / 10.0f;
     float d_roll = agent->max_turn * actions[1] / 10.0f;
@@ -571,7 +571,7 @@ void move_ship(School* env, Entity* agent, float* actions, int i) {
     agent->z = clampf(agent->z, -env->size_z, env->size_z);
 }
 
-void compute_observations(School* env) {
+void compute_observations(Battle* env) {
     float centroids[env->num_armies][3];
     memset(centroids, 0, env->num_armies*3*sizeof(float));
 
@@ -652,7 +652,7 @@ void compute_observations(School* env) {
 }
 
 // Required function
-void c_reset(School* env) {
+void c_reset(Battle* env) {
     int agents_per_army = env->num_agents / env->num_armies;
     for (int i=0; i<env->num_armies; i++) {
         bool spawn = false;
@@ -708,7 +708,7 @@ void c_reset(School* env) {
     compute_observations(env);
 }
 
-void c_step(School* env) {
+void c_step(Battle* env) {
     memset(env->rewards, 0, env->num_agents*sizeof(float));
     memset(env->terminals, 0, env->num_agents*sizeof(unsigned char));
 
@@ -948,21 +948,21 @@ void update_heightmap_mesh(Mesh* mesh, float* heightMap, Vector3 size) {
 
 
 // Required function. Should handle creating the client on first call
-void c_render(School* env) {
+void c_render(Battle* env) {
     if (env->client == NULL) {
         SetConfigFlags(FLAG_MSAA_4X_HINT);
-        InitWindow(env->width, env->height, "PufferLib School");
+        InitWindow(env->width, env->height, "PufferLib Battle");
         SetTargetFPS(30);
         Client* client = (Client*)calloc(1, sizeof(Client));
         env->client = client;
-        client->models[DRONE] = LoadModel("resources/school/drone.glb");
-        client->models[FIGHTER] = LoadModel("resources/school/fighter.glb");
-        client->models[MOTHERSHIP] = LoadModel("resources/school/mothership.glb");
-        client->models[BOMBER] = LoadModel("resources/school/bomber.glb");
-        client->models[INFANTRY] = LoadModel("resources/school/car.glb");
-        client->models[TANK] = LoadModel("resources/school/tank.glb");
-        client->models[ARTILLERY] = LoadModel("resources/school/artillery.glb");
-        client->models[BASE] = LoadModel("resources/school/base.glb");
+        client->models[DRONE] = LoadModel("resources/battle/drone.glb");
+        client->models[FIGHTER] = LoadModel("resources/battle/fighter.glb");
+        client->models[MOTHERSHIP] = LoadModel("resources/battle/mothership.glb");
+        client->models[BOMBER] = LoadModel("resources/battle/bomber.glb");
+        client->models[INFANTRY] = LoadModel("resources/battle/car.glb");
+        client->models[TANK] = LoadModel("resources/battle/tank.glb");
+        client->models[ARTILLERY] = LoadModel("resources/battle/artillery.glb");
+        client->models[BASE] = LoadModel("resources/battle/base.glb");
         //env->client->ship = LoadModel("resources/puffer.glb");
         
         char vsPath[256];
@@ -997,8 +997,8 @@ void c_render(School* env) {
         update_heightmap_mesh(client->mesh, env->terrain, (Vector3){env->terrain_width, 1, env->terrain_height});
 
         client->terrain_shader = LoadShader(
-            TextFormat("resources/school/shader_%i.vs", GLSL_VERSION),
-            TextFormat("resources/school/shader_%i.fs", GLSL_VERSION)
+            TextFormat("resources/battle/shader_%i.vs", GLSL_VERSION),
+            TextFormat("resources/battle/shader_%i.fs", GLSL_VERSION)
         );
 
         Image img = GenImageColor(env->terrain_width, env->terrain_height, WHITE);
@@ -1101,7 +1101,7 @@ void c_render(School* env) {
 
 // Required function. Should clean up anything you allocated
 // Do not free env->observations, actions, rewards, terminals
-void c_close(School* env) {
+void c_close(Battle* env) {
     free(env->agents);
     free(env->bases);
     if (env->client != NULL) {
