@@ -21,16 +21,15 @@ typedef struct {
     float n;
 } Log;
 
-// Required struct for env_binding.h compatibility
 typedef struct {
     Log log;                        // Required
-    unsigned char* observations;            // Required (flattened 256 floats: 16 tiles * 16 one-hot)
+    unsigned char* observations;    // Cheaper in memory if encoded in uint_8
     int* actions;                   // Required
     float* rewards;                 // Required
     unsigned char* terminals;       // Required
     int score;
     int tick;
-    unsigned char grid[SIZE][SIZE];         // Store tile values directly as floats
+    unsigned char grid[SIZE][SIZE];
     float episode_reward;           // Accumulate episode reward
 } Game;
 
@@ -43,27 +42,15 @@ void c_step(Game* env);
 void c_render(Game* env);
 void c_close(Game* env);
 
-// Update the observation vector to be one-hot encoded for all tiles
 static void update_observations(Game* game) {
-    for (int i = 0; i < SIZE; i++) {
-        for (int j = 0; j < SIZE; j++) {
-            game->observations[i * SIZE + j] = game->grid[i][j];
-        }
-    }
+    memcpy(game->observations, game->grid, sizeof(unsigned char) * SIZE * SIZE);
 }
 
 // --- Implementation ---
 
 void add_log(Game* game) {
-    int max_tile = 0;
-    for (int i = 0; i < SIZE; i++) {
-        for (int j = 0; j < SIZE; j++) {
-            int tile = (int)(game->grid[i][j]);
-            if (tile > max_tile) max_tile = tile;
-        }
-    }
-    game->log.score = (float)pow(2,max_tile);
-    game->log.perf += (game->rewards[0] > 0) ? 1 : 0;
+    game->log.score = pow(2,(float)game->score);
+    game->log.perf += (float)game->score/11.;
     game->log.episode_length += game->tick;
     game->log.episode_return += game->episode_reward;
     game->log.n += 1;
@@ -103,20 +90,10 @@ void add_random_tile(Game* game) {
     }
     if (count > 0) {
         int random_index = rand() % count;
-        int value = (rand() % 10 == 0) ? 4 : 2;
-        game->grid[empty_cells[random_index][0]][empty_cells[random_index][1]] = (float)value;
+        int value = (rand() % 10 == 0) ? 2 : 1;
+        game->grid[empty_cells[random_index][0]][empty_cells[random_index][1]] = value;
     }
     update_observations(game);
-}
-
-void print_grid(Game* game) {
-    for (int i = 0; i < SIZE; i++) {
-        for (int j = 0; j < SIZE; j++) {
-            printf("%4.0f ", game->grid[i][j]);
-        }
-        printf("\n");
-    }
-    printf("Score: %d\n", game->score);
 }
 
 bool slide_and_merge_row(float* row, float* reward) {
@@ -231,11 +208,11 @@ bool is_game_over(Game* game) {
     return true;
 }
 
-int calc_score(Game* game) {
-    int max_tile = 0;
+unsigned char calc_score(Game* game) {
+    unsigned char max_tile = 0;
     for (int i = 0; i < SIZE; i++) {
         for (int j = 0; j < SIZE; j++) {
-            int tile = (int)(game->grid[i][j]);
+            int tile = (game->grid[i][j]);
             if (tile > max_tile) max_tile = tile;
         }
     }
@@ -248,7 +225,7 @@ void c_step(Game* game) {
     game->tick += 1;
     if (did_move) {
         add_random_tile(game);
-        game->score = calc_score(game);
+        game->score = (float)calc_score(game);
     }
     
     game->terminals[0] = is_game_over(game) ? 1 : 0;
