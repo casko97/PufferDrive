@@ -189,6 +189,7 @@ class Terraform(nn.Module):
         value = self.value(hidden)
         return action, value
 
+
 class G2048(nn.Module):
     def __init__(self, env, cnn_channels=32, hidden_size=128):
         super().__init__()
@@ -197,11 +198,14 @@ class G2048(nn.Module):
 
         self.cnn = nn.Sequential(
             pufferlib.pytorch.layer_init(
-                nn.Conv2d(16, cnn_channels, 2, stride=1)),
+                nn.Conv2d(1, cnn_channels, 2, stride=1)),
             nn.GELU(),
             pufferlib.pytorch.layer_init(
                 nn.Conv2d(cnn_channels, cnn_channels, 2, stride=1)),
             nn.Flatten(),
+            nn.GELU(),
+            pufferlib.pytorch.layer_init(
+            nn.Linear(128, hidden_size), std=0.01),
         )
 
         self.decoder = pufferlib.pytorch.layer_init(
@@ -218,7 +222,8 @@ class G2048(nn.Module):
         return self.forward_eval(x, state)
 
     def encode_observations(self, observations, state=None):
-        observations = F.one_hot(observations.long(), 16).view(-1, 16, 4, 4).float()
+        #observations = F.one_hot(observations.long(), 16).view(-1, 16, 4, 4).float()
+        observations = observations.float().view(-1, 1, 4, 4)
         return self.cnn(observations)
 
     def decode_actions(self, hidden):
