@@ -477,6 +477,12 @@ void scripted_move(Battle* env, Entity* agent, bool is_air) {
     float dx = target->x - agent->x;
     float dy = target->y - agent->y;
     float dz = target->z - agent->z;
+
+    // Add some noise
+    dx += randf(-0.1f, 0.1f);
+    dy += randf(-0.1f, 0.1f);
+    dz += randf(-0.1f, 0.1f);
+
     float dd = dx*dx + dz*dz;
     if (is_air) {
         dd += dy*dy;
@@ -669,11 +675,12 @@ void compute_observations(Battle* env) {
             o->dx = dx;
             o->dy = dy;
             o->dz = dz;
-            o->distance = distance;
             if (other->army == agent->army) {
                 o->same_team = 1.0f;
+                o->distance = 99999.0f;
             } else {
                 o->same_team = 0.0f;
+                o->distance = distance;
             }
             o->idx = i;
         }
@@ -817,13 +824,14 @@ void c_step(Battle* env) {
             if (i < env->num_agents/2) {
                 env->rewards[i] = reward;
                 env->terminals[i] = 1;
+                env->log.score = env->log.episode_return;
+                env->log.episode_length += agent->episode_length;
+                env->log.episode_return += agent->episode_return;
+                env->log.collision_rate += collision;
+                env->log.oob_rate += oob;
+                env->log.n++;
+
             }
-            env->log.score = (1.0f - collision) * env->log.episode_return;
-            env->log.episode_length += agent->episode_length;
-            env->log.episode_return += agent->episode_return;
-            env->log.collision_rate += collision;
-            env->log.oob_rate += oob;
-            env->log.n++;
             agent->episode_length = 0;
             agent->episode_return = 0;
         }
@@ -870,8 +878,8 @@ void c_step(Battle* env) {
             agent->target = j;
             if (i < env->num_agents/2) {
                 env->rewards[i] += 0.25f;
+                agent->episode_return += 0.25f;
             }
-            agent->episode_return += 0.25f;
             target->health -= agent->attack_damage;
             break;
         }
