@@ -182,6 +182,8 @@ class LSTMWrapper(nn.Module):
         hidden = hidden.transpose(0, 1)
         #hidden = self.pre_layernorm(hidden)
         hidden, (lstm_h, lstm_c) = self.lstm.forward(hidden, lstm_state)
+        hidden = hidden.float()
+ 
         #hidden = self.post_layernorm(hidden)
         hidden = hidden.transpose(0, 1)
 

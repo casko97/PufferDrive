@@ -863,8 +863,6 @@ class WandbLogger:
  
 def train(env_name, args=None, vecenv=None, policy=None, logger=None):
     args = args or load_config(env_name)
-    vecenv = vecenv or load_env(env_name, args)
-    policy = policy or load_policy(args, vecenv)
 
     # Assume TorchRun DDP is used if LOCAL_RANK is set
     if 'LOCAL_RANK' in os.environ:
@@ -875,6 +873,12 @@ def train(env_name, args=None, vecenv=None, policy=None, logger=None):
         local_rank = int(os.environ["LOCAL_RANK"])
         print(f"rank: {local_rank}, MASTER_ADDR={master_addr}, MASTER_PORT={master_port}")
         torch.cuda.set_device(local_rank)
+        os.environ["CUDA_VISIBLE_DEVICES"] = str(local_rank)
+
+    vecenv = vecenv or load_env(env_name, args)
+    policy = policy or load_policy(args, vecenv)
+
+    if 'LOCAL_RANK' in os.environ:
         args['train']['device'] = torch.cuda.current_device()
         torch.distributed.init_process_group(backend='nccl', world_size=world_size)
         policy = policy.to(local_rank)
@@ -925,10 +929,12 @@ def train(env_name, args=None, vecenv=None, policy=None, logger=None):
 
 def eval(env_name, args=None, vecenv=None, policy=None):
     args = args or load_config(env_name)
-    args['vec'] = dict(backend='Serial', num_envs=1)
+    backend = args['vec']['backend']
+    if backend != 'PufferEnv':
+        backend = 'Serial'
+
+    args['vec'] = dict(backend=backend, num_envs=1)
     vecenv = vecenv or load_env(env_name, args)
-    if not isinstance(vecenv, pufferlib.vector.Serial):
-        raise pufferlib.APIUsageError('eval requires Serial vector env')
 
     policy = policy or load_policy(args, vecenv)
     ob, info = vecenv.reset()
@@ -954,11 +960,12 @@ def eval(env_name, args=None, vecenv=None, policy=None):
             print('\033[0;0H' + render + '\n')
             time.sleep(1/args['fps'])
         elif driver.render_mode == 'rgb_array':
-            import cv2
-            render = cv2.cvtColor(render, cv2.COLOR_RGB2BGR)
-            cv2.imshow('frame', render)
-            cv2.waitKey(1)
-            time.sleep(1/args['fps'])
+            pass
+            #import cv2
+            #render = cv2.cvtColor(render, cv2.COLOR_RGB2BGR)
+            #cv2.imshow('frame', render)
+            #cv2.waitKey(1)
+            #time.sleep(1/args['fps'])
 
         with torch.no_grad():
             ob = torch.as_tensor(ob).to(device)
