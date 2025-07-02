@@ -1,10 +1,5 @@
 #include "2048.h"
 #include "puffernet.h"
-#include <stdio.h>
-#include <stdlib.h>
-#include <termios.h>
-#include <unistd.h>
-#include <time.h>
 
 int main() {
     srand(time(NULL));
@@ -23,10 +18,11 @@ int main() {
     int logit_sizes[1] = {4};
     LinearLSTM* net = make_linearlstm(weights, 1, 16, logit_sizes, 1);
     c_reset(&env);
+    c_render(&env);
 
     // Main game loop
     int frame = 0;
-    while (1) {
+    while (!WindowShouldClose()) {
         c_render(&env);
         frame++;
 
@@ -49,14 +45,6 @@ int main() {
 
         if (action != 0) {
             c_step(&env);
-            if (!IsWindowReady()) {
-                //print_grid(&env);
-                printf("Reward: %.0f\n", env.rewards[0]);
-            }
-        }
-
-        if (IsWindowReady() && WindowShouldClose()) {
-            break;
         }
     }
 
