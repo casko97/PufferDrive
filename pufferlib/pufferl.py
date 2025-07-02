@@ -667,6 +667,8 @@ def abbreviate(num, b2, c2):
         return f'{num/1e12:.2f}T'
 
 def duration(seconds, b2, c2):
+    if seconds < 0:
+        return f"{b2}0{c2}s"
     seconds = int(seconds)
     h = seconds // 3600
     m = (seconds % 3600) // 60
