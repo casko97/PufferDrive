@@ -44,19 +44,24 @@ typedef struct {
 } Game;
 
 // Precomputed color table for rendering optimization
+const Color PUFF_BACKGROUND = (Color){6, 24, 24, 255};
+const Color PUFF_WHITE = (Color){241, 241, 241, 241};
+const Color PUFF_RED = (Color){187, 0, 0, 255};
+const Color PUFF_CYAN = (Color){0, 187, 187, 255};
+
 static Color tile_colors[12] = {
-    {205, 193, 180, 255}, // Empty/background
-    {238, 228, 218, 255}, // 2
-    {237, 224, 200, 255}, // 4
-    {242, 177, 121, 255}, // 8
-    {245, 149, 99, 255},  // 16
-    {246, 124, 95, 255},  // 32
-    {246, 94, 59, 255},   // 64
-    {237, 207, 114, 255}, // 128
-    {237, 204, 97, 255},  // 256
-    {237, 200, 80, 255},  // 512
-    {237, 197, 63, 255},  // 1024
-    {237, 194, 46, 255}   // 2048+
+    {6, 24, 24, 255}, // Empty/background
+    {187, 187, 187, 255}, // 2
+    {170, 187, 187, 255}, // 4
+    {150, 187, 187, 255}, // 8
+    {130, 187, 187, 255},  // 16
+    {110, 187, 187, 255},  // 32
+    {90, 187, 187, 255},   // 64
+    {70, 187, 187, 255}, // 128
+    {50, 187, 187, 255},  // 256
+    {30, 187, 187, 255},  // 512
+    {10, 187, 187, 255},  // 1024
+    {0, 187, 187, 255}   // 2048+
 };
 
 // --- Logging ---
@@ -326,7 +331,7 @@ void c_render(Game* game) {
     
     if (!window_initialized) {
         InitWindow(px * SIZE, px * SIZE + 50, "2048");
-        SetTargetFPS(10); // Increased for smoother rendering
+        SetTargetFPS(30); // Increased for smoother rendering
         window_initialized = true;
     }
     
@@ -336,7 +341,7 @@ void c_render(Game* game) {
     }
 
     BeginDrawing();
-    ClearBackground(RAYWHITE);
+    ClearBackground(PUFF_BACKGROUND);
 
     // Draw grid
     for (int i = 0; i < SIZE; i++) {
@@ -354,14 +359,18 @@ void c_render(Game* game) {
                 int display_val = 1 << val; // Power of 2
                 // Pre-format text to avoid repeated formatting
                 snprintf(score_text, sizeof(score_text), "%d", display_val);
-                DrawText(score_text, j * px + 30, i * px + 40, 32, BLACK);
+                if (display_val < 1000) {
+                    DrawText(score_text, j * px + 30, i * px + 40, 32, PUFF_WHITE);
+                } else {
+                    DrawText(score_text, j * px + 20, i * px + 40, 32, PUFF_WHITE);
+                }
             }
         }
     }
     
     // Draw score (format once per frame)
     snprintf(score_text, sizeof(score_text), "Score: %d", 1 << game->score);
-    DrawText(score_text, 10, px * SIZE + 10, 24, DARKGRAY);
+    DrawText(score_text, 10, px * SIZE + 10, 24, PUFF_WHITE);
     
     EndDrawing();
 }
