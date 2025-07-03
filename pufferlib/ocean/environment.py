@@ -130,6 +130,7 @@ MAKE_FUNCTIONS = {
     'moba': 'Moba',
     'boids': 'Boids',
     'drone': 'Drone',
+    'drone_sphere': 'DroneSphere',
     'nmmo3': 'NMMO3',
     'snake': 'Snake',
     'squared': 'Squared',
