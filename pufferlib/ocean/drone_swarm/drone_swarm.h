@@ -202,8 +202,8 @@ typedef struct {
     float score;
 } Drone;
 
-typedef struct DroneSphere DroneSphere;
-struct DroneSphere {
+typedef struct DroneSwarm DroneSwarm;
+struct DroneSwarm {
     float *observations;
     float *actions;
     float *rewards;
@@ -220,13 +220,13 @@ struct DroneSphere {
     Client *client;
 };
 
-void init(DroneSphere *env) {
+void init(DroneSwarm *env) {
     env->agents = calloc(env->num_agents, sizeof(Drone));
     env->log = (Log){0};
     env->tick = 0;
 }
 
-void add_log(DroneSphere *env, int idx) {
+void add_log(DroneSwarm *env, int idx) {
     Drone *agent = &env->agents[idx];
     env->log.score += agent->score;
     env->log.episode_return += agent->episode_return;
@@ -238,7 +238,7 @@ void add_log(DroneSphere *env, int idx) {
     agent->episode_return = 0.0f;
 }
 
-Drone* nearest_drone(DroneSphere* env, Drone *agent) {
+Drone* nearest_drone(DroneSwarm* env, Drone *agent) {
     float min_dist = 999999.0f;
     Drone *nearest = NULL;
     for (int i = 0; i < env->num_agents; i++) {
@@ -258,7 +258,7 @@ Drone* nearest_drone(DroneSphere* env, Drone *agent) {
     return nearest;
 }
 
-void compute_observations(DroneSphere *env) {
+void compute_observations(DroneSwarm *env) {
     int idx = 0;
     for (int i = 0; i < env->num_agents; i++) {
         Drone *agent = &env->agents[i];
@@ -307,7 +307,7 @@ void compute_observations(DroneSphere *env) {
     }
 }
 
-void move_target(DroneSphere* env, Drone *agent) {
+void move_target(DroneSwarm* env, Drone *agent) {
     agent->target_pos.x += agent->target_vel.x;
     agent->target_pos.y += agent->target_vel.y;
     agent->target_pos.z += agent->target_vel.z;
@@ -322,19 +322,19 @@ void move_target(DroneSphere* env, Drone *agent) {
     }
 }
 
-void set_target_idle(DroneSphere* env, int idx) {
+void set_target_idle(DroneSwarm* env, int idx) {
     Drone *agent = &env->agents[idx];
     agent->target_pos = (Vec3){rndf(-MARGIN, MARGIN), rndf(-MARGIN, MARGIN), rndf(-MARGIN, MARGIN)};
     agent->target_vel = (Vec3){rndf(-V_TARGET, V_TARGET), rndf(-V_TARGET, V_TARGET), rndf(-V_TARGET, V_TARGET)};
 }
 
-void set_target_hover(DroneSphere* env, int idx) {
+void set_target_hover(DroneSwarm* env, int idx) {
     Drone *agent = &env->agents[idx];
     agent->target_pos = agent->pos;
     agent->target_vel = (Vec3){0.0f, 0.0f, 0.0f};
 }
 
-void set_target_orbit(DroneSphere* env, int idx) {
+void set_target_orbit(DroneSwarm* env, int idx) {
     // Fibbonacci sphere algorithm
     float R = 8.0f;
     float phi = PI * (sqrt(5.0f) - 1.0f);
@@ -351,7 +351,7 @@ void set_target_orbit(DroneSphere* env, int idx) {
     agent->target_vel = (Vec3){0.0f, 0.0f, 0.0f};
 }
 
-void set_target_follow(DroneSphere* env, int idx) {
+void set_target_follow(DroneSwarm* env, int idx) {
     Drone* agent = &env->agents[idx];
     if (idx == 0) {
         set_target_idle(env, idx);
@@ -361,14 +361,14 @@ void set_target_follow(DroneSphere* env, int idx) {
     }
 }
 
-void set_target_line(DroneSphere* env, int idx) {
+void set_target_line(DroneSwarm* env, int idx) {
     Drone* agent = &env->agents[idx];
     float d = ((float)idx / (float)env->num_agents)*2*(GRID_SIZE - 1) - (GRID_SIZE - 1);
     agent->target_pos = (Vec3){d, d, d};
     agent->target_vel = (Vec3){0.0f, 0.0f, 0.0f};
 }
 
-void set_target_congo(DroneSphere* env, int idx) {
+void set_target_congo(DroneSwarm* env, int idx) {
     if (idx == 0) {
         set_target_idle(env, idx);
         return;
@@ -383,7 +383,7 @@ void set_target_congo(DroneSphere* env, int idx) {
     }
 }
 
-void set_target_plane(DroneSphere* env, int idx) {
+void set_target_plane(DroneSwarm* env, int idx) {
     Drone* agent = &env->agents[idx];
     float x = (float)(idx % 8);
     float y = (float)(idx / 8);
@@ -393,7 +393,7 @@ void set_target_plane(DroneSphere* env, int idx) {
     agent->target_vel = (Vec3){0.0f, 0.0f, 0.0f};
 }
 
-void set_target(DroneSphere* env, int idx) {
+void set_target(DroneSwarm* env, int idx) {
     if (env->task == TASK_IDLE) {
         set_target_idle(env, idx);
     } else if (env->task == TASK_HOVER) {
@@ -411,7 +411,7 @@ void set_target(DroneSphere* env, int idx) {
     }
 }
 
-float compute_reward(DroneSphere* env, Drone *agent) {
+float compute_reward(DroneSwarm* env, Drone *agent) {
     // Distance reward
     float dx = (agent->pos.x - agent->target_pos.x);
     float dy = (agent->pos.y - agent->target_pos.y);
@@ -445,7 +445,7 @@ float compute_reward(DroneSphere* env, Drone *agent) {
     return delta_reward;
 }
 
-void reset_agent(DroneSphere* env, Drone *agent, int idx) {
+void reset_agent(DroneSwarm* env, Drone *agent, int idx) {
     agent->episode_return = 0.0f;
     agent->episode_length = 0;
     agent->score = 0.0f;
@@ -457,7 +457,7 @@ void reset_agent(DroneSphere* env, Drone *agent, int idx) {
     compute_reward(env, agent);
 }
 
-void c_reset(DroneSphere *env) {
+void c_reset(DroneSwarm *env) {
     env->tick = 0;
     env->task = rand() % 4;
     for (int i = 0; i < env->num_agents; i++) {
@@ -469,7 +469,7 @@ void c_reset(DroneSphere *env) {
     compute_observations(env);
 }
 
-void c_step(DroneSphere *env) {
+void c_step(DroneSwarm *env) {
     env->tick = (env->tick + 1) % 512;
     for (int i = 0; i < env->num_agents; i++) {
         Drone *agent = &env->agents[i];
@@ -572,7 +572,7 @@ void c_close_client(Client *client) {
     free(client);
 }
 
-void c_close(DroneSphere *env) {
+void c_close(DroneSwarm *env) {
     if (env->client != NULL) {
         c_close_client(env->client);
     }
@@ -628,14 +628,14 @@ void handle_camera_controls(Client *client) {
     }
 }
 
-Client *make_client(DroneSphere *env) {
+Client *make_client(DroneSwarm *env) {
     Client *client = (Client *)calloc(1, sizeof(Client));
 
     client->width = WIDTH;
     client->height = HEIGHT;
 
     SetConfigFlags(FLAG_MSAA_4X_HINT); // antialiasing
-    InitWindow(WIDTH, HEIGHT, "PufferLib DroneSphere");
+    InitWindow(WIDTH, HEIGHT, "PufferLib DroneSwarm");
 
 #ifndef __EMSCRIPTEN__
     SetTargetFPS(60);
@@ -673,7 +673,12 @@ Client *make_client(DroneSphere *env) {
     return client;
 }
 
-void c_render(DroneSphere *env) {
+const Color PUFF_RED = (Color){187, 0, 0, 255};
+const Color PUFF_CYAN = (Color){0, 187, 187, 255};
+const Color PUFF_WHITE = (Color){241, 241, 241, 241};
+const Color PUFF_BACKGROUND = (Color){6, 24, 24, 255};
+
+void c_render(DroneSwarm *env) {
     if (env->client == NULL) {
         env->client = make_client(env);
         if (env->client == NULL) {
@@ -718,7 +723,7 @@ void c_render(DroneSphere *env) {
     }
 
     BeginDrawing();
-    ClearBackground((Color){6, 24, 24, 255});
+    ClearBackground(PUFF_BACKGROUND);
 
     BeginMode3D(client->camera);
 
@@ -803,9 +808,9 @@ void c_render(DroneSphere *env) {
 
     EndMode3D();
 
-    DrawText("Left click + drag: Rotate camera", 10, 10, 16, LIGHTGRAY);
-    DrawText("Mouse wheel: Zoom in/out", 10, 30, 16, LIGHTGRAY);
-    DrawText(TextFormat("Task: %s", TASK_NAMES[env->task]), 10, 315, 16, LIGHTGRAY);
+    DrawText("Left click + drag: Rotate camera", 10, 10, 16, PUFF_WHITE);
+    DrawText("Mouse wheel: Zoom in/out", 10, 30, 16, PUFF_WHITE);
+    DrawText(TextFormat("Task: %s", TASK_NAMES[env->task]), 10, 50, 16, PUFF_WHITE);
 
     EndDrawing();
 }
