@@ -10,7 +10,7 @@ class DroneSwarm(pufferlib.PufferEnv):
         num_envs=16,
         num_drones=64,
         render_mode=None,
-        report_interval=512,
+        report_interval=1024,
         buf=None,
         seed=0,
     ):
