@@ -55,9 +55,9 @@
 
 char* TASK_NAMES[TASK_N] = {"Idle", "Hover", "Orbit", "Follow", "Cube", "Congo", "FLAG"};
 
-const Color R = (Color){255, 0, 0, 255};
-const Color W = (Color){255, 255, 255, 255};
-const Color B = (Color){0, 0, 255, 255};
+#define R (Color){255, 0, 0, 255}
+#define W (Color){255, 255, 255, 255}
+#define B (Color){0, 0, 255, 255}
 Color FLAG_COLORS[64] = {
     B, B, B, B, R, R, R, R,
     B, B, B, B, W, W, W, W,
@@ -68,6 +68,9 @@ Color FLAG_COLORS[64] = {
     R, R, R, R, R, R, R, R,
     W, W, W, W, W, W, W, W
 };
+#undef R
+#undef W
+#undef B
 
 typedef struct Log Log;
 struct Log {
