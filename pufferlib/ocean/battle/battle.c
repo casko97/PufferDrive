@@ -1,10 +1,10 @@
-/* Pure C demo file for School. Build it with:
- * bash scripts/build_ocean.sh school local (debug)
- * bash scripts/build_ocean.sh school fast
+/* Pure C demo file for Battle. Build it with:
+ * bash scripts/build_ocean.sh battle local (debug)
+ * bash scripts/build_ocean.sh battle fast
  * We suggest building and debugging your env in pure C first. You
  * get faster builds and better error messages
  */
-#include "school.h"
+#include "battle.h"
 
 /* Puffernet is our lightweight cpu inference library that
  * lets you load basic PyTorch model architectures so that
@@ -14,12 +14,12 @@
 
 int main() {
     // Weights are exported by running puffer export
-    //Weights* weights = load_weights("resources/puffer_school_weights.bin", 137743);
+    //Weights* weights = load_weights("resources/puffer_battle_weights.bin", 137743);
 
     //int logit_sizes[2] = {9, 5};
     //LinearLSTM* net = make_linearlstm(weights, num_agents, num_obs, logit_sizes, 2);
 
-    School env = {
+    Battle env = {
         .width = 1980,
         .height = 1020,
         .size_x = 8,
@@ -31,7 +31,7 @@ int main() {
     init(&env);
 
     // Allocate these manually since they aren't being passed from Python
-    int num_obs = 6*env.num_armies + 19 + 8;
+    int num_obs = 3*env.num_armies + 4*16 + 22 + 8;
     env.observations = calloc(env.num_agents*num_obs, sizeof(float));
     env.actions = calloc(3*env.num_agents, sizeof(int));
     env.rewards = calloc(env.num_agents, sizeof(float));
@@ -44,6 +44,7 @@ int main() {
     int ctrl = 0;
 
     while (!WindowShouldClose()) {
+        /*
         for (int i=0; i<env.num_agents; i++) {
             Entity* agent = &env.agents[i];
             int army = agent->army;
@@ -104,6 +105,7 @@ int main() {
             //env.actions[3*i + 1] = 4.0f;
             //env.actions[3*i + 2] = 4.0f;
         }
+        */
 
         if (IsKeyDown(KEY_LEFT_SHIFT)) {
             if (IsKeyPressed(KEY_TAB)) {

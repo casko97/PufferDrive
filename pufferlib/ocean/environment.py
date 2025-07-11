@@ -117,6 +117,7 @@ def make_multiagent(buf=None, **kwargs):
     return pufferlib.emulation.PettingZooPufferEnv(env=env, buf=buf)
 
 MAKE_FUNCTIONS = {
+    'battle': 'Battle',
     'breakout': 'Breakout',
     'blastar': 'Blastar',
     'convert': 'Convert',
@@ -128,13 +129,14 @@ MAKE_FUNCTIONS = {
     'cartpole': 'Cartpole',
     'moba': 'Moba',
     'boids': 'Boids',
-    'drone': 'Drone',
+    'drone_race': 'DroneRace',
+    'drone_swarm': 'DroneSwarm',
     'nmmo3': 'NMMO3',
     'snake': 'Snake',
     'squared': 'Squared',
-    'school': 'School',
     'pysquared': 'PySquared',
     'connect4': 'Connect4',
+    'g2048': 'G2048',
     'terraform': 'Terraform',
     'template': 'Template',
     'tripletriad': 'TripleTriad',
@@ -150,6 +152,7 @@ MAKE_FUNCTIONS = {
     'gpudrive': 'GPUDrive',
     'pacman': 'Pacman',
     'checkers': 'Checkers',
+    'asteroids': 'Asteroids',
     'spaces': make_spaces,
     'multiagent': make_multiagent,
 }

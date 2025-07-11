@@ -1,6 +1,6 @@
-#include "school.h"
+#include "battle.h"
 
-#define Env School
+#define Env Battle
 #include "../env_binding.h"
 
 static int my_init(Env* env, PyObject* args, PyObject* kwargs) {
