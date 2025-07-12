@@ -319,6 +319,8 @@ void move_drone(Drone* drone, float* actions) {
     // Domain randomized dt
     float dt = DT * rndf(1.0f - DT_RNG, 1.0 + DT_RNG);
 
+    drone->prev_pos = drone->pos;
+
     // integrations
     drone->pos.x += drone->vel.x * dt;
     drone->pos.y += drone->vel.y * dt;
