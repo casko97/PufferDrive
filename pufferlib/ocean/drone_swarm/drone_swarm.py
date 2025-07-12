@@ -9,7 +9,7 @@ class DroneSwarm(pufferlib.PufferEnv):
         self,
         num_envs=16,
         num_drones=64,
-        max_rings=10,
+        max_rings=3,
         render_mode=None,
         report_interval=1024,
         buf=None,
@@ -18,7 +18,7 @@ class DroneSwarm(pufferlib.PufferEnv):
         self.single_observation_space = gymnasium.spaces.Box(
             low=-1,
             high=1,
-            shape=(34,),
+            shape=(37,),
             dtype=np.float32,
         )
 

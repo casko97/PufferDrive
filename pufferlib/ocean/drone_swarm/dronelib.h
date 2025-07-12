@@ -37,8 +37,8 @@
 #define GRID_SIZE 10.0f
 #define MARGIN (GRID_SIZE - 1)
 #define V_TARGET 0.05f
-#define DT 0.05f
-#define DT_RNG 0.1f
+#define DT 0.02f
+#define DT_RNG 0.0f
 
 // Corner to corner distance
 #define MAX_DIST sqrtf(3*(2*GRID_SIZE)*(2*GRID_SIZE))
@@ -231,7 +231,6 @@ typedef struct {
 
 
 void init_drone(Drone* drone, float size, float dr) {
-
     drone->arm_len = size / 2.0f;
 
     // m ~ x^3
