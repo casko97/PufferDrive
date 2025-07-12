@@ -18,31 +18,30 @@
 #define TRAIL_LENGTH 50
 #define HORIZON 1024
 
+// Physical constants for the drone
+#define BASE_MASS 1.0f       // kg
+#define BASE_IXX 0.01f       // kgm^2
+#define BASE_IYY 0.01f       // kgm^2
+#define BASE_IZZ 0.02f       // kgm^2
+#define BASE_ARM_LEN 0.1f    // m
+#define BASE_K_THRUST 3e-5f  // thrust coefficient
+#define BASE_K_ANG_DAMP 0.2f // angular damping coefficient
+#define BASE_K_DRAG 1e-6f    // drag (torque) coefficient
+#define BASE_B_DRAG 0.1f     // linear drag coefficient
+#define BASE_GRAVITY 9.81f   // m/s^2
+#define BASE_MAX_RPM 750.0f  // rad/s
+#define BASE_MAX_VEL 50.0f   // m/s
+#define BASE_MAX_OMEGA 50.0f // rad/s
+
 // Simulation properties
 #define GRID_SIZE 10.0f
 #define MARGIN (GRID_SIZE - 1)
 #define V_TARGET 0.05f
-#define RING_RAD 2.0f
-#define RING_MARGIN 4.0f
-#define DT 0.02f
+#define DT 0.05f
+#define DT_RNG 0.1f
 
 // Corner to corner distance
 #define MAX_DIST sqrtf(3*(2*GRID_SIZE)*(2*GRID_SIZE))
-
-// Physical constants for the drone
-#define MASS 1.0f       // kg
-#define IXX 0.01f       // kgm^2
-#define IYY 0.01f       // kgm^2
-#define IZZ 0.02f       // kgm^2
-#define ARM_LEN 0.1f    // m
-#define K_THRUST 3e-5f  // thrust coefficient
-#define K_ANG_DAMP 0.2f // angular damping coefficient
-#define K_DRAG 1e-6f    // drag (torque) coefficient
-#define B_DRAG 0.1f     // linear drag coefficient
-#define GRAVITY 9.81f   // m/s^2
-#define MAX_RPM 750.0f  // rad/s
-#define MAX_VEL 50.0f   // m/s
-#define MAX_OMEGA 50.0f // rad/s
 
 typedef struct Log Log;
 struct Log {
@@ -154,19 +153,19 @@ typedef struct {
     float radius;
 } Ring;
 
-Ring rndring(void) {
+Ring rndring(float radius) {
     Ring ring;
 
-    ring.pos.x = rndf(-GRID_SIZE + RING_MARGIN, GRID_SIZE - RING_MARGIN);
-    ring.pos.y = rndf(-GRID_SIZE + RING_MARGIN, GRID_SIZE - RING_MARGIN);
-    ring.pos.z = rndf(-GRID_SIZE + RING_MARGIN, GRID_SIZE - RING_MARGIN);
+    ring.pos.x = rndf(-GRID_SIZE + 2*radius, GRID_SIZE - 2*radius);
+    ring.pos.y = rndf(-GRID_SIZE + 2*radius, GRID_SIZE - 2*radius);
+    ring.pos.z = rndf(-GRID_SIZE + 2*radius, GRID_SIZE - 2*radius);
 
     ring.orientation = rndquat();
 
     Vec3 base_normal = {0.0f, 0.0f, 1.0f};
     ring.normal = quat_rotate(ring.orientation, base_normal);
 
-    ring.radius = RING_RAD;
+    ring.radius = radius;
 
     return ring;
 }
@@ -176,6 +175,7 @@ typedef struct {
     int index;
     int count;
 } Trail;
+
 
 typedef struct {
     Vec3 spawn_pos;
@@ -195,7 +195,81 @@ typedef struct {
     float collisions;
     int episode_length;
     float score;
+    int ring_idx;
+
+    // Physical properties. Modeled as part of the drone
+    // to make domain randomization easier.
+    float mass; // kg
+    float ixx; // kgm^2
+    float iyy; // kgm^2
+    float izz; // kgm^2
+    float arm_len; // m
+    float k_thrust; // thrust coefficient
+    float k_ang_damp; // angular damping coefficient
+    float k_drag; // drag (torque) coefficient
+    float b_drag; // linear drag coefficient
+    float gravity; // m/s^2
+    float max_rpm; // rad/s
+    float max_vel; // m/s
+    float max_omega; // rad/s
 } Drone;
+
+// Physical constants for the drone
+#define BASE_MASS 1.0f       // kg
+#define BASE_IXX 0.01f       // kgm^2
+#define BASE_IYY 0.01f       // kgm^2
+#define BASE_IZZ 0.02f       // kgm^2
+#define BASE_ARM_LEN 0.1f    // m
+#define BASE_K_THRUST 3e-5f  // thrust coefficient
+#define BASE_K_ANG_DAMP 0.2f // angular damping coefficient
+#define BASE_K_DRAG 1e-6f    // drag (torque) coefficient
+#define BASE_B_DRAG 0.1f     // linear drag coefficient
+#define BASE_GRAVITY 9.81f   // m/s^2
+#define BASE_MAX_RPM 750.0f  // rad/s
+#define BASE_MAX_VEL 50.0f   // m/s
+#define BASE_MAX_OMEGA 50.0f // rad/s
+
+
+void init_drone(Drone* drone, float size, float dr) {
+
+    drone->arm_len = size / 2.0f;
+
+    // m ~ x^3
+    float mass_scale = powf(drone->arm_len, 3.0f) / powf(BASE_ARM_LEN, 3.0f);
+    drone->mass = BASE_MASS * mass_scale * rndf(1.0f - dr, 1.0f + dr);
+
+    // I ~ mx^2
+    float base_Iscale = BASE_MASS * BASE_ARM_LEN * BASE_ARM_LEN;
+    float I_scale = drone->mass * powf(drone->arm_len, 2.0f) / base_Iscale;
+    drone->ixx = BASE_IXX * I_scale * rndf(1.0f - dr, 1.0f + dr);
+    drone->iyy = BASE_IYY * I_scale * rndf(1.0f - dr, 1.0f + dr);
+    drone->izz = BASE_IZZ * I_scale * rndf(1.0f - dr, 1.0f + dr);
+
+    // k_thrust ~ m/l
+    float k_thrust_scale = (drone->mass * drone->arm_len) / (BASE_MASS * BASE_ARM_LEN);
+    drone->k_thrust = BASE_K_THRUST * k_thrust_scale * rndf(1.0f - dr, 1.0f + dr);
+
+    // k_ang_damp ~ I
+    float base_avg_inertia = (BASE_IXX + BASE_IYY + BASE_IZZ) / 3.0f;
+    float avg_inertia = (drone->ixx + drone->iyy + drone->izz) / 3.0f;
+    float avg_inertia_scale = avg_inertia / base_avg_inertia;
+    drone->k_ang_damp = BASE_K_ANG_DAMP * avg_inertia_scale * rndf(1.0f - dr, 1.0f + dr);
+
+    // drag ~ x^2
+    float drag_scale = powf(drone->arm_len, 2.0f) / powf(BASE_ARM_LEN, 2.0f);
+    drone->k_drag = BASE_K_DRAG * drag_scale * rndf(1.0f - dr, 1.0f + dr);
+    drone->b_drag = BASE_B_DRAG * drag_scale * rndf(1.0f - dr, 1.0f + dr);
+
+    // Small gravity randomization
+    drone->gravity = BASE_GRAVITY * rndf(0.99f, 1.01f);
+
+    // RPM ~ 1/x
+    float rpm_scale = (BASE_ARM_LEN) / (drone->arm_len);
+    drone->max_rpm = BASE_MAX_RPM * rpm_scale * rndf(1.0f - dr, 1.0f + dr);
+
+    drone->max_vel = BASE_MAX_VEL;
+    drone->max_omega = BASE_MAX_OMEGA;
+}
 
 void move_drone(Drone* drone, float* actions) {
     clamp4(actions, -1.0f, 1.0f);
@@ -203,7 +277,7 @@ void move_drone(Drone* drone, float* actions) {
     // motor thrusts
     float T[4];
     for (int i = 0; i < 4; i++) {
-        T[i] = K_THRUST * powf((actions[i] + 1.0f) * 0.5f * MAX_RPM, 2.0f);
+        T[i] = drone->k_thrust*powf((actions[i] + 1.0f) * 0.5f * drone->max_rpm, 2.0f);
     }
 
 
@@ -211,24 +285,28 @@ void move_drone(Drone* drone, float* actions) {
     Vec3 F_body = {0.0f, 0.0f, T[0] + T[1] + T[2] + T[3]};
 
     // body frame torques
-    Vec3 M = {ARM_LEN * (T[1] - T[3]), ARM_LEN * (T[2] - T[0]),
-              K_DRAG * (T[0] - T[1] + T[2] - T[3])};
+    Vec3 M = {drone->arm_len*(T[1] - T[3]), drone->arm_len*(T[2] - T[0]),
+              drone->k_drag*(T[0] - T[1] + T[2] - T[3])};
 
     // applies angular damping to torques
-    M.x -= K_ANG_DAMP * drone->omega.x;
-    M.y -= K_ANG_DAMP * drone->omega.y;
-    M.z -= K_ANG_DAMP * drone->omega.z;
+    M.x -= drone->k_ang_damp * drone->omega.x;
+    M.y -= drone->k_ang_damp * drone->omega.y;
+    M.z -= drone->k_ang_damp * drone->omega.z;
 
     // body frame force -> world frame force
     Vec3 F_world = quat_rotate(drone->quat, F_body);
 
     // world frame linear drag
-    F_world.x -= B_DRAG * drone->vel.x;
-    F_world.y -= B_DRAG * drone->vel.y;
-    F_world.z -= B_DRAG * drone->vel.z;
+    F_world.x -= drone->b_drag * drone->vel.x;
+    F_world.y -= drone->b_drag * drone->vel.y;
+    F_world.z -= drone->b_drag * drone->vel.z;
 
     // world frame gravity
-    Vec3 accel = {F_world.x / MASS, F_world.y / MASS, (F_world.z / MASS) - GRAVITY};
+    Vec3 accel = {
+        F_world.x / drone->mass,
+        F_world.y / drone->mass,
+        (F_world.z / drone->mass) - drone->gravity
+    };
 
     // from the definition of q dot
     Quat omega_q = {0.0f, drone->omega.x, drone->omega.y, drone->omega.z};
@@ -239,26 +317,29 @@ void move_drone(Drone* drone, float* actions) {
     q_dot.y *= 0.5f;
     q_dot.z *= 0.5f;
 
+    // Domain randomized dt
+    float dt = DT * rndf(1.0f - DT_RNG, 1.0 + DT_RNG);
+
     // integrations
-    drone->pos.x += drone->vel.x * DT;
-    drone->pos.y += drone->vel.y * DT;
-    drone->pos.z += drone->vel.z * DT;
+    drone->pos.x += drone->vel.x * dt;
+    drone->pos.y += drone->vel.y * dt;
+    drone->pos.z += drone->vel.z * dt;
 
-    drone->vel.x += accel.x * DT;
-    drone->vel.y += accel.y * DT;
-    drone->vel.z += accel.z * DT;
+    drone->vel.x += accel.x * dt;
+    drone->vel.y += accel.y * dt;
+    drone->vel.z += accel.z * dt;
 
-    drone->omega.x += (M.x / IXX) * DT;
-    drone->omega.y += (M.y / IYY) * DT;
-    drone->omega.z += (M.z / IZZ) * DT;
+    drone->omega.x += (M.x / drone->ixx) * dt;
+    drone->omega.y += (M.y / drone->iyy) * dt;
+    drone->omega.z += (M.z / drone->izz) * dt;
 
-    clamp3(&drone->vel, -MAX_VEL, MAX_VEL);
-    clamp3(&drone->omega, -MAX_OMEGA, MAX_OMEGA);
+    clamp3(&drone->vel, -drone->max_vel, drone->max_vel);
+    clamp3(&drone->omega, -drone->max_omega, drone->max_omega);
 
-    drone->quat.w += q_dot.w * DT;
-    drone->quat.x += q_dot.x * DT;
-    drone->quat.y += q_dot.y * DT;
-    drone->quat.z += q_dot.z * DT;
+    drone->quat.w += q_dot.w * dt;
+    drone->quat.x += q_dot.x * dt;
+    drone->quat.y += q_dot.y * dt;
+    drone->quat.z += q_dot.z * dt;
 
     quat_normalize(&drone->quat);
 }
@@ -291,4 +372,3 @@ float check_ring(Drone* drone, Ring* ring) {
     }
     return 0.0f;
 }
-

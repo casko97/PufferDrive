@@ -5,6 +5,7 @@
 
 static int my_init(Env *env, PyObject *args, PyObject *kwargs) {
     env->num_agents = unpack(kwargs, "num_agents");
+    env->max_rings = unpack(kwargs, "max_rings");
     init(env);
     return 0;
 }
