@@ -182,9 +182,15 @@ void compute_observations(DroneSwarm *env) {
 
         // Multiagent obs
         Drone* nearest = nearest_drone(env, agent);
-        env->observations[idx++] = clampf(nearest->pos.x - agent->pos.x, -1.0f, 1.0f);
-        env->observations[idx++] = clampf(nearest->pos.y - agent->pos.y, -1.0f, 1.0f);
-        env->observations[idx++] = clampf(nearest->pos.z - agent->pos.z, -1.0f, 1.0f);
+        if (env->num_agents > 1) {
+            env->observations[idx++] = clampf(nearest->pos.x - agent->pos.x, -1.0f, 1.0f);
+            env->observations[idx++] = clampf(nearest->pos.y - agent->pos.y, -1.0f, 1.0f);
+            env->observations[idx++] = clampf(nearest->pos.z - agent->pos.z, -1.0f, 1.0f);
+        } else {
+            env->observations[idx++] = 0.0f;
+            env->observations[idx++] = 0.0f;
+            env->observations[idx++] = 0.0f;
+        }
 
         // Ring obs
         if (env->task == TASK_RACE) {
@@ -396,7 +402,7 @@ void c_reset(DroneSwarm *env) {
             env->ring_buffer[0] = rndring(ring_radius);
         }
 
-        for (int i = 1; i < env->max_rings + 1; i++) {
+        for (int i = 1; i < env->max_rings; i++) {
             do {
                 env->ring_buffer[i] = rndring(ring_radius);
             } while (norm3(sub3(env->ring_buffer[i].pos, env->ring_buffer[i - 1].pos)) < 2.0f*ring_radius);
