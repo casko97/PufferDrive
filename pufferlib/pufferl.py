@@ -985,7 +985,7 @@ def eval(env_name, args=None, vecenv=None, policy=None):
             imageio.mimsave(args['gif_path'], frames, fps=args['fps'], loop=0)
             frames.append('Done')
 
-def sweep(args=None, env_name=None):
+def sweep(args=None, env_name=''):
     args = args or load_config(env_name)
     if not args['wandb'] and not args['neptune']:
         raise pufferlib.APIUsageError('Sweeps require either wandb or neptune')
