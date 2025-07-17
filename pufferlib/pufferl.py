@@ -1067,7 +1067,7 @@ def load_env(env_name, args):
     make_env = env_module.env_creator(env_name)
     return pufferlib.vector.make(make_env, env_kwargs=args['env'], **args['vec'])
 
-def load_policy(args, vecenv, env_name=None):
+def load_policy(args, vecenv, env_name=''):
     package = args['package']
     module_name = 'pufferlib.ocean' if package == 'ocean' else f'pufferlib.environments.{package}'
     env_module = importlib.import_module(module_name)
