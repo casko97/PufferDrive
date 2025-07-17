@@ -47,6 +47,7 @@ typedef struct Log Log;
 struct Log {
     float episode_return;
     float episode_length;
+    float rings_passed;
     float collision_rate;
     float oob;
     float score;
@@ -368,7 +369,7 @@ float check_ring(Drone* drone, Ring* ring) {
         if (dist < (ring->radius - 0.5) && valid_dir) {
             return 1.0f;
         } else if (dist < ring->radius + 0.5) {
-            return -1.0f;
+            return -0.0f;
         }
     }
     return 0.0f;

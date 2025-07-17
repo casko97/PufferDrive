@@ -303,6 +303,12 @@ void set_target_flag(DroneSwarm* env, int idx) {
     agent->target_vel = (Vec3){0.0f, 0.0f, 0.0f};
 }
 
+void set_target_race(DroneSwarm* env, int idx) {
+    Drone* agent = &env->agents[idx];
+    agent->target_pos = env->ring_buffer[agent->ring_idx].pos;
+    agent->target_vel = (Vec3){0.0f, 0.0f, 0.0f};
+}
+
 void set_target(DroneSwarm* env, int idx) {
     if (env->task == TASK_IDLE) {
         set_target_idle(env, idx);
@@ -318,6 +324,8 @@ void set_target(DroneSwarm* env, int idx) {
         set_target_congo(env, idx);
     } else if (env->task == TASK_FLAG) {
         set_target_flag(env, idx);
+    } else if (env->task == TASK_RACE) {
+        set_target_race(env, idx);
     }
 }
 
@@ -377,15 +385,22 @@ void reset_agent(DroneSwarm* env, Drone *agent, int idx) {
     agent->quat = (Quat){1.0f, 0.0f, 0.0f, 0.0f};
     agent->ring_idx = 0;
 
-    float size = rndf(0.05f, 0.8);
+    //float size = rndf(0.05f, 0.8);
+    float size = rndf(0.1f, 0.4);
     init_drone(agent, size, 0.1f);
     compute_reward(env, agent);
 }
 
 void c_reset(DroneSwarm *env) {
     env->tick = 0;
+    //env->task = TASK_RACE;
     //env->task = rand() % (TASK_N - 1);
-    env->task = TASK_RACE;
+    if (rand() % 2) {
+        env->task = rand() % (TASK_N - 1);
+    } else {
+        env->task = TASK_RACE;
+    }
+
     for (int i = 0; i < env->num_agents; i++) {
         Drone *agent = &env->agents[i];
         reset_agent(env, agent, i);
@@ -440,9 +455,11 @@ void c_step(DroneSwarm *env) {
         float reward = 0.0f;
         if (env->task == TASK_RACE) {
             Ring *ring = &env->ring_buffer[agent->ring_idx];
+            compute_reward(env, agent);
             reward = check_ring(agent, ring);
             if (reward > 0) {
                 agent->ring_idx = (agent->ring_idx + 1) % env->max_rings;
+                env->log.rings_passed += 1.0f;
             }
         } else {
             // Delta reward
@@ -459,6 +476,10 @@ void c_step(DroneSwarm *env) {
         } else if (env->tick >= HORIZON - 1) {
             env->terminals[i] = 1;
             add_log(env, i, false);
+        }
+
+        if (env->task == TASK_RACE) {
+            set_target(env, i);
         }
     }
     if (env->tick >= HORIZON - 1) {
@@ -728,7 +749,6 @@ void c_render(DroneSwarm *env) {
             DrawRing3D(ring, ring_thickness, GREEN, BLUE);
         }
     }
-
 
     if (IsKeyDown(KEY_TAB)) {
         for (int i = 0; i < env->num_agents; i++) {
