@@ -13,9 +13,6 @@
 #include "raylib.h"
 #include "dronelib.h"
 
-// Corner to corner distance
-#define MAX_DIST sqrtf(3*(2*GRID_SIZE)*(2*GRID_SIZE))
-
 #define TASK_IDLE 0
 #define TASK_HOVER 1
 #define TASK_ORBIT 2
@@ -158,13 +155,13 @@ void compute_observations(DroneSwarm *env) {
         env->observations[idx++] = agent->quat.y;
         env->observations[idx++] = agent->quat.z;
 
-        env->observations[idx++] = agent->pos.x / GRID_SIZE;
-        env->observations[idx++] = agent->pos.y / GRID_SIZE;
-        env->observations[idx++] = agent->pos.z / GRID_SIZE;
+        env->observations[idx++] = agent->pos.x / GRID_X;
+        env->observations[idx++] = agent->pos.y / GRID_Y;
+        env->observations[idx++] = agent->pos.z / GRID_Z;
 
-        env->observations[idx++] = agent->spawn_pos.x / GRID_SIZE;
-        env->observations[idx++] = agent->spawn_pos.y / GRID_SIZE;
-        env->observations[idx++] = agent->spawn_pos.z / GRID_SIZE;
+        env->observations[idx++] = agent->spawn_pos.x / GRID_X;
+        env->observations[idx++] = agent->spawn_pos.y / GRID_Y;
+        env->observations[idx++] = agent->spawn_pos.z / GRID_Z;
 
         float dx = agent->target_pos.x - agent->pos.x;
         float dy = agent->target_pos.y - agent->pos.y;
@@ -172,9 +169,9 @@ void compute_observations(DroneSwarm *env) {
         env->observations[idx++] = clampf(dx, -1.0f, 1.0f);
         env->observations[idx++] = clampf(dy, -1.0f, 1.0f);
         env->observations[idx++] = clampf(dz, -1.0f, 1.0f);
-        env->observations[idx++] = dx / GRID_SIZE;
-        env->observations[idx++] = dy / GRID_SIZE;
-        env->observations[idx++] = dz / GRID_SIZE;
+        env->observations[idx++] = dx / GRID_X;
+        env->observations[idx++] = dy / GRID_Y;
+        env->observations[idx++] = dz / GRID_Z;
 
         env->observations[idx++] = agent->last_collision_reward;
         env->observations[idx++] = agent->last_target_reward;
@@ -197,9 +194,9 @@ void compute_observations(DroneSwarm *env) {
             Ring ring = env->ring_buffer[agent->ring_idx];
             Vec3 to_ring = quat_rotate(q_inv, sub3(ring.pos, agent->pos));
             Vec3 ring_norm = quat_rotate(q_inv, ring.normal);
-            env->observations[idx++] = to_ring.x / GRID_SIZE;
-            env->observations[idx++] = to_ring.y / GRID_SIZE;
-            env->observations[idx++] = to_ring.z / GRID_SIZE;
+            env->observations[idx++] = to_ring.x / GRID_X;
+            env->observations[idx++] = to_ring.y / GRID_Y;
+            env->observations[idx++] = to_ring.z / GRID_Z;
             env->observations[idx++] = ring_norm.x;
             env->observations[idx++] = ring_norm.y;
             env->observations[idx++] = ring_norm.z;
@@ -218,20 +215,20 @@ void move_target(DroneSwarm* env, Drone *agent) {
     agent->target_pos.x += agent->target_vel.x;
     agent->target_pos.y += agent->target_vel.y;
     agent->target_pos.z += agent->target_vel.z;
-    if (agent->target_pos.x < -GRID_SIZE || agent->target_pos.x > GRID_SIZE) {
+    if (agent->target_pos.x < -GRID_X || agent->target_pos.x > GRID_X) {
         agent->target_vel.x = -agent->target_vel.x;
     }
-    if (agent->target_pos.y < -GRID_SIZE || agent->target_pos.y > GRID_SIZE) {
+    if (agent->target_pos.y < -GRID_Y || agent->target_pos.y > GRID_Y) {
         agent->target_vel.y = -agent->target_vel.y;
     }
-    if (agent->target_pos.z < -GRID_SIZE || agent->target_pos.z > GRID_SIZE) {
+    if (agent->target_pos.z < -GRID_Z || agent->target_pos.z > GRID_Z) {
         agent->target_vel.z = -agent->target_vel.z;
     }
 }
 
 void set_target_idle(DroneSwarm* env, int idx) {
     Drone *agent = &env->agents[idx];
-    agent->target_pos = (Vec3){rndf(-MARGIN, MARGIN), rndf(-MARGIN, MARGIN), rndf(-MARGIN, MARGIN)};
+    agent->target_pos = (Vec3){rndf(-MARGIN_X, MARGIN_X), rndf(-MARGIN_Y, MARGIN_Y), rndf(-MARGIN_Z, MARGIN_Z)};
     agent->target_vel = (Vec3){rndf(-V_TARGET, V_TARGET), rndf(-V_TARGET, V_TARGET), rndf(-V_TARGET, V_TARGET)};
 }
 
@@ -446,9 +443,9 @@ void c_step(DroneSwarm *env) {
         move_drone(agent, atn);
 
         // check out of bounds
-        bool out_of_bounds = agent->pos.x < -GRID_SIZE || agent->pos.x > GRID_SIZE ||
-                             agent->pos.y < -GRID_SIZE || agent->pos.y > GRID_SIZE ||
-                             agent->pos.z < -GRID_SIZE || agent->pos.z > GRID_SIZE;
+        bool out_of_bounds = agent->pos.x < -GRID_X || agent->pos.x > GRID_X ||
+                             agent->pos.y < -GRID_Y || agent->pos.y > GRID_Y ||
+                             agent->pos.z < -GRID_Z || agent->pos.z > GRID_Z;
 
         move_target(env, agent);
 
@@ -669,8 +666,8 @@ void c_render(DroneSwarm *env) {
     BeginMode3D(client->camera);
 
     // draws bounding cube
-    DrawCubeWires((Vector3){0.0f, 0.0f, 0.0f}, GRID_SIZE * 2.0f,
-        GRID_SIZE * 2.0f, GRID_SIZE * 2.0f, WHITE);
+    DrawCubeWires((Vector3){0.0f, 0.0f, 0.0f}, GRID_X * 2.0f,
+        GRID_Y * 2.0f, GRID_Z * 2.0f, WHITE);
 
     for (int i = 0; i < env->num_agents; i++) {
         Drone *agent = &env->agents[i];

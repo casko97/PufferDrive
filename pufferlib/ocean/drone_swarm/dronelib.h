@@ -34,14 +34,18 @@
 #define BASE_MAX_OMEGA 50.0f // rad/s
 
 // Simulation properties
-#define GRID_SIZE 10.0f
-#define MARGIN (GRID_SIZE - 1)
+#define GRID_X 10.0f
+#define GRID_Y 10.0f
+#define GRID_Z 10.0f
+#define MARGIN_X (GRID_X - 1)
+#define MARGIN_Y (GRID_Y - 1)
+#define MARGIN_Z (GRID_Z - 1)
 #define V_TARGET 0.05f
 #define DT 0.02f
 #define DT_RNG 0.0f
 
 // Corner to corner distance
-#define MAX_DIST sqrtf(3*(2*GRID_SIZE)*(2*GRID_SIZE))
+#define MAX_DIST sqrtf((2*GRID_X)*(2*GRID_X) + (2*GRID_Y)*(2*GRID_Y) + (2*GRID_Z)*(2*GRID_Z))
 
 typedef struct Log Log;
 struct Log {
@@ -157,9 +161,9 @@ typedef struct {
 Ring rndring(float radius) {
     Ring ring;
 
-    ring.pos.x = rndf(-GRID_SIZE + 2*radius, GRID_SIZE - 2*radius);
-    ring.pos.y = rndf(-GRID_SIZE + 2*radius, GRID_SIZE - 2*radius);
-    ring.pos.z = rndf(-GRID_SIZE + 2*radius, GRID_SIZE - 2*radius);
+    ring.pos.x = rndf(-GRID_X + 2*radius, GRID_X - 2*radius);
+    ring.pos.y = rndf(-GRID_Y + 2*radius, GRID_Y - 2*radius);
+    ring.pos.z = rndf(-GRID_Z + 2*radius, GRID_Z - 2*radius);
 
     ring.orientation = rndquat();
 
