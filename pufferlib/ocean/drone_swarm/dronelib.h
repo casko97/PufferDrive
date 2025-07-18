@@ -224,21 +224,6 @@ typedef struct {
     float j_mot; // kgm^2
 } Drone;
 
-// Physical constants for the drone
-#define BASE_MASS 1.0f       // kg
-#define BASE_IXX 0.01f       // kgm^2
-#define BASE_IYY 0.01f       // kgm^2
-#define BASE_IZZ 0.02f       // kgm^2
-#define BASE_ARM_LEN 0.1f    // m
-#define BASE_K_THRUST 3e-5f  // thrust coefficient
-#define BASE_K_ANG_DAMP 0.2f // angular damping coefficient
-#define BASE_K_DRAG 1e-6f    // drag (torque) coefficient
-#define BASE_B_DRAG 0.1f     // linear drag coefficient
-#define BASE_GRAVITY 9.81f   // m/s^2
-#define BASE_MAX_RPM 750.0f  // rad/s
-#define BASE_MAX_VEL 50.0f   // m/s
-#define BASE_MAX_OMEGA 50.0f // rad/s
-
 
 void init_drone(Drone* drone, float size, float dr) {
     drone->arm_len = size / 2.0f;
