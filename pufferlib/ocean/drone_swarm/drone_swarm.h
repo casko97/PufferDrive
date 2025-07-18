@@ -155,6 +155,11 @@ void compute_observations(DroneSwarm *env) {
         env->observations[idx++] = agent->quat.y;
         env->observations[idx++] = agent->quat.z;
 
+	env->observations[idx++] = agent->rpms[0] / agent->max_rpm;
+	env->observations[idx++] = agent->rpms[1] / agent->max_rpm;
+	env->observations[idx++] = agent->rpms[2] / agent->max_rpm;
+	env->observations[idx++] = agent->rpms[3] / agent->max_rpm;
+
         env->observations[idx++] = agent->pos.x / GRID_X;
         env->observations[idx++] = agent->pos.y / GRID_Y;
         env->observations[idx++] = agent->pos.z / GRID_Z;
@@ -391,15 +396,17 @@ void reset_agent(DroneSwarm* env, Drone *agent, int idx) {
 
 void c_reset(DroneSwarm *env) {
     env->tick = 0;
-    //env->task = TASK_RACE;
+    env->task = TASK_RACE;
     //env->task = rand() % (TASK_N - 1);
     //env->task = TASK_FLAG;
     //env->task = rand() % (TASK_N - 1);
+    /*
     if (rand() % 2) {
         env->task = rand() % (TASK_N - 1);
     } else {
         env->task = TASK_RACE;
     }
+    */
 
     for (int i = 0; i < env->num_agents; i++) {
         Drone *agent = &env->agents[i];

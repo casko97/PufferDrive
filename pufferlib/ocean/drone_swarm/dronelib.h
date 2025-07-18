@@ -32,6 +32,8 @@
 #define BASE_MAX_RPM 750.0f  // rad/s
 #define BASE_MAX_VEL 50.0f   // m/s
 #define BASE_MAX_OMEGA 50.0f // rad/s
+#define BASE_K_MOT 0.1f      // s (Motor lag constant)
+#define BASE_J_MOT 1e-5f     // kgm^2 (Motor rotational inertia)
 
 // Simulation properties
 #define GRID_X 30.0f
@@ -189,6 +191,7 @@ typedef struct {
     Vec3 vel;   // linear velocity (u, v, w)
     Quat quat;  // roll/pitch/yaw (phi/theta/psi) as a quaternion
     Vec3 omega; // angular velocity (p, q, r)
+    float rpms[4]; // motor RPMs
     
     Vec3 target_pos;
     Vec3 target_vel;
@@ -217,22 +220,9 @@ typedef struct {
     float max_rpm; // rad/s
     float max_vel; // m/s
     float max_omega; // rad/s
+    float k_mot; // s
+    float j_mot; // kgm^2
 } Drone;
-
-// Physical constants for the drone
-#define BASE_MASS 1.0f       // kg
-#define BASE_IXX 0.01f       // kgm^2
-#define BASE_IYY 0.01f       // kgm^2
-#define BASE_IZZ 0.02f       // kgm^2
-#define BASE_ARM_LEN 0.1f    // m
-#define BASE_K_THRUST 3e-5f  // thrust coefficient
-#define BASE_K_ANG_DAMP 0.2f // angular damping coefficient
-#define BASE_K_DRAG 1e-6f    // drag (torque) coefficient
-#define BASE_B_DRAG 0.1f     // linear drag coefficient
-#define BASE_GRAVITY 9.81f   // m/s^2
-#define BASE_MAX_RPM 750.0f  // rad/s
-#define BASE_MAX_VEL 50.0f   // m/s
-#define BASE_MAX_OMEGA 50.0f // rad/s
 
 
 void init_drone(Drone* drone, float size, float dr) {
