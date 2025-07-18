@@ -34,8 +34,8 @@
 #define BASE_MAX_OMEGA 50.0f // rad/s
 
 // Simulation properties
-#define GRID_X 10.0f
-#define GRID_Y 10.0f
+#define GRID_X 30.0f
+#define GRID_Y 30.0f
 #define GRID_Z 10.0f
 #define MARGIN_X (GRID_X - 1)
 #define MARGIN_Y (GRID_Y - 1)
