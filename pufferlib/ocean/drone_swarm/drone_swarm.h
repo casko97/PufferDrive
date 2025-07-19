@@ -1,4 +1,4 @@
-// Originally made by Sam Turner and Finlay Sanders, 2025.
+g/ Originally made by Sam Turner and Finlay Sanders, 2025.
 // Included in pufferlib under the original project's MIT license.
 // https://github.com/stmio/drone
 
@@ -395,7 +395,6 @@ void reset_agent(DroneSwarm* env, Drone *agent, int idx) {
 
 void c_reset(DroneSwarm *env) {
     env->tick = 0;
-    //env->task = TASK_RACE;
     //env->task = rand() % (TASK_N - 1);
     //env->task = TASK_FLAG;
     //env->task = rand() % (TASK_N - 1);
