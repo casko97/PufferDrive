@@ -1,4 +1,4 @@
-g/ Originally made by Sam Turner and Finlay Sanders, 2025.
+// Originally made by Sam Turner and Finlay Sanders, 2025.
 // Included in pufferlib under the original project's MIT license.
 // https://github.com/stmio/drone
 
