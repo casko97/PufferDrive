@@ -396,7 +396,6 @@ void reset_agent(DroneSwarm* env, Drone *agent, int idx) {
 
 void c_reset(DroneSwarm *env) {
     env->tick = 0;
-    env->task = TASK_RACE;
     //env->task = rand() % (TASK_N - 1);
     //env->task = TASK_FLAG;
     //env->task = rand() % (TASK_N - 1);
@@ -407,10 +406,7 @@ void c_reset(DroneSwarm *env) {
         env->task = TASK_RACE;
     }
     */
-<<<<<<< HEAD
     env->task = TASK_RACE;
-=======
->>>>>>> fa6c1d1231082e4dc57c96cdb8e33e6e6967f0a7
 
     for (int i = 0; i < env->num_agents; i++) {
         Drone *agent = &env->agents[i];
