@@ -398,14 +398,12 @@ void c_reset(DroneSwarm *env) {
     //env->task = rand() % (TASK_N - 1);
     //env->task = TASK_FLAG;
     //env->task = rand() % (TASK_N - 1);
-    /*
     if (rand() % 2) {
         env->task = rand() % (TASK_N - 1);
     } else {
         env->task = TASK_RACE;
     }
-    */
-    env->task = TASK_RACE;
+    //env->task = TASK_RACE;
 
     for (int i = 0; i < env->num_agents; i++) {
         Drone *agent = &env->agents[i];
