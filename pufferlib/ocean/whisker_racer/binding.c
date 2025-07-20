@@ -1,6 +1,6 @@
 #include "whisker_racer.h"
 
-#define Env whisker_racer
+#define Env WhiskerRacer
 #include "../env_binding.h"
 
 static int my_init(Env* env, PyObject* args, PyObject* kwargs) {
