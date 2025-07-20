@@ -69,9 +69,6 @@ typedef struct WhiskerRacer {
     float accel;
     float turn_pi_frac;
 
-    // Track/Map
-    int circuit;
-
     // Whiskers
     int num_whiskers;
     //float* whisker_angles;    // Array of whisker angles (radians)
@@ -141,7 +138,10 @@ void c_close(WhiskerRacer* env) {
     //free(env->brick_x);
     //free(env->brick_y);
     //free(env->brick_states);
-    free(env->track_texture);
+    if (env->track_texture.id != 0) {
+        UnloadTexture(env->track_texture);
+        env->track_texture.id = 0;
+    }
 }
 
 void free_allocated(WhiskerRacer* env) {
@@ -177,7 +177,7 @@ static int is_green(Color color) {
     return (color.g > 150 && color.g > color.r + 40 && color.g > color.b + 40);
 }
 
-static inline Color GetImageColor(Texture2D texture, int x, int y) {
+static inline Color GetTexturePixelColor(Texture2D texture, int x, int y) {
     Image img = LoadImageFromTexture(texture);
     Color color = {0};
     if (x >= 0 && x < img.width && y >= 0 && y < img.height) {
@@ -232,7 +232,7 @@ void calc_whisker_lengths(WhiskerRacer* env) {
             }
 
             // Sample pixel from track texture
-            Color color = GetImageColor(env->track_texture, ix, iy);
+            Color color = GetTexturePixelColor(env->track_texture, ix, iy);
 
             if (is_green(color)) {
                 hit_len = l;
@@ -348,8 +348,8 @@ void step_frame(WhiskerRacer* env, float action) {
     if (env->continuous){
         act = action;
     }
-    env->vx = env->v * math.cos(ang);
-    env->vy = env->v * math.sin(ang);
+    env->vx = env->v * cosf(env->ang);
+    env->vy = env->v * sinf(env->ang);
     //env->paddle_x += act * 620 * TICK_RATE;
     //if (env->paddle_x <= 0){
     //    env->paddle_x = fmaxf(0, env->paddle_x);
