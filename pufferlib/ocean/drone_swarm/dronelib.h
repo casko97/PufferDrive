@@ -375,6 +375,7 @@ void move_drone(Drone* drone, float* actions) {
     float dt = DT * rndf(1.0f - DT_RNG, 1.0 + DT_RNG);
 
     // update drone state
+    drone->prev_pos = drone->pos;
     explicit_euler(drone, v_dot, q_dot, w_dot, rpm_dot, dt);
 
     // clamp and normalise for observations
