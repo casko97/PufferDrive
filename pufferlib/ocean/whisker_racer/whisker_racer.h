@@ -70,18 +70,45 @@ typedef struct WhiskerRacer {
     float turn_pi_frac;
 
     // Track/Map
-    float asdf;
+    int circuit;
 
     // Whiskers
     int num_whiskers;
+    //float* whisker_angles;    // Array of whisker angles (radians)
     float llw_ang; // left left whisker angle
     float flw_ang; // front left whisker angle
     float frw_ang; // front right whisker angle
     float rrw_ang; // right right whisker angle
-    float* whisker_angles;    // Array of whisker angles (radians)
+    //float* whisker_lengths;   // Array of current whisker readings
+    float llw_length;
+    float flw_length;
+    float ffw_length;
+    float frw_length;
+    float rrw_length;
     float max_whisker_length;
-    float* whisker_lengths;   // Array of current whisker readings
+    
+    Texture2D track_texture;
 } WhiskerRacer;
+
+void load_track_texture(WhiskerRacer* env) {
+    // Construct the filename: "img/circuits/circuit-<circuit>.jpg"
+    char fname[128];
+    snprintf(fname, sizeof(fname), "./img/circuits/circuit-%d.jpg", env->circuit);
+
+    // Unload previous texture if already loaded
+    if (env->track_texture.id != 0) {
+        UnloadTexture(env->track_texture);
+    }
+
+    // Load the new texture
+    env->track_texture = LoadTexture(fname);
+
+    // Optional: error handling
+    if (env->track_texture.id == 0) {
+        printf("Failed to load track texture: %s\n", fname);
+        // Handle error as needed (exit, fallback, etc.)
+    }
+}
 
 void init(WhiskerRacer* env) {
     env->tick = 0;
@@ -97,22 +124,24 @@ void init(WhiskerRacer* env) {
     */
 
     // todo not sure what to do here yet maybe nothing else
+    // I might need to run get_random_start()
+    load_track_texture(env);
 }
 
 void allocate(WhiskerRacer* env) {
     init(env);
-    //env->observations = (float*)calloc(11 + env->num_bricks, sizeof(float));
-    env->observations = (float*)calloc(9, sizeof(float)); // todo double check this later
+    env->observations = (float*)calloc(10, sizeof(float)); // todo double check this later
     env->actions = (float*)calloc(1, sizeof(float));
     env->rewards = (float*)calloc(1, sizeof(float));
     env->terminals = (unsigned char*)calloc(1, sizeof(unsigned char));
 }
 
 void c_close(WhiskerRacer* env) {
-    // todo
+    // todo not sure if this is even needed
     //free(env->brick_x);
     //free(env->brick_y);
     //free(env->brick_states);
+    free(env->track_texture);
 }
 
 void free_allocated(WhiskerRacer* env) {
@@ -132,29 +161,32 @@ void add_log(WhiskerRacer* env) {
 }
 
 void compute_observations(WhiskerRacer* env) {
-    /*
-    env->observations[0] = env->paddle_x / env->width;
-    env->observations[1] = env->paddle_y / env->height;
-    env->observations[2] = env->ball_x / env->width;
-    env->observations[3] = env->ball_y / env->height;
-    env->observations[4] = env->ball_vx / 512.0f;
-    env->observations[5] = env->ball_vy / 512.0f;
-    env->observations[6] = env->balls_fired / 5.0f;
-    env->observations[7] = env->score / 864.0f;
-    env->observations[8] = env->num_balls / 5.0f;
-    env->observations[9] = env->paddle_width / (2.0f * HALF_PADDLE_WIDTH);
-    for (int i = 0; i < env->num_bricks; i++) {
-        env->observations[10 + i] = env->brick_states[i];
-    }
-    */
-
     env->observations[0] = env->px / env->width;
     env->observations[1] = env->py / env->height;
     env->observations[2] = env->ang / (PI2);
     env->observations[3] = env->vx / env->maxv;
     env->observations[4] = env->vy / env->maxv;
-    // other env->observations are probably based on the whiskers but idk how to represent that yet
-    // I'm guessing I just send the length of the whisker, which is cut off at track boundary or sent as maxL for whisker
+    env->observations[5] = env->llw_length;
+    env->observations[6] = env->flw_length;
+    env->observations[7] = env->ffw_length;
+    env->observations[8] = env->frw_length;
+    env->observations[9] = env->rrw_length;
+}
+
+static int is_green(Color color) {
+    return (color.g > 150 && color.g > color.r + 40 && color.g > color.b + 40);
+}
+
+static inline Color GetImageColor(Texture2D texture, int x, int y) {
+    Image img = LoadImageFromTexture(texture);
+    Color color = {0};
+    if (x >= 0 && x < img.width && y >= 0 && y < img.height) {
+        Color* pixels = LoadImageColors(img);
+        color = pixels[y * img.width + x];
+        UnloadImageColors(pixels);
+    }
+    UnloadImage(img);
+    return color;
 }
 
 void calc_whisker_lengths(WhiskerRacer* env) {
@@ -162,6 +194,57 @@ void calc_whisker_lengths(WhiskerRacer* env) {
     // Do this for all 5 whiskers
     // Normalize them to max whisker length
     // if whisker touches no grass, just return the 1.0 for max whisker length after normalization
+
+    // Whisker angles relative to car's heading
+    float angles[5] = {
+        env->ang + env->llw_ang, // left-left
+        env->ang + env->flw_ang, // front-left
+        env->ang,                // front-forward
+        env->ang + env->frw_ang, // front-right
+        env->ang + env->rrw_ang  // right-right
+    };
+
+    float* lengths[5] = {
+        &env->llw_length,
+        &env->flw_length,
+        &env->ffw_length,
+        &env->frw_length,
+        &env->rrw_length
+    };
+
+    for (int w = 0; w < 5; ++w) {
+        float angle = angles[w];
+        float max_len = env->max_whisker_length;
+        float step = 1.0f; // pixel step size
+
+        float hit_len = max_len;
+        for (float l = 0.0f; l <= max_len; l += step) {
+            float wx = env->px + l * cosf(angle);
+            float wy = env->py + l * sinf(angle);
+
+            int ix = (int)roundf(wx);
+            int iy = (int)roundf(wy);
+
+            // Bounds check
+            if (ix < 0 || ix >= env->width || iy < 0 || iy >= env->height) {
+                hit_len = l;
+                break;
+            }
+
+            // Sample pixel from track texture
+            Color color = GetImageColor(env->track_texture, ix, iy);
+
+            if (is_green(color)) {
+                hit_len = l;
+                break;
+            }
+        }
+        // Normalize
+        float norm_len = hit_len / max_len;
+        if (norm_len > 1.0f) norm_len = 1.0f;
+        if (norm_len < 0.0f) norm_len = 0.0f;
+        *lengths[w] = norm_len;
+    }
 }
 
 void get_random_start(WhiskerRacer* env) {
@@ -184,6 +267,12 @@ void get_random_start(WhiskerRacer* env) {
         // Random position within the rectangle
         env->px = (float)(rand() % ((int)(xmax - xmin + 1))) + xmin;
         env->py = (float)(rand() % ((int)(ymax - ymin + 1))) + ymin;
+        env->v = 5.0;
+        env->llw_length = 0.25;
+        env->flw_length = 0.50;
+        env->ffw_length = 1.00;
+        env->frw_length = 0.50;
+        env->rrw_length = 0.25;
 
         // Random angle: base_angle + random offset in [-PI/6, PI/6]
         float angle_offset = ((float)rand() / RAND_MAX) * (M_PI/3.0f) - (M_PI/6.0f);
@@ -245,12 +334,22 @@ void step_frame(WhiskerRacer* env, float action) {
     //}   
     if (action == LEFT) {
         act = -1.0;
+        env->ang = env->ang + PI * env->turn_pi_frac;
     } else if (action == RIGHT) {
         act = 1.0;
+        env->ang = env->ang - PI * env->turn_pi_frac;
+    }
+    if (env->ang > PI2) {
+        env->ang = env->ang - PI2;
+    }
+    else if (env->ang < 0) {
+        env->ang = env->ang + PI2;
     }
     if (env->continuous){
         act = action;
     }
+    env->vx = env->v * math.cos(ang);
+    env->vy = env->v * math.sin(ang);
     //env->paddle_x += act * 620 * TICK_RATE;
     //if (env->paddle_x <= 0){
     //    env->paddle_x = fmaxf(0, env->paddle_x);
@@ -331,7 +430,7 @@ void c_render(WhiskerRacer* env) {
 
     BeginDrawing();
 
-    // Place Track Picture
+    DrawTexture(env->track_texture, 0, 0, WHITE);
 
     // Draw Car
 
