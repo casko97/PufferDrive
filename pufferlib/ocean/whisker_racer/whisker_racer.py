@@ -11,7 +11,7 @@ class WhiskerRacer(pufferlib.PufferEnv):
                  frw_ang=3.14/6, rrw_ang=3.14/4,
                  max_whisker_length=100,
                  turn_pi_frac=20,
-                 maxv=5,
+                 maxv=5, circuit=1, render=0,
                  continuous=False, log_interval=128,
                  buf=None, seed=0):
         self.single_observation_space = gymnasium.spaces.Box(low=0, high=1,
@@ -35,8 +35,8 @@ class WhiskerRacer(pufferlib.PufferEnv):
 
         self.c_envs = binding.vec_init(self.observations, self.actions, self.rewards,
             self.terminals, self.truncations, num_envs, seed, frameskip=frameskip, width=width, height=height,
-            llw_ang=-3.14/4, flw_ang=-3.14/6, frw_ang=3.14/6, rrw_ang=3.14/4, max_whisker_length=100,
-            turn_pi_frac=20, maxv=5, continuous=continuous
+            llw_ang=llw_ang, flw_ang=flw_ang, frw_ang=frw_ang, rrw_ang=rrw_ang, max_whisker_length=max_whisker_length,
+            turn_pi_frac=turn_pi_frac, maxv=maxv, circuit=circuit, render=render, continuous=continuous
         )
 
     def reset(self, seed=0):
@@ -44,8 +44,21 @@ class WhiskerRacer(pufferlib.PufferEnv):
         self.tick = 0
         return self.observations, []
     
-    def step(self, action):
-        pass
+    def step(self, actions):
+        if self.continuous:
+            self.actions[:] = np.clip(actions.flatten(), -1.0, 1.0)
+        else:
+            self.actions[:] = actions
+
+        self.tick += 1
+        binding.vec_step(self.c_envs)
+
+        info = []
+        if self.tick % self.log_interval == 0:
+            info.append(binding.vec_log(self.c_envs))
+
+        return (self.observations, self.rewards,
+            self.terminals, self.truncations, info)
 
 def test_performance(timeout=10, atn_cache=1024):
     env = WhiskerRacer(num_envs=100)

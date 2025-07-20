@@ -3,6 +3,7 @@
 #include "puffernet.h"
 
 void demo() {
+    printf("demo\n");
     Weights* weights = load_weights("resources/whisker_racer/whisker_racer_weights.bin", 147844);
     int logit_sizes[1] = {3};
     LinearLSTM* net = make_linearlstm(weights, 1, 118, logit_sizes, 1);
@@ -18,12 +19,17 @@ void demo() {
         .max_whisker_length = 100,
         .turn_pi_frac = 20,
         .maxv = 5,
+        .circuit = 1,
+        .render = 0,
         .continuous = 0,
     };
+    printf("about to allocate\n");
     allocate(&env);
 
+    printf("demo about to make_client\n");
     env.client = make_client(&env);
 
+    printf("demo about to c_reset\n");
     c_reset(&env);
     int frame = 0;
     SetTargetFPS(60);
@@ -54,6 +60,7 @@ void demo() {
     free(weights);
     free_allocated(&env);
     close_client(env.client);
+    printf("end demo\n");
 }
 
 int main() {
