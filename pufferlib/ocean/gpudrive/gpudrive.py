@@ -33,10 +33,13 @@ class GPUDrive(pufferlib.PufferEnv):
         self.spawn_immunity_timer = spawn_immunity_timer
         self.human_agent_idx = human_agent_idx
         self.resample_frequency = resample_frequency
-        self.num_obs = 6 + 63*7 + 200*7
+        self.num_obs = 6 + 63*7 + 50*7
         self.single_observation_space = gymnasium.spaces.Box(low=-1, high=1,
             shape=(self.num_obs,), dtype=np.float32)
         self.single_action_space = gymnasium.spaces.MultiDiscrete([7, 13])
+        # self.single_action_space = gymnasium.spaces.Box(
+        #     low=-1, high=1, shape=(2,), dtype=np.float32
+        # )
         # Check if resources directory exists
         binary_path = "resources/gpudrive/binaries/map_000.bin"
         if not os.path.exists(binary_path):
@@ -86,7 +89,7 @@ class GPUDrive(pufferlib.PufferEnv):
             log = binding.vec_log(self.c_envs)
             if log:
                 info.append(log)
-                # print(log)
+                print(log)
         if(self.tick > 0 and self.resample_frequency > 0 and self.tick % self.resample_frequency == 0):
             self.tick = 0
             will_resample = 1
@@ -298,7 +301,7 @@ def process_all_maps():
     binary_dir.mkdir(parents=True, exist_ok=True)
 
     # Path to the training data
-    data_dir = Path("data/processed/training")
+    data_dir = Path("data/processed/validation")
     
     # Get all JSON files in the training directory
     json_files = sorted(data_dir.glob("*.json"))
@@ -311,10 +314,10 @@ def process_all_maps():
         binary_path = binary_dir / binary_file
         
         print(f"Processing {map_path.name} -> {binary_file}")
-        try:
-            load_map(str(map_path), str(binary_path))
-        except Exception as e:
-            print(f"Error processing {map_path.name}: {e}")
+        # try:
+        load_map(str(map_path), str(binary_path))
+        # except Exception as e:
+        #     print(f"Error processing {map_path.name}: {e}")
 
 def test_performance(timeout=10, atn_cache=1024, num_agents=1024):
     import time
