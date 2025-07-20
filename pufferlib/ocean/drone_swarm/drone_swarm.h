@@ -386,10 +386,10 @@ void reset_agent(DroneSwarm* env, Drone *agent, int idx) {
     agent->quat = (Quat){1.0f, 0.0f, 0.0f, 0.0f};
     agent->ring_idx = 0;
 
-    float size = 0.2f;
-    init_drone(agent, size, 0.0f);
-    //float size = rndf(0.1f, 0.4);
-    //init_drone(agent, size, 0.1f);
+    //float size = 0.2f;
+    //init_drone(agent, size, 0.0f);
+    float size = rndf(0.1f, 0.4);
+    init_drone(agent, size, 0.1f);
     compute_reward(env, agent, env->task != TASK_RACE);
 }
 
