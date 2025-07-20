@@ -6,6 +6,7 @@ from pufferlib.ocean.whisker_racer import binding
 
 class WhiskerRacer(pufferlib.PufferEnv):
     def __init__(self, num_envs=1, render_mode=None,
+                 frameskip=4, width=640, height=480,
                  llw_ang=-3.14/4, flw_ang=-3.14/6,
                  frw_ang=3.14/6, rrw_ang=3.14/4,
                  max_whisker_length=100,
@@ -34,9 +35,8 @@ class WhiskerRacer(pufferlib.PufferEnv):
 
         self.c_envs = binding.vec_init(self.observations, self.actions, self.rewards,
             self.terminals, self.truncations, num_envs, seed, frameskip=frameskip, width=width, height=height,
-            paddle_width=paddle_width, paddle_height=paddle_height, ball_width=ball_width, ball_height=ball_height,
-            brick_width=brick_width, brick_height=brick_height, brick_rows=brick_rows,
-            brick_cols=brick_cols, continuous=continuous
+            llw_ang=-3.14/4, flw_ang=-3.14/6, frw_ang=3.14/6, rrw_ang=3.14/4, max_whisker_length=100,
+            turn_pi_frac=20, maxv=5, continuous=continuous
         )
 
     def reset(self, seed=0):
