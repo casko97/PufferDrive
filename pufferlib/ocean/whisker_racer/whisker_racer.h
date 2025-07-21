@@ -34,6 +34,7 @@ typedef struct Client {
     int render;
     Texture2D track_texture;
     Image track_image;
+    Color* track_pixels;
 } Client;
 
 typedef struct WhiskerRacer {
@@ -90,6 +91,7 @@ typedef struct WhiskerRacer {
     
     Texture2D track_texture;
     Image track_image;
+    Color* track_pixels;
 } WhiskerRacer;
 
 void load_track_texture(WhiskerRacer* env) {
@@ -111,6 +113,7 @@ void load_track_texture(WhiskerRacer* env) {
     // Load the new texture
     printf("before env->track_image = LoadImage(fname);\n");
     env->track_image = LoadImage(fname);
+    env->track_pixels = LoadImageColors(env->track_image);
     //env->track_texture = LoadTexture(fname);
     printf("before env->track_texture = LoadTextureFromImage(env->track_image);\n");
     if (env->render) {
@@ -170,6 +173,10 @@ void c_close(WhiskerRacer* env) {
         UnloadImage(env->track_image);
         env->track_image.data = NULL;
     }
+    if (env->track_pixels != NULL) {
+        UnloadImageColors(env->track_pixels);
+        env->track_pixels = NULL;
+    }
 }
 
 void free_allocated(WhiskerRacer* env) {
@@ -191,7 +198,7 @@ void add_log(WhiskerRacer* env) {
 }
 
 void compute_observations(WhiskerRacer* env) {
-    printf("compute_observations\n");
+    //printf("compute_observations\n");
     env->observations[0] = env->px / env->width;
     env->observations[1] = env->py / env->height;
     env->observations[2] = env->ang / (PI2);
@@ -202,23 +209,22 @@ void compute_observations(WhiskerRacer* env) {
     env->observations[7] = env->ffw_length;
     env->observations[8] = env->frw_length;
     env->observations[9] = env->rrw_length;
-    printf("end compute_observations\n");
+    printf("float0 %.3f \n", env->observations[0]);
+    printf("float1 %.3f \n", env->observations[1]);
+    printf("float2 %.3f \n", env->observations[2]);
+    printf("float3 %.3f \n", env->observations[3]);
+    printf("float4 %.3f \n", env->observations[4]);
+    printf("float5 %.3f \n", env->observations[5]);
+    printf("float6 %.3f \n", env->observations[6]);
+    printf("float7 %.3f \n", env->observations[7]);
+    printf("float8 %.3f \n", env->observations[8]);
+    printf("float9 %.3f \n", env->observations[9]);
+    printf("\n\n\n");
+    //printf("end compute_observations\n");
 }
 
 static int is_green(Color color) {
     return (color.g > 150 && color.g > color.r + 40 && color.g > color.b + 40);
-}
-
-static inline Color GetTexturePixelColor(Texture2D texture, int x, int y) {
-    Image img = LoadImageFromTexture(texture);
-    Color color = {0};
-    if (x >= 0 && x < img.width && y >= 0 && y < img.height) {
-        Color* pixels = LoadImageColors(img);
-        color = pixels[y * img.width + x];
-        UnloadImageColors(pixels);
-    }
-    UnloadImage(img);
-    return color;
 }
 
 void calc_whisker_lengths(WhiskerRacer* env) {
@@ -263,8 +269,7 @@ void calc_whisker_lengths(WhiskerRacer* env) {
                 break;
             }
 
-            // Sample pixel from track texture
-            Color color = GetTexturePixelColor(env->track_texture, ix, iy);
+            Color color = env->track_pixels[iy * env->track_image.width + ix];
 
             if (is_green(color)) {
                 hit_len = l;
@@ -280,6 +285,7 @@ void calc_whisker_lengths(WhiskerRacer* env) {
 }
 
 void get_random_start(WhiskerRacer* env) {
+    //printf("get_random_start\n");
     if (env->circuit == 1) {
         // Each choice: {xmin, ymin, xmax, ymax, angle}
         const float choices[3][5] = {
@@ -341,7 +347,7 @@ void reset_round(WhiskerRacer* env) {
 }
 
 void c_reset(WhiskerRacer* env) {
-    printf("c_reset\n");
+    //printf("c_reset\n");
     env->score = 0;
     //env->num_balls = 5;
     //for (int i = 0; i < env->num_bricks; i++) {
@@ -350,11 +356,12 @@ void c_reset(WhiskerRacer* env) {
     reset_round(env);
     env->tick = 0;
     compute_observations(env);
-    printf("end c_reset\n");
+    //printf("end c_reset\n");
 }
 
 void step_frame(WhiskerRacer* env, float action) {
     // todo Still incomplete, still has some Breakout logic
+    //printf("step_frame\n");
     float act = 0.0;
     //if (env->balls_fired == 0) {
     //    env->balls_fired = 1;
@@ -386,7 +393,12 @@ void step_frame(WhiskerRacer* env, float action) {
     env->vy = env->v * sinf(env->ang);
     env->px = env->px + env->vx;
     env->py = env->py + env->vy;
+    if (env->px < 0) env->px = 0;
+    if (env->px > env->width) env->px = env->width;
+    if (env->py < 0) env->py = 0;
+    if (env->py > env->height) env->py = env->height;
 
+    //printf("calc_whisker_lengths\n");
     calc_whisker_lengths(env);
 
     //env->paddle_x += act * 620 * TICK_RATE;
@@ -417,6 +429,7 @@ void step_frame(WhiskerRacer* env, float action) {
 }
 
 void c_step(WhiskerRacer* env) {
+    //printf("c_step\n");
     env->terminals[0] = 0;
     env->rewards[0] = 0.0;
 
@@ -426,6 +439,7 @@ void c_step(WhiskerRacer* env) {
         step_frame(env, action);
     }
 
+    //printf("compute_observations\n");
     compute_observations(env);
 }
 

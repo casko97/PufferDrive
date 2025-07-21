@@ -61,6 +61,7 @@ class WhiskerRacer(pufferlib.PufferEnv):
             self.terminals, self.truncations, info)
 
 def test_performance(timeout=10, atn_cache=1024):
+    print("test_performance in whisker_racer.py")
     env = WhiskerRacer(num_envs=100)
     env.reset()
     tick = 0
@@ -70,7 +71,9 @@ def test_performance(timeout=10, atn_cache=1024):
     import time
     start = time.time()
     while time.time() - start < timeout:
+        print("atn = actions[tick % atn_cache] in whisker_racer.py")
         atn = actions[tick % atn_cache]
+        print("env.step in whisker_racer.py")
         env.step(atn)
         tick += 1
 
