@@ -13,6 +13,7 @@ class WhiskerRacer(pufferlib.PufferEnv):
                  turn_pi_frac=20,
                  maxv=5, circuit=1, render=0,
                  continuous=False, log_interval=128,
+                 reward_yellow=0.25, reward_green=0.0, gamma=0.9,
                  buf=None, seed=0):
         self.single_observation_space = gymnasium.spaces.Box(low=0, high=1,
                                             shape=(1,), dtype=np.float32)
@@ -36,7 +37,8 @@ class WhiskerRacer(pufferlib.PufferEnv):
         self.c_envs = binding.vec_init(self.observations, self.actions, self.rewards,
             self.terminals, self.truncations, num_envs, seed, frameskip=frameskip, width=width, height=height,
             llw_ang=llw_ang, flw_ang=flw_ang, frw_ang=frw_ang, rrw_ang=rrw_ang, max_whisker_length=max_whisker_length,
-            turn_pi_frac=turn_pi_frac, maxv=maxv, circuit=circuit, render=render, continuous=continuous
+            turn_pi_frac=turn_pi_frac, maxv=maxv, circuit=circuit, render=render, continuous=continuous,
+            reward_yellow=reward_yellow, reward_green=reward_green, gamma=gamma
         )
 
     def reset(self, seed=0):

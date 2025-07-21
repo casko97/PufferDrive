@@ -22,6 +22,9 @@ void demo() {
         .circuit = 1,
         .render = 0,
         .continuous = 0,
+        .reward_yellow = 0.25,
+        .reward_green = 0.0,
+        .gamma = 0.9,
     };
     printf("about to allocate\n");
     allocate(&env);

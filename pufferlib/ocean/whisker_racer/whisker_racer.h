@@ -47,6 +47,10 @@ typedef struct WhiskerRacer {
     unsigned char* terminals;
     int debug;
 
+    float reward_yellow;
+    float reward_green;
+    float gamma;
+
     // Game State
     int width;
     int height;
@@ -287,11 +291,11 @@ void calc_whisker_lengths(WhiskerRacer* env) {
             Color color = env->track_pixels[iy * env->track_image.width + ix];
 
             if (is_green(color)) { // Car drove off track
-                env->rewards[0] -= 0.001f;
+                env->rewards[0] += env->reward_green;
                 env->score -= 0.001f;
             }
             else if (is_yellow(color)) {
-                env->rewards[0] += 0.25;
+                env->rewards[0] += env->reward_yellow;
                 env->score += 1.0;
             }
             else if (is_white(color)) {

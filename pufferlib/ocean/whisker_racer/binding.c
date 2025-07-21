@@ -17,6 +17,9 @@ static int my_init(Env* env, PyObject* args, PyObject* kwargs) {
     env->circuit = unpack(kwargs, "circuit");
     env->render = unpack(kwargs, "render");
     env->continuous = unpack(kwargs, "continuous");
+    env->reward_yellow = unpack(kwargs, "reward_yellow");
+    env->reward_green = unpack(kwargs, "reward_green");
+    env->gamma = unpack(kwargs, "gamma");
     init(env);
     return 0;
 }
