@@ -290,7 +290,8 @@ void set_target_congo(DroneSwarm* env, int idx) {
     lead->target_pos = follow->target_pos;
     lead->target_vel = follow->target_vel;
 
-    for (int i = 0; i < 20; i++) {
+    // TODO: Slow hack
+    for (int i = 0; i < 40; i++) {
         move_target(env, lead);
     }
 }
@@ -404,6 +405,8 @@ void c_reset(DroneSwarm *env) {
         env->task = TASK_RACE;
     }
     //env->task = TASK_RACE;
+    //env->task = TASK_HOVER;
+    //env->task = TASK_FLAG;
 
     for (int i = 0; i < env->num_agents; i++) {
         Drone *agent = &env->agents[i];
