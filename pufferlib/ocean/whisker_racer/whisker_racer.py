@@ -60,6 +60,12 @@ class WhiskerRacer(pufferlib.PufferEnv):
         return (self.observations, self.rewards,
             self.terminals, self.truncations, info)
 
+    def render(self):
+        binding.vec_render(self.c_envs, 0)
+
+    def close(self):
+        binding.vec_close(self.c_envs)
+
 def test_performance(timeout=10, atn_cache=1024):
     print("test_performance in whisker_racer.py")
     env = WhiskerRacer(num_envs=100)
