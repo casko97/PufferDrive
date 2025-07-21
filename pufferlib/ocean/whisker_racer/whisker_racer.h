@@ -50,7 +50,7 @@ typedef struct WhiskerRacer {
     // Game State
     int width;
     int height;
-    int score;
+    float score;
     int tick;
     int max_score;
     int half_max_score;
@@ -103,7 +103,6 @@ void load_track_texture(WhiskerRacer* env) {
     snprintf(fname, sizeof(fname), "./pufferlib/ocean/whisker_racer/img/circuits/circuit-1.jpg");
 
     // Unload previous texture if already loaded
-    printf("before unload\n");
     if (env->track_texture.id != 0) {
         UnloadTexture(env->track_texture);
     }
@@ -133,6 +132,7 @@ void load_track_texture(WhiskerRacer* env) {
 void init(WhiskerRacer* env) {
     if (env->debug) printf("init\n");
     env->tick = 0;
+    SetTraceLogLevel(LOG_WARNING);
     /*
     env->num_bricks = env->brick_rows * env->brick_cols;
     assert(env->num_bricks > 0);
@@ -156,7 +156,7 @@ void init(WhiskerRacer* env) {
 void allocate(WhiskerRacer* env) {
     if (env->debug) printf("allocate");
     init(env);
-    env->observations = (float*)calloc(10, sizeof(float)); // todo double check this later
+    env->observations = (float*)calloc(11, sizeof(float)); // todo double check this later
     env->actions = (float*)calloc(1, sizeof(float));
     env->rewards = (float*)calloc(1, sizeof(float));
     env->terminals = (unsigned char*)calloc(1, sizeof(unsigned char));
@@ -193,6 +193,8 @@ void free_allocated(WhiskerRacer* env) {
 void add_log(WhiskerRacer* env) {
     if (env->debug) printf("add_log\n");
     env->log.episode_length += env->tick;
+    if (env->log.episode_length > 0.01f) {
+    }
     env->log.episode_return += env->score;
     env->log.score += env->score;
     env->log.perf += env->score / (float)env->max_score;
@@ -212,6 +214,7 @@ void compute_observations(WhiskerRacer* env) {
     env->observations[7] = env->ffw_length;
     env->observations[8] = env->frw_length;
     env->observations[9] = env->rrw_length;
+    env->observations[10] = env->score / 100.0f;
     if (env->debug) printf("float0 %.3f \n", env->observations[0]);
     if (env->debug) printf("float1 %.3f \n", env->observations[1]);
     if (env->debug) printf("float2 %.3f \n", env->observations[2]);
@@ -222,6 +225,7 @@ void compute_observations(WhiskerRacer* env) {
     if (env->debug) printf("float7 %.3f \n", env->observations[7]);
     if (env->debug) printf("float8 %.3f \n", env->observations[8]);
     if (env->debug) printf("float9 %.3f \n", env->observations[9]);
+    if (env->debug) printf("float10 %.3f \n", env->observations[10]);
     if (env->debug) printf("\n\n\n");
     //if (env->debug) printf("end compute_observations\n");
 }
@@ -231,7 +235,7 @@ static int is_green(Color color) {
 }
 
 static int is_yellow(Color color) {
-    return (color.r > 200 && color.g > 200 && color.b < 100);
+    return (color.r > 30 && color.g > 30 && color.b < 10);
 }
 
 static int is_white(Color color) {
@@ -283,16 +287,16 @@ void calc_whisker_lengths(WhiskerRacer* env) {
             Color color = env->track_pixels[iy * env->track_image.width + ix];
 
             if (is_green(color)) { // Car drove off track
-                env->rewards[0] -= 1.0;
-                env->terminals[0] = 1;
-                add_log(env);
-                c_reset(env);
+                env->rewards[0] -= 0.001f;
+                env->score -= 0.001f;
             }
             else if (is_yellow(color)) {
                 env->rewards[0] += 0.25;
+                env->score += 1.0;
             }
             else if (is_white(color)) {
                 env->rewards[0] += 1.0;
+                env->score += 10.0;
             }
         }
         // Normalize

@@ -68,7 +68,7 @@ class WhiskerRacer(pufferlib.PufferEnv):
 
 def test_performance(timeout=10, atn_cache=1024):
     print("test_performance in whisker_racer.py")
-    env = WhiskerRacer(num_envs=100)
+    env = WhiskerRacer(num_envs=1)
     env.reset()
     tick = 0
 
@@ -86,4 +86,5 @@ def test_performance(timeout=10, atn_cache=1024):
     print(f'SPS: %f', env.num_agents * tick / (time.time() - start))
 
 if __name__ == '__main__':
+    print("whisker_racer.py")
     test_performance()
