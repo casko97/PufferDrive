@@ -227,7 +227,7 @@ void compute_observations(WhiskerRacer* env) {
 }
 
 static int is_green(Color color) {
-    return (color.g > 150 && color.g > color.r + 40 && color.g > color.b + 40);
+    return (color.g > 130 && color.g > color.r + 40 && color.g > color.b + 40);
 }
 
 static int is_yellow(Color color) {
@@ -424,6 +424,7 @@ void step_frame(WhiskerRacer* env, float action) {
     int ix = (int)roundf(env->px);
     int iy = (int)roundf(env->py);
     Color color = env->track_pixels[iy * env->track_image.width + ix];
+    if (env->debug) printf("Color at (%d, %d): r=%d g=%d b=%d\n", ix, iy, (int)color.r, (int)color.g, (int)color.b);
 
     if (is_green(color)) {
         env->terminals[0] = 1;
@@ -499,8 +500,13 @@ void close_client(Client* client) {
 }
 
 void c_render(WhiskerRacer* env) {
+    env->render = 1;
     if (env->client == NULL) {
         env->client = make_client(env);
+    }
+
+    if (env->track_texture.id == 0) {
+        load_track_texture(env);
     }
 
     Client* client = env->client;
@@ -514,13 +520,32 @@ void c_render(WhiskerRacer* env) {
 
     BeginDrawing();
 
-    DrawTexture(env->track_texture, 0, 0, WHITE);
+    ClearBackground(BLACK);
 
-    // Draw Car
+    if (env->track_texture.id != 0) {
+        DrawTexture(env->track_texture, 0, 0, WHITE);
+    } else {
+        DrawText("IMG FAIL", 10, 40, 20, RED);
+    }
 
-    // Draw Whiskers Conditionally
+    float car_width = 24.0f;
+    float car_height = 12.0f;
+    Vector2 car_center = {env->px, env->py};
+    Rectangle car_rect = {
+        env->px - car_width / 2.0f,
+        env->py - car_height / 2.0f,
+        car_width,
+        car_height
+    };
+    Vector2 origin = {car_width / 2.0f, car_height / 2.0f};
+    DrawRectanglePro(
+        (Rectangle){env->px, env->py, car_width, car_height},
+        origin,
+        env->ang * 180.0f / PI, // Raylib expects degrees
+        (Color){255, 0, 255, 255}
+    );
 
     DrawText(TextFormat("Score: %i", env->score), 10, 10, 20, WHITE);
-    //DrawText(TextFormat("Balls: %i", env->num_balls), client->width - 80, 10, 20, WHITE);
+
     EndDrawing();
 }
