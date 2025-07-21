@@ -12,6 +12,17 @@
 
 #define PI2 PI * 2
 
+typedef struct TrackManager {
+    Image track_image;
+    Color* track_pixels;
+    Texture2D track_texture;
+    int circuit;
+    int ref_count;  // Track how many environments are using this
+    int is_loaded;
+} TrackManager;
+
+static TrackManager g_track_manager = {0};
+
 typedef struct Log {
     float perf;
     float score;
@@ -71,9 +82,6 @@ typedef struct WhiskerRacer {
     float vy;
     float v;
     float vang;
-    //float* brick_x;
-    //float* brick_y;
-    //float* brick_states;
 
     // Physics Constraints
     float maxv;
@@ -94,73 +102,98 @@ typedef struct WhiskerRacer {
     float frw_length;
     float rrw_length;
     float max_whisker_length;
+
+    float inv_width;
+    float inv_height;
+    float inv_maxv;
+    float inv_pi2;
     
     Texture2D track_texture;
     Image track_image;
     Color* track_pixels;
 } WhiskerRacer;
 
-void load_track_texture(WhiskerRacer* env) {
-    // Construct the filename: "img/circuits/circuit-<circuit>.jpg"
+void unload_track() {
+    if (!g_track_manager.is_loaded) return;
+
+    g_track_manager.ref_count--;
+
+    // Only unload when no environments are using it
+    if (g_track_manager.ref_count <= 0) {
+        if (g_track_manager.track_texture.id != 0) {
+            UnloadTexture(g_track_manager.track_texture);
+            g_track_manager.track_texture.id = 0;
+        }
+        if (g_track_manager.track_image.data != NULL) {
+            UnloadImage(g_track_manager.track_image);
+            g_track_manager.track_image.data = NULL;
+        }
+        if (g_track_manager.track_pixels != NULL) {
+            UnloadImageColors(g_track_manager.track_pixels);
+            g_track_manager.track_pixels = NULL;
+        }
+        g_track_manager.is_loaded = 0;
+        g_track_manager.ref_count = 0;
+    }
+}
+
+void load_track_once(int circuit, int need_texture) {
+    if (g_track_manager.is_loaded && g_track_manager.circuit == circuit) {
+        g_track_manager.ref_count++;
+        return; // Already loaded for this circuit
+    }
+
+    // If we have a different circuit loaded, unload it first
+    if (g_track_manager.is_loaded) {
+        unload_track();
+    }
+
     char fname[128];
-    //snprintf(fname, sizeof(fname), "./pufferlib/ocean/whisker_racer/img/circuits/circuit-%d.jpg", env->circuit);
     snprintf(fname, sizeof(fname), "./pufferlib/ocean/whisker_racer/img/circuits/circuit-1.jpg");
 
-    // Unload previous texture if already loaded
-    if (env->track_texture.id != 0) {
-        UnloadTexture(env->track_texture);
-    }
-    if (env->track_image.data != NULL) {
-        UnloadImage(env->track_image);
-    }
-    if (env->debug) printf("after unload\n");
+    g_track_manager.track_image = LoadImage(fname);
+    g_track_manager.track_pixels = LoadImageColors(g_track_manager.track_image);
 
-    // Load the new texture
-    if (env->debug) printf("before env->track_image = LoadImage(fname);\n");
-    env->track_image = LoadImage(fname);
-    env->track_pixels = LoadImageColors(env->track_image);
-    //env->track_texture = LoadTexture(fname);
-    if (env->debug) printf("before env->track_texture = LoadTextureFromImage(env->track_image);\n");
-    if (env->render) {
-        env->track_texture = LoadTextureFromImage(env->track_image);
+    if (need_texture) {
+        g_track_manager.track_texture = LoadTextureFromImage(g_track_manager.track_image);
+    } else {
+        g_track_manager.track_texture.id = 0;
     }
 
-    // Optional: error handling
-    if (env->track_texture.id == 0) {
-        if (env->debug) printf("Failed to load track texture: %s\n", fname);
-        // Handle error as needed (exit, fallback, etc.)
+    g_track_manager.circuit = circuit;
+    g_track_manager.ref_count = 1;
+    g_track_manager.is_loaded = 1;
+
+    if (g_track_manager.track_image.data == NULL) {
+        printf("Failed to load track image: %s\n", fname);
+        g_track_manager.is_loaded = 0;
     }
-    if (env->debug) printf("end load_track_texture\n");
 }
 
 void init(WhiskerRacer* env) {
     if (env->debug) printf("init\n");
     env->tick = 0;
-    SetTraceLogLevel(LOG_WARNING);
-    /*
-    env->num_bricks = env->brick_rows * env->brick_cols;
-    assert(env->num_bricks > 0);
 
-    env->brick_x = (float*)calloc(env->num_bricks, sizeof(float));
-    env->brick_y = (float*)calloc(env->num_bricks, sizeof(float));
-    env->brick_states = (float*)calloc(env->num_bricks, sizeof(float));
-    env->num_balls = -1;
-    generate_brick_positions(env);
-    */
-
-    // todo not sure what to do here yet maybe nothing else
-    // I might need to run get_random_start()
     env->debug = 0;
-    load_track_texture(env);
-    //if (env->debug) printf("Car position: (%.2f, %.2f), angle: %.2f radians\n", env->px, env->py, env->ang);
-    if (env->debug) printf("end init\n");
-    
+
+    load_track_once(env->circuit, env->render);
+
+    env->track_pixels = g_track_manager.track_pixels;
+    env->track_texture = g_track_manager.track_texture;
+    env->track_image = g_track_manager.track_image;
+
+    env->inv_width = 1.0f / env->width;
+    env->inv_height = 1.0f / env->height;
+    env->inv_maxv = 1.0f / env->maxv;
+    env->inv_pi2 = 1.0f / PI2;
+
+    if (env->debug) printf("end init\n");    
 }
 
 void allocate(WhiskerRacer* env) {
     if (env->debug) printf("allocate");
     init(env);
-    env->observations = (float*)calloc(11, sizeof(float)); // todo double check this later
+    env->observations = (float*)calloc(11, sizeof(float));
     env->actions = (float*)calloc(1, sizeof(float));
     env->rewards = (float*)calloc(1, sizeof(float));
     env->terminals = (unsigned char*)calloc(1, sizeof(unsigned char));
@@ -168,22 +201,7 @@ void allocate(WhiskerRacer* env) {
 }
 
 void c_close(WhiskerRacer* env) {
-    // todo not sure if this is even needed
-    //free(env->brick_x);
-    //free(env->brick_y);
-    //free(env->brick_states);
-    if (env->track_texture.id != 0) {
-        UnloadTexture(env->track_texture);
-        env->track_texture.id = 0;
-    }
-    if (env->track_image.data != NULL) {
-        UnloadImage(env->track_image);
-        env->track_image.data = NULL;
-    }
-    if (env->track_pixels != NULL) {
-        UnloadImageColors(env->track_pixels);
-        env->track_pixels = NULL;
-    }
+    unload_track();
 }
 
 void free_allocated(WhiskerRacer* env) {
@@ -208,11 +226,11 @@ void add_log(WhiskerRacer* env) {
 
 void compute_observations(WhiskerRacer* env) {
     //if (env->debug) printf("compute_observations\n");
-    env->observations[0] = env->px / env->width;
-    env->observations[1] = env->py / env->height;
-    env->observations[2] = env->ang / (PI2);
-    env->observations[3] = env->vx / env->maxv;
-    env->observations[4] = env->vy / env->maxv;
+    env->observations[0] = env->px * env->inv_width;
+    env->observations[1] = env->py * env->inv_height;
+    env->observations[2] = env->ang * env->inv_pi2;
+    env->observations[3] = env->vx * env->inv_maxv;
+    env->observations[4] = env->vy * env->inv_maxv;
     env->observations[5] = env->llw_length;
     env->observations[6] = env->flw_length;
     env->observations[7] = env->ffw_length;
@@ -247,10 +265,11 @@ static int is_white(Color color) {
 }
 
 void calc_whisker_lengths(WhiskerRacer* env) {
-    // Start from car, see how far down whisker length till it hits green (grass off track)
-    // Do this for all 5 whiskers
-    // Normalize them to max whisker length
-    // if whisker touches no grass, just return the 1.0 for max whisker length after normalization
+    float max_len = env->max_whisker_length;
+    float inv_max_len = 1.0f / max_len;
+    float step = 1.0f; // pixel step size
+    int width = env->width;
+    int height = env->height;
 
     // Whisker angles relative to car's heading
     float angles[5] = {
@@ -271,24 +290,25 @@ void calc_whisker_lengths(WhiskerRacer* env) {
 
     for (int w = 0; w < 5; ++w) {
         float angle = angles[w];
-        float max_len = env->max_whisker_length;
-        float step = 1.0f; // pixel step size
+
+        float cos_a = cosf(angle);
+        float sin_a = sinf(angle);
 
         float hit_len = max_len;
         for (float l = 0.0f; l <= max_len; l += step) {
-            float wx = env->px + l * cosf(angle);
-            float wy = env->py + l * sinf(angle);
+            float wx = env->px + l * cos_a;
+            float wy = env->py + l * sin_a;
 
             int ix = (int)roundf(wx);
             int iy = (int)roundf(wy);
 
             // Bounds check
-            if (ix < 0 || ix >= env->width || iy < 0 || iy >= env->height) {
+            if (ix < 0 || ix >= width || iy < 0 || iy >= height) {
                 hit_len = l;
                 break;
             }
 
-            Color color = env->track_pixels[iy * env->track_image.width + ix];
+            Color color = env->track_pixels[iy * width + ix];
 
             if (is_green(color)) { // Car drove off track
                 env->rewards[0] += env->reward_green;
@@ -304,10 +324,7 @@ void calc_whisker_lengths(WhiskerRacer* env) {
             }
         }
         // Normalize
-        float norm_len = hit_len / max_len;
-        if (norm_len > 1.0f) norm_len = 1.0f;
-        if (norm_len < 0.0f) norm_len = 0.0f;
-        *lengths[w] = norm_len;
+        *lengths[w] = fminf(1.0f, fmaxf(0.0f, hit_len * inv_max_len));
     }
 }
 
@@ -348,23 +365,6 @@ void get_random_start(WhiskerRacer* env) {
 
 
 void reset_round(WhiskerRacer* env) {
-    /* old breakout logic
-    env->balls_fired = 0;
-    env->hit_brick = false;
-    env->hits = 0;
-    env->ball_speed = 256;
-    env->paddle_width = 2 * HALF_PADDLE_WIDTH;
-
-    env->paddle_x = env->width / 2.0 - env->paddle_width / 2;
-    env->paddle_y = env->height - env->paddle_height - 10;
-
-    env->ball_x = env->paddle_x + (env->paddle_width / 2 - env->ball_width / 2);
-    env->ball_y = env->height / 2 - 30;
-
-    env->ball_vx = 0.0;
-    env->ball_vy = 0.0;
-    */
-
     get_random_start(env);
     env->vx = 0.0f;
     env->vy = 0.0f;
@@ -376,10 +376,6 @@ void reset_round(WhiskerRacer* env) {
 void c_reset(WhiskerRacer* env) {
     //if (env->debug) printf("c_reset\n");
     env->score = 0;
-    //env->num_balls = 5;
-    //for (int i = 0; i < env->num_bricks; i++) {
-    //    env->brick_states[i] = 0.0;
-    //}
     reset_round(env);
     env->tick = 0;
     compute_observations(env);
@@ -390,28 +386,19 @@ void step_frame(WhiskerRacer* env, float action) {
     // todo Still incomplete, still has some Breakout logic
     //if (env->debug) printf("step_frame\n");
     float act = 0.0;
-    //if (env->balls_fired == 0) {
-    //    env->balls_fired = 1;
-    //    float direction = M_PI / 3.25f;
 
-    //    env->ball_vy = cos(direction) * env->ball_speed * TICK_RATE;
-    //    env->ball_vx = sin(direction) * env->ball_speed * TICK_RATE;
-    //    if (rand() % 2 == 0) {
-    //        env->ball_vx = -env->ball_vx;
-    //    }
-    //}   
     if (action == LEFT) {
         act = -1.0;
-        env->ang = env->ang + PI / env->turn_pi_frac;
+        env->ang += PI / env->turn_pi_frac;
     } else if (action == RIGHT) {
         act = 1.0;
-        env->ang = env->ang - PI / env->turn_pi_frac;
+        env->ang -= PI / env->turn_pi_frac;
     }
     if (env->ang > PI2) {
-        env->ang = env->ang - PI2;
+        env->ang -= PI2;
     }
     else if (env->ang < 0) {
-        env->ang = env->ang + PI2;
+        env->ang += PI2;
     }
     if (env->continuous){
         act = action;
@@ -421,16 +408,16 @@ void step_frame(WhiskerRacer* env, float action) {
     env->px = env->px + env->vx;
     env->py = env->py + env->vy;
     if (env->px < 0) env->px = 0;
-    if (env->px > env->width) env->px = env->width;
+    else if (env->px > env->width) env->px = env->width;
     if (env->py < 0) env->py = 0;
-    if (env->py > env->height) env->py = env->height;
+    else if (env->py > env->height) env->py = env->height;
 
     //if (env->debug) printf("calc_whisker_lengths\n");
     calc_whisker_lengths(env);
 
     // What color is the car touching
-    int ix = (int)roundf(env->px);
-    int iy = (int)roundf(env->py);
+    int ix = (int)env->px;
+    int iy = (int)env->py;
     Color color = env->track_pixels[iy * env->track_image.width + ix];
     if (env->debug) printf("Color at (%d, %d): r=%d g=%d b=%d\n", ix, iy, (int)color.r, (int)color.g, (int)color.b);
 
@@ -439,32 +426,6 @@ void step_frame(WhiskerRacer* env, float action) {
         add_log(env);
         c_reset(env);
     }
-
-    //env->paddle_x += act * 620 * TICK_RATE;
-    //if (env->paddle_x <= 0){
-    //    env->paddle_x = fmaxf(0, env->paddle_x);
-    //} else {
-    //    env->paddle_x = fminf(env->width - env->paddle_width, env->paddle_x);
-    //}
-
-    //Handle collisions. 
-    //Regular timestepping is done only if there are no collisions.
-    /*
-    if(!handle_collisions(env)){
-        env->ball_x += env->ball_vx;
-        env->ball_y += env->ball_vy;
-    }
-
-    if (env->ball_y >= env->paddle_y + env->paddle_height) {
-        env->num_balls -= 1;
-        reset_round(env);
-    }
-    if (env->num_balls < 0 || env->score == env->max_score) {
-        env->terminals[0] = 1;
-        add_log(env);
-        c_reset(env);
-    }
-    */
 }
 
 void c_step(WhiskerRacer* env) {
@@ -498,7 +459,6 @@ Client* make_client(WhiskerRacer* env) {
     InitWindow(env->width, env->height, "PufferLib Whisker Racer");
     SetTargetFPS(60 / env->frameskip);
 
-    //client->ball = LoadTexture("resources/shared/puffers_128.png");
     return client;
 }
 
@@ -513,8 +473,10 @@ void c_render(WhiskerRacer* env) {
         env->client = make_client(env);
     }
 
-    if (env->track_texture.id == 0) {
-        load_track_texture(env);
+    // If we need texture but don't have it, load it
+    if (g_track_manager.track_texture.id == 0 && g_track_manager.is_loaded) {
+        g_track_manager.track_texture = LoadTextureFromImage(g_track_manager.track_image);
+        env->track_texture = g_track_manager.track_texture;
     }
 
     Client* client = env->client;
@@ -549,7 +511,7 @@ void c_render(WhiskerRacer* env) {
     DrawRectanglePro(
         (Rectangle){env->px, env->py, car_width, car_height},
         origin,
-        env->ang * 180.0f / PI, // Raylib expects degrees
+        env->ang * 180.0f / PI,
         (Color){255, 0, 255, 255}
     );
 
