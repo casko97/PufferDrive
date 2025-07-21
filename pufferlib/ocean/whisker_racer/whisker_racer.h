@@ -230,6 +230,14 @@ static int is_green(Color color) {
     return (color.g > 150 && color.g > color.r + 40 && color.g > color.b + 40);
 }
 
+static int is_yellow(Color color) {
+    return (color.r > 200 && color.g > 200 && color.b < 100);
+}
+
+static int is_white(Color color) {
+    return (color.r > 220 && color.g > 220 && color.b > 220);
+}
+
 void calc_whisker_lengths(WhiskerRacer* env) {
     // Start from car, see how far down whisker length till it hits green (grass off track)
     // Do this for all 5 whiskers
@@ -274,9 +282,17 @@ void calc_whisker_lengths(WhiskerRacer* env) {
 
             Color color = env->track_pixels[iy * env->track_image.width + ix];
 
-            if (is_green(color)) {
-                hit_len = l;
-                break;
+            if (is_green(color)) { // Car drove off track
+                env->rewards[0] -= 1.0;
+                env->terminals[0] = 1;
+                add_log(env);
+                c_reset(env);
+            }
+            else if (is_yellow(color)) {
+                env->rewards[0] += 0.25;
+            }
+            else if (is_white(color)) {
+                env->rewards[0] += 1.0;
             }
         }
         // Normalize
