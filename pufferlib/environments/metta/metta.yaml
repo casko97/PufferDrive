@@ -38,7 +38,7 @@ game:
   recipe_details_obs: false
 
   agent:
-    default_resource_limit: 50
+    default_resource_limit: 10
     resource_limits:
       heart: 255
     freeze_duration: 10
