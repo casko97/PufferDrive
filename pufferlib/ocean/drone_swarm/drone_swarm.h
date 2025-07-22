@@ -343,7 +343,7 @@ float compute_reward(DroneSwarm* env, Drone *agent, bool collision) {
     //float dist_reward = 1.0f - dist;
 
     // Density penalty
-    float density_reward = 1.0f;
+    float density_reward = 0.0f;
     if (collision && env->num_agents > 1) {
         Drone *nearest = nearest_drone(env, agent);
         dx = agent->pos.x - nearest->pos.x;
@@ -356,7 +356,7 @@ float compute_reward(DroneSwarm* env, Drone *agent, bool collision) {
         }
     }
 
-    float abs_reward = dist_reward * density_reward;
+    float abs_reward = dist_reward + density_reward;
 
     // Prevent negative dist and density from making a positive reward
     if (dist_reward < 0.0f && density_reward < 0.0f) {
@@ -398,12 +398,15 @@ void c_reset(DroneSwarm *env) {
     env->tick = 0;
     //env->task = rand() % (TASK_N - 1);
     //env->task = TASK_FLAG;
+    env->task = TASK_CONGO;
     //env->task = rand() % (TASK_N - 1);
-    if (rand() % 2) {
-        env->task = rand() % (TASK_N - 1);
-    } else {
+    /*
+    if (rand() % 4) {
         env->task = TASK_RACE;
+    } else {
+        env->task = rand() % (TASK_N - 1);
     }
+    */
     //env->task = TASK_RACE;
     //env->task = TASK_HOVER;
     //env->task = TASK_FLAG;
@@ -462,15 +465,15 @@ void c_step(DroneSwarm *env) {
         float reward = 0.0f;
         if (env->task == TASK_RACE) {
             Ring *ring = &env->ring_buffer[agent->ring_idx];
-            reward = compute_reward(env, agent, false);
+            reward = compute_reward(env, agent, true);
             float passed_ring = check_ring(agent, ring);
             if (passed_ring > 0) {
                 agent->ring_idx = (agent->ring_idx + 1) % env->max_rings;
                 env->log.rings_passed += 1.0f;
                 set_target(env, i);
-                compute_reward(env, agent, false);
+                compute_reward(env, agent, true);
             }
-            reward = passed_ring;
+            reward += passed_ring;
         } else {
             // Delta reward
             reward = compute_reward(env, agent, true);
