@@ -187,7 +187,7 @@ void init(WhiskerRacer* env) {
     env->inv_maxv = 1.0f / env->maxv;
     env->inv_pi2 = 1.0f / PI2;
 
-    if (env->debug) printf("end init\n");    
+    if (env->debug) printf("end init\n");
 }
 
 void allocate(WhiskerRacer* env) {
@@ -252,16 +252,14 @@ void compute_observations(WhiskerRacer* env) {
     //if (env->debug) printf("end compute_observations\n");
 }
 
-static int is_green(Color color) {
-    return (color.g > 130 && color.g > color.r + 40 && color.g > color.b + 40);
-}
-
-static int is_yellow(Color color) {
-    return (color.r > 30 && color.g > 30 && color.b < 10);
-}
-
-static int is_white(Color color) {
-    return (color.r > 220 && color.g > 220 && color.b > 220);
+static inline int get_color_type(Color color) {
+    if (color.g > 130 && color.g > color.r + 40 && color.g > color.b + 40)
+        return 1; // Green
+    if (color.r > 30 && color.g > 30 && color.b < 10)
+        return 2; // Yellow
+    if ((color.r & color.g & color.b) > 220)  // Bit trick for min
+        return 3; // White
+    return 0; // Other
 }
 
 void calc_whisker_lengths(WhiskerRacer* env) {
@@ -310,15 +308,15 @@ void calc_whisker_lengths(WhiskerRacer* env) {
 
             Color color = env->track_pixels[iy * width + ix];
 
-            if (is_green(color)) { // Car drove off track
+            if (get_color_type(color) == 1) { // Car drove off track
                 env->rewards[0] += env->reward_green;
                 env->score -= 0.001f;
             }
-            else if (is_yellow(color)) {
+            else if (get_color_type(color) == 2) {
                 env->rewards[0] += env->reward_yellow;
                 env->score += 1.0;
             }
-            else if (is_white(color)) {
+            else if (get_color_type(color) == 3) {
                 env->rewards[0] += 1.0;
                 env->score += 10.0;
             }
@@ -362,8 +360,6 @@ void get_random_start(WhiskerRacer* env) {
     }
 }
 
-
-
 void reset_round(WhiskerRacer* env) {
     get_random_start(env);
     env->vx = 0.0f;
@@ -383,7 +379,6 @@ void c_reset(WhiskerRacer* env) {
 }
 
 void step_frame(WhiskerRacer* env, float action) {
-    // todo Still incomplete, still has some Breakout logic
     //if (env->debug) printf("step_frame\n");
     float act = 0.0;
 
@@ -420,8 +415,7 @@ void step_frame(WhiskerRacer* env, float action) {
     int iy = (int)env->py;
     Color color = env->track_pixels[iy * env->track_image.width + ix];
     if (env->debug) printf("Color at (%d, %d): r=%d g=%d b=%d\n", ix, iy, (int)color.r, (int)color.g, (int)color.b);
-
-    if (is_green(color)) {
+    if (get_color_type(color) == 1) {
         env->terminals[0] = 1;
         add_log(env);
         c_reset(env);
