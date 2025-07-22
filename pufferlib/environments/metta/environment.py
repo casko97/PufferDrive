@@ -15,12 +15,20 @@ from metta.mettagrid.replay_writer import ReplayWriter
 def env_creator(name='metta'):
     return functools.partial(make, name)
 
-def make(name, config='pufferlib/environments/metta/metta.yaml', render_mode='auto', buf=None, seed=0,
-         ore_reward=0.25, heart_reward=0.5, battery_reward=0.25):
-    '''Crafter creation function'''
-    #return MettaPuff(config, render_mode, buf)
-    #import mettagrid.mettagrid_env
-    #from omegaconf import OmegaConf
+def make(name, config='pufferlib/environments/metta/metta.yaml', render_mode='auto', buf=None, seed=0, **kwargs):
+    '''Metta creation function'''
+    # Debug: print all kwargs to see what's being passed
+    print(f"DEBUG: make() called with kwargs: {kwargs}")
+    
+    # Extract expected parameters with defaults
+    ore_reward = kwargs.pop('ore_reward', 0.25)
+    heart_reward = kwargs.pop('heart_reward', 0.5)
+    battery_reward = kwargs.pop('battery_reward', 0.25)
+    
+    # Check if there are any unexpected kwargs
+    if kwargs:
+        print(f"WARNING: Unexpected kwargs passed to make(): {kwargs}")
+    
     OmegaConf.register_new_resolver("div", oc_divide, replace=True)
     cfg = OmegaConf.load(config)
     

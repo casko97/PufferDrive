@@ -38,7 +38,7 @@ game:
   recipe_details_obs: false
 
   agent:
-    default_resource_limit: 10
+    default_resource_limit: 50
     resource_limits:
       heart: 255
     freeze_duration: 10
@@ -46,26 +46,7 @@ game:
     
     rewards:
       inventory:
-        ore_red: 0.25
-        ore_blue: 0.0
-        ore_green: 0.0
-        ore_red_max: 1000
-        ore_blue_max: 0
-        ore_green_max: 0
-        battery_red: 0.5
-        battery_blue: 0.0
-        battery_green: 0.0
-        battery_red_max: 1000
-        battery_blue_max: 0
-        battery_green_max: 0
-        heart: 1.0
-        heart_max: 1000
-        armor: 0.0
-        armor_max: 0
-        laser: 0.0
-        laser_max: 0
-        blueprint: 0.0
-        blueprint_max: 0
+        heart: 1
       stats: {}
 
   groups:
@@ -74,43 +55,9 @@ game:
       sprite: 0
       props: {}
 
-    team_1:
-      id: 1
-      sprite: 1
-      group_reward_pct: 0.5
-      props: {}
-
-    team_2:
-      id: 2
-      sprite: 4
-      group_reward_pct: 0.5
-      props: {}
-
-    team_3:
-      id: 3
-      sprite: 8
-      group_reward_pct: 0.5
-      props: {}
-
-    team_4:
-      id: 4
-      sprite: 1
-      group_reward_pct: 0.5
-      props: {}
-
-    prey:
-      id: 5
-      sprite: 12
-      props: {}
-
-    predator:
-      id: 6
-      sprite: 6
-      props: {}
-
   objects:
     altar:
-      type_id: 1
+      type_id: 8
       input_resources:
         battery_red: 3
       output_resources:
@@ -120,38 +67,43 @@ game:
       cooldown: 10
       initial_resource_count: 0
 
+    wall:
+      type_id: 1
+      swappable: false
+
+    block:
+      type_id: 14
+      swappable: true
+
     mine_red:
       type_id: 2
       output_resources:
         ore_red: 1
-      input_resources: {}
       color: 0
       max_output: 5
-      conversion_ticks: 50
-      cooldown: 1
-      initial_resource_count: 1
+      conversion_ticks: 1
+      cooldown: 50
+      initial_resource_count: 0
 
     mine_blue:
       type_id: 3
       color: 1
       output_resources:
         ore_blue: 1
-      input_resources: {}
       max_output: 5
       conversion_ticks: 1
-      cooldown: 1
-      initial_resource_count: 1
+      cooldown: 50
+      initial_resource_count: 0
 
     mine_green:
       type_id: 4
       output_resources:
         ore_green: 1
-      input_resources: {}
       color: 2
       max_output: 5
       conversion_ticks: 1
-      cooldown: 1
-      initial_resource_count: 1
+      cooldown: 50
+      initial_resource_count: 0
 
     generator_red:
       type_id: 5
@@ -174,8 +126,8 @@ game:
       color: 1
       max_output: 5
       conversion_ticks: 1
-      cooldown: 1
-      initial_resource_count: 1
+      cooldown: 25
+      initial_resource_count: 0
 
     generator_green:
       type_id: 7
@@ -186,22 +138,22 @@ game:
       color: 2
       max_output: 5
       conversion_ticks: 1
-      cooldown: 1
-      initial_resource_count: 1
+      cooldown: 25
+      initial_resource_count: 0
 
     armory:
-      type_id: 8
+      type_id: 9
       input_resources:
         ore_red: 3
       output_resources:
         armor: 1
       max_output: 5
       conversion_ticks: 1
-      cooldown: 1
-      initial_resource_count: 1
+      cooldown: 10
+      initial_resource_count: 0
 
     lasery:
-      type_id: 9
+      type_id: 10
       input_resources:
         ore_red: 1
         battery_red: 2
@@ -209,11 +161,11 @@ game:
         laser: 1
       max_output: 5
       conversion_ticks: 1
-      cooldown: 1
-      initial_resource_count: 1
+      cooldown: 10
+      initial_resource_count: 0
 
     lab:
-      type_id: 10
+      type_id: 11
       input_resources:
         ore_red: 3
         battery_red: 3
@@ -221,11 +173,11 @@ game:
         blueprint: 1
       max_output: 5
       conversion_ticks: 1
-      cooldown: 1
-      initial_resource_count: 1
+      cooldown: 5
+      initial_resource_count: 0
 
     factory:
-      type_id: 11
+      type_id: 12
       input_resources:
         blueprint: 1
         ore_red: 5
@@ -235,11 +187,11 @@ game:
         laser: 5
       max_output: 5
       conversion_ticks: 1
-      cooldown: 1
-      initial_resource_count: 1
+      cooldown: 5
+      initial_resource_count: 0
 
     temple:
-      type_id: 12
+      type_id: 13
       input_resources:
         heart: 1
         blueprint: 1
@@ -247,16 +199,8 @@ game:
         heart: 5
       max_output: 5
       conversion_ticks: 1
-      cooldown: 1
-      initial_resource_count: 1
-
-    wall:
-      type_id: 13
-      swappable: false
-
-    block:
-      type_id: 14
-      swappable: true
+      cooldown: 5
+      initial_resource_count: 0
 
   actions:
     noop:
@@ -297,8 +241,8 @@ game:
       agents: 512
 
       objects:
-        mine: 1024
-        generator: 512
+        mine_red: 1024
+        generator_red: 512
         altar: 256
         armory: 0
         lasery: 0
