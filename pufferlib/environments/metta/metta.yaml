@@ -21,7 +21,7 @@ game:
     - laser
     - blueprint
 
-  num_agents: 512
+  num_agents: 64
   obs_width: 11
   obs_height: 11
   num_observation_tokens: 200
@@ -234,16 +234,16 @@ game:
 
     room:
       _target_: metta.mettagrid.room.random.Random
-      width: 256
-      height: 256
+      width: 64
+      height: 64
       border_width: 0
 
-      agents: 512
+      agents: 64
 
       objects:
-        mine_red: 1024
-        generator_red: 512
-        altar: 256
+        mine_red: 128
+        generator_red: 64
+        altar: 32
         armory: 0
         lasery: 0
         lab: 0
