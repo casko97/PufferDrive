@@ -15,13 +15,9 @@ from metta.mettagrid.replay_writer import ReplayWriter
 def env_creator(name='metta'):
     return functools.partial(make, name)
 
-def make(name, config='pufferlib/environments/metta/metta.yaml', render_mode='auto', buf=None, seed=0, **kwargs):
+def make(name, config='pufferlib/environments/metta/metta.yaml', render_mode='auto', buf=None, seed=0,
+         ore_reward=0.17088483842567775, battery_reward=0.9882859711234822, heart_reward=1.0):
     '''Metta creation function'''
-    
-    # Extract expected parameters with defaults
-    ore_reward = kwargs.pop('ore_reward', 0.17088483842567775)
-    battery_reward = kwargs.pop('battery_reward', 0.9882859711234822)
-    heart_reward = kwargs.pop('heart_reward', 1.0)
     
     OmegaConf.register_new_resolver("div", oc_divide, replace=True)
     cfg = OmegaConf.load(config)
