@@ -115,7 +115,6 @@ typedef struct WhiskerRacer {
 
     // Physics Constraints
     float maxv;
-    float accel;
     float turn_pi_frac;
 
     // Whiskers
@@ -142,63 +141,6 @@ typedef struct WhiskerRacer {
     Image track_image;
     Color* track_pixels;
 } WhiskerRacer;
-
-void unload_track() {
-    if (!g_track_manager.is_loaded) return;
-
-    g_track_manager.ref_count--;
-
-    // Only unload when no environments are using it
-    if (g_track_manager.ref_count <= 0) {
-        if (g_track_manager.track_texture.id != 0) {
-            UnloadTexture(g_track_manager.track_texture);
-            g_track_manager.track_texture.id = 0;
-        }
-        if (g_track_manager.track_image.data != NULL) {
-            UnloadImage(g_track_manager.track_image);
-            g_track_manager.track_image.data = NULL;
-        }
-        if (g_track_manager.track_pixels != NULL) {
-            UnloadImageColors(g_track_manager.track_pixels);
-            g_track_manager.track_pixels = NULL;
-        }
-        g_track_manager.is_loaded = 0;
-        g_track_manager.ref_count = 0;
-    }
-}
-
-void load_track_once(int circuit, int need_texture) {
-    if (g_track_manager.is_loaded && g_track_manager.circuit == circuit) {
-        g_track_manager.ref_count++;
-        return; // Already loaded for this circuit
-    }
-
-    // If we have a different circuit loaded, unload it first
-    if (g_track_manager.is_loaded) {
-        unload_track();
-    }
-
-    char fname[128];
-    snprintf(fname, sizeof(fname), "./pufferlib/ocean/whisker_racer/img/circuits/circuit-1.jpg");
-
-    g_track_manager.track_image = LoadImage(fname);
-    g_track_manager.track_pixels = LoadImageColors(g_track_manager.track_image);
-
-    if (need_texture) {
-        g_track_manager.track_texture = LoadTextureFromImage(g_track_manager.track_image);
-    } else {
-        g_track_manager.track_texture.id = 0;
-    }
-
-    g_track_manager.circuit = circuit;
-    g_track_manager.ref_count = 1;
-    g_track_manager.is_loaded = 1;
-
-    if (g_track_manager.track_image.data == NULL) {
-        printf("Failed to load track image: %s\n", fname);
-        g_track_manager.is_loaded = 0;
-    }
-}
 
 void init(WhiskerRacer* env) {
     if (env->debug) printf("init\n");
@@ -277,15 +219,123 @@ void compute_observations(WhiskerRacer* env) {
     //if (env->debug) printf("end compute_observations\n");
 }
 
-static inline int get_color_type(Color color) {
-    if (color.g > 130 && color.g > color.r + 40 && color.g > color.b + 40)
-        return 1; // Green
-    if (color.r > 30 && color.g > 30 && color.b < 10)
-        return 2; // Yellow
-    if ((color.r & color.g & color.b) > 220)  // Bit trick for min
-        return 3; // White
-    return 0; // Other
+Client* make_client(WhiskerRacer* env) {
+    Client* client = (Client*)calloc(1, sizeof(Client));
+    client->width = env->width;
+    client->height = env->height;
+    client->llw_ang = env->llw_ang;
+    client->flw_ang = env->flw_ang;
+    client->frw_ang = env->frw_ang;
+    client->rrw_ang = env->rrw_ang;
+    client->max_whisker_length = env->max_whisker_length;
+    client->turn_pi_frac = env->turn_pi_frac;
+    client->maxv = env->maxv;
+    client->circuit = env->circuit;
+
+    InitWindow(env->width, env->height, "PufferLib Whisker Racer");
+    SetTargetFPS(60 / env->frameskip);
+
+    return client;
 }
+
+void close_client(Client* client) {
+    CloseWindow();
+    free(client);
+}
+
+void reset_round(WhiskerRacer* env) {
+    get_random_start(env);
+    reset_radial_progress(env);
+    env->vx = 0.0f;
+    env->vy = 0.0f;
+    env->v = env->maxv;
+    env->vang = 0.0f;
+}
+
+void c_reset(WhiskerRacer* env) {
+    env->score = 0;
+    reset_round(env);
+    env->tick = 0;
+    compute_observations(env);
+}
+
+void step_frame(WhiskerRacer* env, float action) {
+    float act = 0.0;
+
+    if (action == LEFT) {
+        act = -1.0;
+        env->ang += PI / env->turn_pi_frac;
+    } else if (action == RIGHT) {
+        act = 1.0;
+        env->ang -= PI / env->turn_pi_frac;
+    }
+    if (env->ang > PI2) {
+        env->ang -= PI2;
+    }
+    else if (env->ang < 0) {
+        env->ang += PI2;
+    }
+    if (env->continuous){
+        act = action;
+    }
+    env->vx = env->v * cosf(env->ang);
+    env->vy = env->v * sinf(env->ang);
+    env->px = env->px + env->vx;
+    env->py = env->py + env->vy;
+    if (env->px < 0) env->px = 0;
+    else if (env->px > env->width) env->px = env->width;
+    if (env->py < 0) env->py = 0;
+    else if (env->py > env->height) env->py = env->height;
+
+    calc_whisker_lengths(env);
+
+    update_radial_progress(env);
+
+    // What color is the car touching
+    //int ix = (int)env->px;
+    //int iy = (int)env->py;
+    //Color color = env->track_pixels[iy * env->track_image.width + ix];
+    //if (env->debug) printf("Color at (%d, %d): r=%d g=%d b=%d\n", ix, iy, (int)color.r, (int)color.g, (int)color.b);
+    //if (get_color_type(color) == 1) {
+    //    env->terminals[0] = 1;
+    //    add_log(env);
+    //    c_reset(env);
+    //}
+}
+
+void c_step(WhiskerRacer* env) {
+    env->terminals[0] = 0;
+    env->rewards[0] = 0.0;
+
+    float action = env->actions[0];
+    for (int i = 0; i < env->frameskip; i++) {
+        env->tick += 1;
+        step_frame(env, action);
+    }
+    compute_observations(env);
+}
+
+void get_random_start(WhiskerRacer* env) {
+   int start_idx = rand() % env->track.total_points;
+   env->near_point_idx = start_idx;
+
+   env->px = env->track.centerline[start_idx].x;
+   env->py = env->track.centerline[start_idx].y;
+
+   int next_idx = (start_idx + 1) % env->track.total_points;
+   float dx = env->track.centerline[next_idx].x - env->px;
+   float dy = env->track.centerline[next_idx].y - env->py;
+   env->ang = atan2f(dy, dx);
+
+   env->v = env->maxv;
+   env->llw_length = 0.25f;
+   env->flw_length = 0.50f;
+   env->ffw_length = 1.00f;
+   env->frw_length = 0.50f;
+   env->rrw_length = 0.25f;
+}
+
+// ============================================ Per Step Calculations =============================
 
 // Line segment intersection helper function
 // Returns 1 if intersection found, 0 otherwise
@@ -400,40 +450,17 @@ int find_closest_centerline_segment(WhiskerRacer* env) {
     return closest_seg;
 }
 
-void get_random_start(WhiskerRacer* env) {
-   // Pick a random point along the centerline
-   int start_idx = rand() % env->track.total_points;
-   env->near_point_idx = start_idx;
-
-   // Position car at the selected centerline point
-   env->px = env->track.centerline[start_idx].x;
-   env->py = env->track.centerline[start_idx].y;
-
-   // Point toward the next centerline point (counter-clockwise direction)
-   int next_idx = (start_idx - 1) % env->track.total_points;
-   float dx = env->track.centerline[next_idx].x - env->px;
-   float dy = env->track.centerline[next_idx].y - env->py;
-   env->ang = atan2f(dy, dx);
-
-   // Set initial velocity and whisker defaults
-   env->v = env->maxv;
-   env->llw_length = 0.25f;
-   env->flw_length = 0.50f;
-   env->ffw_length = 1.00f;
-   env->frw_length = 0.50f;
-   env->rrw_length = 0.25f;
-}
-
 void update_radial_progress(WhiskerRacer* env) {
     float center_x = SCREEN_WIDTH * 0.5f;
     float center_y = SCREEN_HEIGHT * 0.5f;
 
+    //float angle = atan2f(env->py - center_y, env->px - center_x);
     float angle = atan2f(env->py - center_y, env->px - center_x);
 
     if (angle < 0) angle += PI2;
 
     int sector = (int)(angle / (PI2 / 16.0f));
-    sector = sector % NUM_RADIAL_SECTORS;
+    sector = sector % env->num_radial_sectors;
 
     if (sector != env->current_sector) {
         int expected_next = (env->current_sector + 1) % 16;
@@ -469,101 +496,9 @@ void reset_radial_progress(WhiskerRacer* env) {
     env->total_sectors_crossed = 0;
 }
 
-void reset_round(WhiskerRacer* env) {
-    get_random_start(env);
-    reset_radial_progress(env);
-    env->vx = 0.0f;
-    env->vy = 0.0f;
-    env->v = env->maxv;
-    env->vang = 0.0f;
-}
+// ============================================ End Per Step Calculations =============================
 
-void c_reset(WhiskerRacer* env) {
-    env->score = 0;
-    reset_round(env);
-    env->tick = 0;
-    compute_observations(env);
-}
-
-void step_frame(WhiskerRacer* env, float action) {
-    float act = 0.0;
-
-    if (action == LEFT) {
-        act = -1.0;
-        env->ang += PI / env->turn_pi_frac;
-    } else if (action == RIGHT) {
-        act = 1.0;
-        env->ang -= PI / env->turn_pi_frac;
-    }
-    if (env->ang > PI2) {
-        env->ang -= PI2;
-    }
-    else if (env->ang < 0) {
-        env->ang += PI2;
-    }
-    if (env->continuous){
-        act = action;
-    }
-    env->vx = env->v * cosf(env->ang);
-    env->vy = env->v * sinf(env->ang);
-    env->px = env->px + env->vx;
-    env->py = env->py + env->vy;
-    if (env->px < 0) env->px = 0;
-    else if (env->px > env->width) env->px = env->width;
-    if (env->py < 0) env->py = 0;
-    else if (env->py > env->height) env->py = env->height;
-
-    calc_whisker_lengths(env);
-
-    update_radial_progress(env);
-
-    // What color is the car touching
-    //int ix = (int)env->px;
-    //int iy = (int)env->py;
-    //Color color = env->track_pixels[iy * env->track_image.width + ix];
-    //if (env->debug) printf("Color at (%d, %d): r=%d g=%d b=%d\n", ix, iy, (int)color.r, (int)color.g, (int)color.b);
-    //if (get_color_type(color) == 1) {
-    //    env->terminals[0] = 1;
-    //    add_log(env);
-    //    c_reset(env);
-    //}
-}
-
-void c_step(WhiskerRacer* env) {
-    env->terminals[0] = 0;
-    env->rewards[0] = 0.0;
-
-    float action = env->actions[0];
-    for (int i = 0; i < env->frameskip; i++) {
-        env->tick += 1;
-        step_frame(env, action);
-    }
-    compute_observations(env);
-}
-
-Client* make_client(WhiskerRacer* env) {
-    Client* client = (Client*)calloc(1, sizeof(Client));
-    client->width = env->width;
-    client->height = env->height;
-    client->llw_ang = env->llw_ang;
-    client->flw_ang = env->flw_ang;
-    client->frw_ang = env->frw_ang;
-    client->rrw_ang = env->rrw_ang;
-    client->max_whisker_length = env->max_whisker_length;
-    client->turn_pi_frac = env->turn_pi_frac;
-    client->maxv = env->maxv;
-    client->circuit = env->circuit;
-
-    InitWindow(env->width, env->height, "PufferLib Whisker Racer");
-    SetTargetFPS(60 / env->frameskip);
-
-    return client;
-}
-
-void close_client(Client* client) {
-    CloseWindow();
-    free(client);
-}
+// ================================================================== BEZIER ==============================================
 
 // Cubic Bezier curve evaluation
 Vector2 EvaluateCubicBezier(Vector2 p0, Vector2 p1, Vector2 p2, Vector2 p3, float t) {
@@ -686,6 +621,8 @@ void GenerateTrackEdges(WhiskerRacer* env) {
     }
 }
 
+// =========================================================================== END BEZIER ===========================================
+
 void GenerateRandomTrack(WhiskerRacer* env) {
     GenerateRandomControlPoints(env);
     GenerateTrackCenterline(env);
@@ -693,6 +630,8 @@ void GenerateRandomTrack(WhiskerRacer* env) {
 }
 
 void c_render(WhiskerRacer* env) {
+
+    int height = env->height;
 
     env->render = 1;
     if (env->client == NULL) {
@@ -733,6 +672,7 @@ void c_render(WhiskerRacer* env) {
     //center_points[0] = (Vector2){SCREEN_WIDTH*0.5f, SCREEN_HEIGHT*0.5f};
     for (int i = 0; i < env->track.total_points; i++) {
         center_points[i] = env->track.centerline[i];
+        center_points[i].y = height - center_points[i].y;
     }
 
     // Without enough overlap it draws a C rather than an O
@@ -745,24 +685,97 @@ void c_render(WhiskerRacer* env) {
     SetConfigFlags(FLAG_MSAA_4X_HINT);
     ClearBackground(GREEN);
     DrawSplineBasis(center_points, env->track.total_points + 3, 50.0f, BLACK);
+    for (int i = 0; i < env->track.total_points/4; i++)
+    {
+        DrawCircle(center_points[i].x, center_points[i].y, 10, RED);
+    }
     free(center_points);
 
     float car_width = 24.0f;
     float car_height = 12.0f;
-    Vector2 car_center = {env->px, env->py};
+    float car_x = env->px;
+    float car_y = height - env->py;
+    Vector2 car_center = {car_x, car_y};
     Rectangle car_rect = {
-        env->px - car_width / 2.0f,
-        env->py - car_height / 2.0f,
+        car_x - car_width / 2.0f,
+        car_y - car_height / 2.0f,
         car_width,
         car_height
     };
     Vector2 origin = {car_width / 2.0f, car_height / 2.0f};
     DrawRectanglePro(
-        (Rectangle){env->px, env->py, car_width, car_height},
+        (Rectangle){car_x, car_y, car_width, car_height},
         origin,
-        env->ang * 180.0f / PI,
+        -env->ang * 180.0f / PI,
         (Color){255, 0, 255, 255}
     );
 
     EndDrawing();
+}
+
+static inline int get_color_type(Color color) {
+    if (color.g > 130 && color.g > color.r + 40 && color.g > color.b + 40)
+        return 1; // Green
+    if (color.r > 30 && color.g > 30 && color.b < 10)
+        return 2; // Yellow
+    if ((color.r & color.g & color.b) > 220)  // Bit trick for min
+        return 3; // White
+    return 0; // Other
+}
+
+void unload_track() {
+    if (!g_track_manager.is_loaded) return;
+
+    g_track_manager.ref_count--;
+
+    // Only unload when no environments are using it
+    if (g_track_manager.ref_count <= 0) {
+        if (g_track_manager.track_texture.id != 0) {
+            UnloadTexture(g_track_manager.track_texture);
+            g_track_manager.track_texture.id = 0;
+        }
+        if (g_track_manager.track_image.data != NULL) {
+            UnloadImage(g_track_manager.track_image);
+            g_track_manager.track_image.data = NULL;
+        }
+        if (g_track_manager.track_pixels != NULL) {
+            UnloadImageColors(g_track_manager.track_pixels);
+            g_track_manager.track_pixels = NULL;
+        }
+        g_track_manager.is_loaded = 0;
+        g_track_manager.ref_count = 0;
+    }
+}
+
+void load_track_once(int circuit, int need_texture) {
+    if (g_track_manager.is_loaded && g_track_manager.circuit == circuit) {
+        g_track_manager.ref_count++;
+        return; // Already loaded for this circuit
+    }
+
+    // If we have a different circuit loaded, unload it first
+    if (g_track_manager.is_loaded) {
+        unload_track();
+    }
+
+    char fname[128];
+    snprintf(fname, sizeof(fname), "./pufferlib/ocean/whisker_racer/img/circuits/circuit-1.jpg");
+
+    g_track_manager.track_image = LoadImage(fname);
+    g_track_manager.track_pixels = LoadImageColors(g_track_manager.track_image);
+
+    if (need_texture) {
+        g_track_manager.track_texture = LoadTextureFromImage(g_track_manager.track_image);
+    } else {
+        g_track_manager.track_texture.id = 0;
+    }
+
+    g_track_manager.circuit = circuit;
+    g_track_manager.ref_count = 1;
+    g_track_manager.is_loaded = 1;
+
+    if (g_track_manager.track_image.data == NULL) {
+        printf("Failed to load track image: %s\n", fname);
+        g_track_manager.is_loaded = 0;
+    }
 }
