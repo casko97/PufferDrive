@@ -16,7 +16,9 @@
 #define SCREEN_HEIGHT 480
 #define TRACK_WIDTH 50
 #define MAX_CONTROL_POINTS 8
-#define BEZIER_RESOLUTION 16  // Points per bezier segment
+#define BEZIER_RESOLUTION 16  // Points per bezier
+#define INV_BEZIER_RES 1.0f / BEZIER_RESOLUTION
+#define NUM_RADIAL_SECTORS 16
 
 typedef struct {
     Vector2 position;
@@ -94,6 +96,9 @@ typedef struct WhiskerRacer {
     int frameskip;
     int render;
     int continuous;
+    int current_sector;
+    int sectors_completed[NUM_RADIAL_SECTORS];
+    int total_sectors_crossed;
 
     // Car State
     float px;
@@ -103,6 +108,7 @@ typedef struct WhiskerRacer {
     float vy;
     float v;
     float vang;
+    int near_point_idx;
 
     // Physics Constraints
     float maxv;
@@ -208,6 +214,10 @@ void init(WhiskerRacer* env) {
     env->inv_maxv = 1.0f / env->maxv;
     env->inv_pi2 = 1.0f / PI2;
 
+    env->track.num_points = 4;
+
+    GenerateRandomTrack(env);
+
     if (env->debug) printf("end init\n");
 }
 
@@ -283,12 +293,39 @@ static inline int get_color_type(Color color) {
     return 0; // Other
 }
 
+// Line segment intersection helper function
+// Returns 1 if intersection found, 0 otherwise
+// If intersection found, stores the parameter t in *t_out (0 <= t <= 1 along the whisker ray)
+static inline int line_segment_intersect(Vector2 ray_start, Vector2 ray_dir, float ray_length,
+                                       Vector2 seg_start, Vector2 seg_end, float* t_out) {
+    Vector2 seg_dir = {seg_end.x - seg_start.x, seg_end.y - seg_start.y};
+    Vector2 diff = {seg_start.x - ray_start.x, seg_start.y - ray_start.y};
+
+    float cross_rd_sd = ray_dir.x * seg_dir.y - ray_dir.y * seg_dir.x;
+
+    // Lines are parallel
+    if (fabsf(cross_rd_sd) < 1e-3f) {
+        return 0;
+    }
+
+    float cross_diff_sd = diff.x * seg_dir.y - diff.y * seg_dir.x;
+    float cross_diff_rd = diff.x * ray_dir.y - diff.y * ray_dir.x;
+
+    float t = cross_diff_sd / cross_rd_sd;
+    float u = cross_diff_rd / cross_rd_sd;
+
+    // Check if intersection is within both line segments
+    if (t >= 0.0f && t <= ray_length && u >= 0.0f && u <= 1.0f) {
+        *t_out = t;
+        return 1;
+    }
+
+    return 0;
+}
+
 void calc_whisker_lengths(WhiskerRacer* env) {
     float max_len = env->max_whisker_length;
     float inv_max_len = 1.0f / max_len;
-    float step = 1.0f; // pixel step size
-    int width = env->width;
-    int height = env->height;
 
     // Whisker angles relative to car's heading
     float angles[5] = {
@@ -307,100 +344,154 @@ void calc_whisker_lengths(WhiskerRacer* env) {
         &env->rrw_length
     };
 
+    Vector2 car_pos = {env->px, env->py};
+
     for (int w = 0; w < 5; ++w) {
         float angle = angles[w];
+        Vector2 whisker_dir = {cosf(angle), sinf(angle)};
+        float min_hit_distance = max_len;
 
-        float cos_a = cosf(angle);
-        float sin_a = sinf(angle);
+        // Check intersections with track edges
+        for (int i = 0; i < env->track.total_points; i++) {
+            int next_i = (i + 1) % env->track.total_points;
 
-        float hit_len = max_len;
-        for (float l = 0.0f; l <= max_len; l += step) {
-            float wx = env->px + l * cos_a;
-            float wy = env->py + l * sin_a;
+            float t;
 
-            int ix = (int)roundf(wx);
-            int iy = (int)roundf(wy);
-
-            // Bounds check
-            if (ix < 0 || ix >= width || iy < 0 || iy >= height) {
-                hit_len = l;
-                break;
+            // Check inner edge segment
+            if (line_segment_intersect(car_pos, whisker_dir, max_len,
+                                     env->track.inner_edge[i], env->track.inner_edge[next_i], &t)) {
+                if (t < min_hit_distance) {
+                    min_hit_distance = t;
+                }
+                if (t < 0.05) break;
             }
 
-            Color color = env->track_pixels[iy * width + ix];
-
-            if (get_color_type(color) == 1) { // Car drove off track
-                env->rewards[0] += env->reward_green;
-                env->score -= 0.001f;
-            }
-            else if (get_color_type(color) == 2) {
-                env->rewards[0] += env->reward_yellow;
-                env->score += 1.0;
-            }
-            else if (get_color_type(color) == 3) {
-                env->rewards[0] += 1.0;
-                env->score += 10.0;
+            // Check outer edge segment
+            if (line_segment_intersect(car_pos, whisker_dir, max_len,
+                                     env->track.outer_edge[i], env->track.outer_edge[next_i], &t)) {
+                if (t < min_hit_distance) {
+                    min_hit_distance = t;
+                }
+                if (t < 0.05) break;
             }
         }
-        // Normalize
-        *lengths[w] = fminf(1.0f, fmaxf(0.0f, hit_len * inv_max_len));
+
+        // Normalize the length (0.0 to 1.0)
+        *lengths[w] = fminf(1.0f, fmaxf(0.0f, min_hit_distance * inv_max_len));
+
+        if (*lengths[w] < 0.05f) { // Car has left the track
+            for (int j = 0; j < 5; j++) *lengths[j] = 0.0f;
+            env->terminals[0] = 1;
+            add_log(env);
+            c_reset(env);
+        }
     }
 }
 
-void get_random_start(WhiskerRacer* env) {
-    //if (env->debug) printf("get_random_start\n");
-    if (env->circuit == 1) {
-        // Each choice: {xmin, ymin, xmax, ymax, angle}
-        const float choices[3][5] = {
-            {330, 360, 475, 395, 0.0f},
-            {490, 350, 520, 370, -M_PI/4.0f},
-            {490, 125, 530, 345, -M_PI/2.0f}
-        };
-        int num_choices = 3;
-        int ch = rand() % num_choices;
+int find_closest_centerline_segment(WhiskerRacer* env) {
+    float min_dist_sq = 100000;
+    int closest_seg = 0;
+    Vector2 car_pos = {env->px, env->py};
 
-        float xmin = choices[ch][0];
-        float ymin = choices[ch][1];
-        float xmax = choices[ch][2];
-        float ymax = choices[ch][3];
-        float base_angle = choices[ch][4];
-
-        // Random position within the rectangle
-        env->px = (float)(rand() % ((int)(xmax - xmin + 1))) + xmin;
-        env->py = (float)(rand() % ((int)(ymax - ymin + 1))) + ymin;
-        env->v = 5.0;
-        env->llw_length = 0.25;
-        env->flw_length = 0.50;
-        env->ffw_length = 1.00;
-        env->frw_length = 0.50;
-        env->rrw_length = 0.25;
-
-        // Random angle: base_angle + random offset in [-PI/6, PI/6]
-        float angle_offset = ((float)rand() / RAND_MAX) * (M_PI/3.0f) - (M_PI/6.0f);
-        env->ang = base_angle + angle_offset;
+    for (int i = 0; i < env->track.total_points; i++) {
+        Vector2 center = env->track.centerline[i];
+        float dx = car_pos.x - center.x;
+        float dy = car_pos.y - center.y;
+        float dist_sq = dx * dx + dy * dy;
+        if (dist_sq < min_dist_sq) {
+            min_dist_sq = dist_sq;
+            closest_seg = i;
+        }
     }
+    return closest_seg;
+}
+
+void get_random_start(WhiskerRacer* env) {
+   // Pick a random point along the centerline
+   int start_idx = rand() % env->track.total_points;
+   env->near_point_idx = start_idx;
+
+   // Position car at the selected centerline point
+   env->px = env->track.centerline[start_idx].x;
+   env->py = env->track.centerline[start_idx].y;
+
+   // Point toward the next centerline point (counter-clockwise direction)
+   int next_idx = (start_idx - 1) % env->track.total_points;
+   float dx = env->track.centerline[next_idx].x - env->px;
+   float dy = env->track.centerline[next_idx].y - env->py;
+   env->ang = atan2f(dy, dx);
+
+   // Set initial velocity and whisker defaults
+   env->v = env->maxv;
+   env->llw_length = 0.25f;
+   env->flw_length = 0.50f;
+   env->ffw_length = 1.00f;
+   env->frw_length = 0.50f;
+   env->rrw_length = 0.25f;
+}
+
+void update_radial_progress(WhiskerRacer* env) {
+    float center_x = SCREEN_WIDTH * 0.5f;
+    float center_y = SCREEN_HEIGHT * 0.5f;
+
+    float angle = atan2f(env->py - center_y, env->px - center_x);
+
+    if (angle < 0) angle += PI2;
+
+    int sector = (int)(angle / (PI2 / 16.0f));
+    sector = sector % NUM_RADIAL_SECTORS;
+
+    if (sector != env->current_sector) {
+        int expected_next = (env->current_sector + 1) % 16;
+        if (sector == expected_next) {
+            if (!env->sectors_completed[sector]) {
+                env->sectors_completed[sector] = 1;
+                env->total_sectors_crossed++;
+                env->rewards[0] += env->reward_yellow;
+                env->score += env->reward_yellow;
+            } else { // full lap
+                env->rewards[0] += env->reward_yellow;
+                env->score += env->reward_yellow;
+            }
+        }
+        env->current_sector = sector;
+    }
+    //env->rewards[0] += 0.1f;
+    //env->score += 1.0f;
+}
+
+void reset_radial_progress(WhiskerRacer* env) {
+    float center_x = SCREEN_WIDTH * 0.5f;
+    float center_y = SCREEN_HEIGHT * 0.5f;
+
+    float angle = atan2f(env->py - center_y, env->px - center_x);
+    if (angle < 0) angle += PI2;
+
+    env->current_sector = (int)(angle / (PI2 / 16.0f)) % 16;
+
+    for (int i = 0; i < 16; i++) {
+        env->sectors_completed[i] = 0;
+    }
+    env->total_sectors_crossed = 0;
 }
 
 void reset_round(WhiskerRacer* env) {
     get_random_start(env);
+    reset_radial_progress(env);
     env->vx = 0.0f;
     env->vy = 0.0f;
     env->v = env->maxv;
     env->vang = 0.0f;
-
 }
 
 void c_reset(WhiskerRacer* env) {
-    //if (env->debug) printf("c_reset\n");
     env->score = 0;
     reset_round(env);
     env->tick = 0;
     compute_observations(env);
-    //if (env->debug) printf("end c_reset\n");
 }
 
 void step_frame(WhiskerRacer* env, float action) {
-    //if (env->debug) printf("step_frame\n");
     float act = 0.0;
 
     if (action == LEFT) {
@@ -428,23 +519,23 @@ void step_frame(WhiskerRacer* env, float action) {
     if (env->py < 0) env->py = 0;
     else if (env->py > env->height) env->py = env->height;
 
-    //if (env->debug) printf("calc_whisker_lengths\n");
     calc_whisker_lengths(env);
 
+    update_radial_progress(env);
+
     // What color is the car touching
-    int ix = (int)env->px;
-    int iy = (int)env->py;
-    Color color = env->track_pixels[iy * env->track_image.width + ix];
-    if (env->debug) printf("Color at (%d, %d): r=%d g=%d b=%d\n", ix, iy, (int)color.r, (int)color.g, (int)color.b);
-    if (get_color_type(color) == 1) {
-        env->terminals[0] = 1;
-        add_log(env);
-        c_reset(env);
-    }
+    //int ix = (int)env->px;
+    //int iy = (int)env->py;
+    //Color color = env->track_pixels[iy * env->track_image.width + ix];
+    //if (env->debug) printf("Color at (%d, %d): r=%d g=%d b=%d\n", ix, iy, (int)color.r, (int)color.g, (int)color.b);
+    //if (get_color_type(color) == 1) {
+    //    env->terminals[0] = 1;
+    //    add_log(env);
+    //    c_reset(env);
+    //}
 }
 
 void c_step(WhiskerRacer* env) {
-    //if (env->debug) printf("c_step\n");
     env->terminals[0] = 0;
     env->rewards[0] = 0.0;
 
@@ -453,8 +544,6 @@ void c_step(WhiskerRacer* env) {
         env->tick += 1;
         step_frame(env, action);
     }
-
-    //if (env->debug) printf("compute_observations\n");
     compute_observations(env);
 }
 
@@ -489,7 +578,7 @@ Vector2 EvaluateCubicBezier(Vector2 p0, Vector2 p1, Vector2 p2, Vector2 p3, floa
     float uu = u * u;
     float uuu = uu * u;
     float ttt = tt * t;
-    
+
     Vector2 result;
     result.x = uuu * p0.x + 3 * uu * t * p1.x + 3 * u * tt * p2.x + ttt * p3.x;
     result.y = uuu * p0.y + 3 * uu * t * p1.y + 3 * u * tt * p2.y + ttt * p3.y;
@@ -501,7 +590,7 @@ Vector2 GetBezierDerivative(Vector2 p0, Vector2 p1, Vector2 p2, Vector2 p3, floa
     float u = 1.0f - t;
     float tt = t * t;
     float uu = u * u;
-    
+
     Vector2 result;
     result.x = -3 * uu * p0.x + 3 * uu * p1.x - 6 * u * t * p1.x + 6 * u * t * p2.x - 3 * tt * p2.x + 3 * tt * p3.x;
     result.y = -3 * uu * p0.y + 3 * uu * p1.y - 6 * u * t * p1.y + 6 * u * t * p2.y - 3 * tt * p2.y + 3 * tt * p3.y;
@@ -522,15 +611,13 @@ Vector2 GetPerpendicular(Vector2 v) {
 
 /// Generate random control points for a closed circuit with F1-style characteristics
 void GenerateRandomControlPoints(WhiskerRacer* env) {
-    env->track.num_points = 6;
-    
     float center_x = SCREEN_WIDTH * 0.5f;
     float center_y = SCREEN_HEIGHT * 0.5f;
-    
+
     // Create a simple closed loop with varied corner radii
     for (int i = 0; i < env->track.num_points; i++) {
         float angle = (PI2 * i) / env->track.num_points;
-        
+
         float corner_radius;
         if (i == 1 || i == 4) {
             corner_radius = 40.0f + (rand() % 30);
@@ -539,10 +626,10 @@ void GenerateRandomControlPoints(WhiskerRacer* env) {
         } else {
             corner_radius = 220.0f + (rand() % 30);
         }
-        
+
         float x_offset = (rand() % 20 - 10); // ±10px variation
         float y_offset = (rand() % 20 - 10); // ±10px variation
-        
+
         env->track.controls[i].position.x = center_x + corner_radius * cosf(angle) + x_offset;
         env->track.controls[i].position.y = center_y + corner_radius * 0.8f * sinf(angle) + y_offset;
     }
@@ -550,21 +637,21 @@ void GenerateRandomControlPoints(WhiskerRacer* env) {
 
 void GenerateTrackCenterline(WhiskerRacer* env) {
     int point_index = 0;
-    
+
     for (int i = 0; i < env->track.num_points; i++) {
         Vector2 p0 = env->track.controls[i].position;
         Vector2 p3 = env->track.controls[(i + 1) % env->track.num_points].position;
-        
+
         // Create control points for varied turn sharpness
         Vector2 prev = env->track.controls[(i - 1 + env->track.num_points) % env->track.num_points].position;
         Vector2 next = env->track.controls[(i + 2) % env->track.num_points].position;
-        
+
         // Calculate control points
         Vector2 dir1 = NormalizeVector((Vector2){p3.x - prev.x, p3.y - prev.y});
         Vector2 dir2 = NormalizeVector((Vector2){next.x - p0.x, next.y - p0.y});
-        
+
         float dist = sqrtf((p3.x - p0.x) * (p3.x - p0.x) + (p3.y - p0.y) * (p3.y - p0.y));
-        
+
         // Vary control length based on corner type - shorter = sharper turns
         float control_length;
         if (i == 1 || i == 3) {
@@ -574,18 +661,17 @@ void GenerateTrackCenterline(WhiskerRacer* env) {
         } else {
             control_length = dist * 0.3f; // Sweeping turns
         }
-        
+
         Vector2 p1 = (Vector2){p0.x + dir1.x * control_length, p0.y + dir1.y * control_length};
         Vector2 p2 = (Vector2){p3.x - dir2.x * control_length, p3.y - dir2.y * control_length};
-        
+
         // Generate points along this Bezier segment
         for (int j = 0; j < BEZIER_RESOLUTION && point_index < MAX_CONTROL_POINTS * BEZIER_RESOLUTION - 1; j++) {
-            float t = (float)j / (float)BEZIER_RESOLUTION;
+            float t = (float)j * INV_BEZIER_RES;
             env->track.centerline[point_index] = EvaluateCubicBezier(p0, p1, p2, p3, t);
             point_index++;
         }
     }
-    
     env->track.total_points = point_index;
 }
 
@@ -594,11 +680,11 @@ void GenerateTrackEdges(WhiskerRacer* env) {
     for (int i = 0; i < env->track.total_points; i++) {
         Vector2 current = env->track.centerline[i];
         Vector2 next = env->track.centerline[(i + 1) % env->track.total_points];
-        
+
         // Calculate tangent direction
         Vector2 tangent = NormalizeVector((Vector2){next.x - current.x, next.y - current.y});
         Vector2 normal = GetPerpendicular(tangent);
-        
+
         // Create inner and outer edges
         float half_width = TRACK_WIDTH * 0.5f;
         env->track.inner_edge[i] = (Vector2){current.x - normal.x * half_width, current.y - normal.y * half_width};
@@ -645,6 +731,28 @@ void c_render(WhiskerRacer* env) {
         DrawText("IMG FAIL", 10, 40, 20, RED);
     }
 
+    DrawText(TextFormat("Score: %i", env->score), 10, 10, 20, WHITE);
+    EndDrawing();
+    */
+
+    Vector2* center_points = malloc(sizeof(Vector2) * (env->track.total_points + 3));
+    //center_points[0] = (Vector2){SCREEN_WIDTH*0.5f, SCREEN_HEIGHT*0.5f};
+    for (int i = 0; i < env->track.total_points; i++) {
+        center_points[i] = env->track.centerline[i];
+    }
+
+    // Without enough overlap it draws a C rather than an O
+    center_points[env->track.total_points] = env->track.centerline[0];
+    center_points[env->track.total_points + 1] = env->track.centerline[1];
+    center_points[env->track.total_points + 2] = env->track.centerline[2];
+
+    BeginDrawing();
+    SetWindowSize(640, 480);
+    SetConfigFlags(FLAG_MSAA_4X_HINT);
+    ClearBackground(GREEN);
+    DrawSplineBasis(center_points, env->track.total_points + 3, 50.0f, BLACK);
+    free(center_points);
+
     float car_width = 24.0f;
     float car_height = 12.0f;
     Vector2 car_center = {env->px, env->py};
@@ -662,28 +770,5 @@ void c_render(WhiskerRacer* env) {
         (Color){255, 0, 255, 255}
     );
 
-    DrawText(TextFormat("Score: %i", env->score), 10, 10, 20, WHITE);
-    EndDrawing();
-    */
-
-    GenerateRandomTrack(env);
-
-    Vector2* outer_points = malloc(sizeof(Vector2) * (env->track.total_points + 3));
-    //outer_points[0] = (Vector2){SCREEN_WIDTH*0.5f, SCREEN_HEIGHT*0.5f};
-    for (int i = 0; i < env->track.total_points; i++) {
-        outer_points[i] = env->track.centerline[i];
-    }
-
-    // Without enough overlap it draws a C rather than an O
-    outer_points[env->track.total_points] = env->track.centerline[0];
-    outer_points[env->track.total_points + 1] = env->track.centerline[1];
-    outer_points[env->track.total_points + 2] = env->track.centerline[2];
-
-    BeginDrawing();
-    SetWindowSize(640, 480);
-    SetConfigFlags(FLAG_MSAA_4X_HINT);
-    ClearBackground(GREEN);
-    DrawSplineBasis(outer_points, env->track.total_points + 3, 50.0f, BLACK);
-    free(outer_points);
     EndDrawing();
 }
