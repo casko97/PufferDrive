@@ -224,7 +224,7 @@ void init(WhiskerRacer* env) {
 void allocate(WhiskerRacer* env) {
     if (env->debug) printf("allocate");
     init(env);
-    env->observations = (float*)calloc(11, sizeof(float));
+    env->observations = (float*)calloc(5, sizeof(float));
     env->actions = (float*)calloc(1, sizeof(float));
     env->rewards = (float*)calloc(1, sizeof(float));
     env->terminals = (unsigned char*)calloc(1, sizeof(unsigned char));
@@ -257,28 +257,18 @@ void add_log(WhiskerRacer* env) {
 
 void compute_observations(WhiskerRacer* env) {
     //if (env->debug) printf("compute_observations\n");
-    env->observations[0] = env->px * env->inv_width;
-    env->observations[1] = env->py * env->inv_height;
-    env->observations[2] = env->ang * env->inv_pi2;
-    env->observations[3] = env->vx * env->inv_maxv;
-    env->observations[4] = env->vy * env->inv_maxv;
-    env->observations[5] = env->llw_length;
-    env->observations[6] = env->flw_length;
-    env->observations[7] = env->ffw_length;
-    env->observations[8] = env->frw_length;
-    env->observations[9] = env->rrw_length;
-    env->observations[10] = env->score / 100.0f;
+    env->observations[0] = env->llw_length;
+    env->observations[1] = env->flw_length;
+    env->observations[2] = env->ffw_length;
+    env->observations[3] = env->frw_length;
+    env->observations[4] = env->rrw_length;
+    env->observations[5] = env->score / 100.0f;
     if (env->debug) printf("float0 %.3f \n", env->observations[0]);
     if (env->debug) printf("float1 %.3f \n", env->observations[1]);
     if (env->debug) printf("float2 %.3f \n", env->observations[2]);
     if (env->debug) printf("float3 %.3f \n", env->observations[3]);
     if (env->debug) printf("float4 %.3f \n", env->observations[4]);
     if (env->debug) printf("float5 %.3f \n", env->observations[5]);
-    if (env->debug) printf("float6 %.3f \n", env->observations[6]);
-    if (env->debug) printf("float7 %.3f \n", env->observations[7]);
-    if (env->debug) printf("float8 %.3f \n", env->observations[8]);
-    if (env->debug) printf("float9 %.3f \n", env->observations[9]);
-    if (env->debug) printf("float10 %.3f \n", env->observations[10]);
     if (env->debug) printf("\n\n\n");
     //if (env->debug) printf("end compute_observations\n");
 }
