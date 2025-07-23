@@ -25,6 +25,10 @@ void demo() {
         .reward_yellow = 0.25,
         .reward_green = 0.0,
         .gamma = 0.9,
+        .track_width = 50,
+        .num_radial_sectors = 16,
+        .num_points = 4,
+        .bezier_resolution = 16,
     };
     printf("about to allocate\n");
     allocate(&env);

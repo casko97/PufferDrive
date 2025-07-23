@@ -14,11 +14,9 @@
 
 #define SCREEN_WIDTH 640
 #define SCREEN_HEIGHT 480
-#define TRACK_WIDTH 50
 #define MAX_CONTROL_POINTS 8
-#define BEZIER_RESOLUTION 16  // Points per bezier
-#define INV_BEZIER_RES 1.0f / BEZIER_RESOLUTION
 #define NUM_RADIAL_SECTORS 16
+#define MAX_BEZIER_RESOLUTION 16
 
 typedef struct {
     Vector2 position;
@@ -27,9 +25,9 @@ typedef struct {
 typedef struct {
     ControlPoint controls[MAX_CONTROL_POINTS];
     int num_points;
-    Vector2 centerline[MAX_CONTROL_POINTS * BEZIER_RESOLUTION];
-    Vector2 inner_edge[MAX_CONTROL_POINTS * BEZIER_RESOLUTION];
-    Vector2 outer_edge[MAX_CONTROL_POINTS * BEZIER_RESOLUTION];
+    Vector2 centerline[MAX_CONTROL_POINTS * MAX_BEZIER_RESOLUTION];
+    Vector2 inner_edge[MAX_CONTROL_POINTS * MAX_BEZIER_RESOLUTION];
+    Vector2 outer_edge[MAX_CONTROL_POINTS * MAX_BEZIER_RESOLUTION];
     int total_points;
 } Track;
 
@@ -99,6 +97,11 @@ typedef struct WhiskerRacer {
     int current_sector;
     int sectors_completed[NUM_RADIAL_SECTORS];
     int total_sectors_crossed;
+    int track_width;
+    int num_radial_sectors;
+    int num_points;
+    int bezier_resolution;
+    float inv_bezier_res;
 
     // Car State
     float px;
@@ -213,6 +216,7 @@ void init(WhiskerRacer* env) {
     env->inv_height = 1.0f / env->height;
     env->inv_maxv = 1.0f / env->maxv;
     env->inv_pi2 = 1.0f / PI2;
+    env->inv_bezier_res = 1.0f / env->bezier_resolution;
 
     env->track.num_points = 4;
 
@@ -656,8 +660,8 @@ void GenerateTrackCenterline(WhiskerRacer* env) {
         Vector2 p2 = (Vector2){p3.x - dir2.x * control_length, p3.y - dir2.y * control_length};
 
         // Generate points along this Bezier segment
-        for (int j = 0; j < BEZIER_RESOLUTION && point_index < MAX_CONTROL_POINTS * BEZIER_RESOLUTION - 1; j++) {
-            float t = (float)j * INV_BEZIER_RES;
+        for (int j = 0; j < env->bezier_resolution && point_index < MAX_CONTROL_POINTS * env->bezier_resolution - 1; j++) {
+            float t = (float)j * env->inv_bezier_res;
             env->track.centerline[point_index] = EvaluateCubicBezier(p0, p1, p2, p3, t);
             point_index++;
         }
@@ -676,7 +680,7 @@ void GenerateTrackEdges(WhiskerRacer* env) {
         Vector2 normal = GetPerpendicular(tangent);
 
         // Create inner and outer edges
-        float half_width = TRACK_WIDTH * 0.5f;
+        float half_width = env->track_width * 0.5f;
         env->track.inner_edge[i] = (Vector2){current.x - normal.x * half_width, current.y - normal.y * half_width};
         env->track.outer_edge[i] = (Vector2){current.x + normal.x * half_width, current.y + normal.y * half_width};
     }

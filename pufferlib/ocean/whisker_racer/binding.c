@@ -20,6 +20,11 @@ static int my_init(Env* env, PyObject* args, PyObject* kwargs) {
     env->reward_yellow = unpack(kwargs, "reward_yellow");
     env->reward_green = unpack(kwargs, "reward_green");
     env->gamma = unpack(kwargs, "gamma");
+    env->track_width = unpack(kwargs, "track_width");
+    env->num_radial_sectors = unpack(kwargs, "num_radial_sectors");
+    env->num_points = unpack(kwargs, "num_points");
+    env->bezier_resolution = unpack(kwargs, "bezier_resolution");
+    env->turn_pi_frac = unpack(kwargs, "turn_pi_frac");
     init(env);
     return 0;
 }
