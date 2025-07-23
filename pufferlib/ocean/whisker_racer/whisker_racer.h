@@ -12,6 +12,25 @@
 
 #define PI2 PI * 2
 
+#define SCREEN_WIDTH 640
+#define SCREEN_HEIGHT 480
+#define TRACK_WIDTH 50
+#define MAX_CONTROL_POINTS 8
+#define BEZIER_RESOLUTION 16  // Points per bezier segment
+
+typedef struct {
+    Vector2 position;
+} ControlPoint;
+
+typedef struct {
+    ControlPoint controls[MAX_CONTROL_POINTS];
+    int num_points;
+    Vector2 centerline[MAX_CONTROL_POINTS * BEZIER_RESOLUTION];
+    Vector2 inner_edge[MAX_CONTROL_POINTS * BEZIER_RESOLUTION];
+    Vector2 outer_edge[MAX_CONTROL_POINTS * BEZIER_RESOLUTION];
+    int total_points;
+} Track;
+
 typedef struct TrackManager {
     Image track_image;
     Color* track_pixels;
@@ -61,6 +80,8 @@ typedef struct WhiskerRacer {
     float reward_yellow;
     float reward_green;
     float gamma;
+
+    Track track;
 
     // Game State
     int width;
@@ -461,7 +482,138 @@ void close_client(Client* client) {
     free(client);
 }
 
+// Cubic Bezier curve evaluation
+Vector2 EvaluateCubicBezier(Vector2 p0, Vector2 p1, Vector2 p2, Vector2 p3, float t) {
+    float u = 1.0f - t;
+    float tt = t * t;
+    float uu = u * u;
+    float uuu = uu * u;
+    float ttt = tt * t;
+    
+    Vector2 result;
+    result.x = uuu * p0.x + 3 * uu * t * p1.x + 3 * u * tt * p2.x + ttt * p3.x;
+    result.y = uuu * p0.y + 3 * uu * t * p1.y + 3 * u * tt * p2.y + ttt * p3.y;
+    return result;
+}
+
+// Get the derivative (tangent) of cubic Bezier curve
+Vector2 GetBezierDerivative(Vector2 p0, Vector2 p1, Vector2 p2, Vector2 p3, float t) {
+    float u = 1.0f - t;
+    float tt = t * t;
+    float uu = u * u;
+    
+    Vector2 result;
+    result.x = -3 * uu * p0.x + 3 * uu * p1.x - 6 * u * t * p1.x + 6 * u * t * p2.x - 3 * tt * p2.x + 3 * tt * p3.x;
+    result.y = -3 * uu * p0.y + 3 * uu * p1.y - 6 * u * t * p1.y + 6 * u * t * p2.y - 3 * tt * p2.y + 3 * tt * p3.y;
+    return result;
+}
+
+// Normalize a vector
+Vector2 NormalizeVector(Vector2 v) {
+    float length = sqrtf(v.x * v.x + v.y * v.y);
+    if (length == 0.0f) return (Vector2){0, 0};
+    return (Vector2){v.x / length, v.y / length};
+}
+
+// Get perpendicular vector (rotated 90 degrees)
+Vector2 GetPerpendicular(Vector2 v) {
+    return (Vector2){-v.y, v.x};
+}
+
+/// Generate random control points for a closed circuit with F1-style characteristics
+void GenerateRandomControlPoints(WhiskerRacer* env) {
+    env->track.num_points = 6;
+    
+    float center_x = SCREEN_WIDTH * 0.5f;
+    float center_y = SCREEN_HEIGHT * 0.5f;
+    
+    // Create a simple closed loop with varied corner radii
+    for (int i = 0; i < env->track.num_points; i++) {
+        float angle = (PI2 * i) / env->track.num_points;
+        
+        float corner_radius;
+        if (i == 1 || i == 4) {
+            corner_radius = 40.0f + (rand() % 30);
+        } else if (i == 0 || i == 3) {
+            corner_radius = 150.0f + (rand() % 40);
+        } else {
+            corner_radius = 220.0f + (rand() % 30);
+        }
+        
+        float x_offset = (rand() % 20 - 10); // ±10px variation
+        float y_offset = (rand() % 20 - 10); // ±10px variation
+        
+        env->track.controls[i].position.x = center_x + corner_radius * cosf(angle) + x_offset;
+        env->track.controls[i].position.y = center_y + corner_radius * 0.8f * sinf(angle) + y_offset;
+    }
+}
+
+void GenerateTrackCenterline(WhiskerRacer* env) {
+    int point_index = 0;
+    
+    for (int i = 0; i < env->track.num_points; i++) {
+        Vector2 p0 = env->track.controls[i].position;
+        Vector2 p3 = env->track.controls[(i + 1) % env->track.num_points].position;
+        
+        // Create control points for varied turn sharpness
+        Vector2 prev = env->track.controls[(i - 1 + env->track.num_points) % env->track.num_points].position;
+        Vector2 next = env->track.controls[(i + 2) % env->track.num_points].position;
+        
+        // Calculate control points
+        Vector2 dir1 = NormalizeVector((Vector2){p3.x - prev.x, p3.y - prev.y});
+        Vector2 dir2 = NormalizeVector((Vector2){next.x - p0.x, next.y - p0.y});
+        
+        float dist = sqrtf((p3.x - p0.x) * (p3.x - p0.x) + (p3.y - p0.y) * (p3.y - p0.y));
+        
+        // Vary control length based on corner type - shorter = sharper turns
+        float control_length;
+        if (i == 1 || i == 3) {
+            control_length = dist * 0.1f; // Sharp hairpins
+        } else if (i == 0 || i == 4) {
+            control_length = dist * 0.2f; // Medium corners
+        } else {
+            control_length = dist * 0.3f; // Sweeping turns
+        }
+        
+        Vector2 p1 = (Vector2){p0.x + dir1.x * control_length, p0.y + dir1.y * control_length};
+        Vector2 p2 = (Vector2){p3.x - dir2.x * control_length, p3.y - dir2.y * control_length};
+        
+        // Generate points along this Bezier segment
+        for (int j = 0; j < BEZIER_RESOLUTION && point_index < MAX_CONTROL_POINTS * BEZIER_RESOLUTION - 1; j++) {
+            float t = (float)j / (float)BEZIER_RESOLUTION;
+            env->track.centerline[point_index] = EvaluateCubicBezier(p0, p1, p2, p3, t);
+            point_index++;
+        }
+    }
+    
+    env->track.total_points = point_index;
+}
+
+// Generate inner and outer env->track edges
+void GenerateTrackEdges(WhiskerRacer* env) {
+    for (int i = 0; i < env->track.total_points; i++) {
+        Vector2 current = env->track.centerline[i];
+        Vector2 next = env->track.centerline[(i + 1) % env->track.total_points];
+        
+        // Calculate tangent direction
+        Vector2 tangent = NormalizeVector((Vector2){next.x - current.x, next.y - current.y});
+        Vector2 normal = GetPerpendicular(tangent);
+        
+        // Create inner and outer edges
+        float half_width = TRACK_WIDTH * 0.5f;
+        env->track.inner_edge[i] = (Vector2){current.x - normal.x * half_width, current.y - normal.y * half_width};
+        env->track.outer_edge[i] = (Vector2){current.x + normal.x * half_width, current.y + normal.y * half_width};
+    }
+}
+
+void GenerateRandomTrack(WhiskerRacer* env) {
+    GenerateRandomControlPoints(env);
+    GenerateTrackCenterline(env);
+    GenerateTrackEdges(env);
+}
+
 void c_render(WhiskerRacer* env) {
+
     env->render = 1;
     if (env->client == NULL) {
         env->client = make_client(env);
@@ -482,6 +634,7 @@ void c_render(WhiskerRacer* env) {
         ToggleFullscreen();
     }
 
+/*
     BeginDrawing();
 
     ClearBackground(BLACK);
@@ -510,6 +663,27 @@ void c_render(WhiskerRacer* env) {
     );
 
     DrawText(TextFormat("Score: %i", env->score), 10, 10, 20, WHITE);
+    EndDrawing();
+    */
 
+    GenerateRandomTrack(env);
+
+    Vector2* outer_points = malloc(sizeof(Vector2) * (env->track.total_points + 3));
+    //outer_points[0] = (Vector2){SCREEN_WIDTH*0.5f, SCREEN_HEIGHT*0.5f};
+    for (int i = 0; i < env->track.total_points; i++) {
+        outer_points[i] = env->track.centerline[i];
+    }
+
+    // Without enough overlap it draws a C rather than an O
+    outer_points[env->track.total_points] = env->track.centerline[0];
+    outer_points[env->track.total_points + 1] = env->track.centerline[1];
+    outer_points[env->track.total_points + 2] = env->track.centerline[2];
+
+    BeginDrawing();
+    SetWindowSize(640, 480);
+    SetConfigFlags(FLAG_MSAA_4X_HINT);
+    ClearBackground(GREEN);
+    DrawSplineBasis(outer_points, env->track.total_points + 3, 50.0f, BLACK);
+    free(outer_points);
     EndDrawing();
 }
