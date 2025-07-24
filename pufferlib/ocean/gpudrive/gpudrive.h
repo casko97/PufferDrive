@@ -46,7 +46,7 @@
 #define SLOTS_PER_CELL (MAX_ENTITIES_PER_CELL*2 + 1)
 
 // Max road segment observation entities
-#define MAX_ROAD_SEGMENT_OBSERVATIONS 200
+#define MAX_ROAD_SEGMENT_OBSERVATIONS 50
 #define MAX_CARS 64
 // Observation Space Constants
 #define MAX_SPEED 100.0f
@@ -105,8 +105,6 @@ struct Log {
 typedef struct Entity Entity;
 struct Entity {
     int type;
-    int road_object_id;
-    int road_point_id;
     int array_size;
     float* traj_x;
     float* traj_y;
@@ -238,7 +236,6 @@ Entity* load_map_binary(const char* filename, GPUDrive* env) {
     fread(&env->num_roads, sizeof(int), 1, file);
     env->num_entities = env->num_objects + env->num_roads; 
     Entity* entities = (Entity*)malloc(env->num_entities * sizeof(Entity));
-    // printf("num entities: %d\n", env->num_entities);
     for (int i = 0; i < env->num_entities; i++) {
 	// Read base entity data
         fread(&entities[i].type, sizeof(int), 1, file);
@@ -374,7 +371,7 @@ void init_grid_map(GPUDrive* env){
     float bottom_right_y;
     int first_valid_point = 0;
     for(int i = 0; i < env->num_entities; i++){
-        if(env->entities[i].type > 3 && env->entities[i].type < 7){
+        if(env->entities[i].type == 6){
             // Check all points in the trajectory for road elements
             Entity* e = &env->entities[i];
             for(int j = 0; j < e->array_size; j++){
@@ -409,7 +406,7 @@ void init_grid_map(GPUDrive* env){
     env->grid_cells = (int*)calloc(grid_cell_count*SLOTS_PER_CELL, sizeof(int));
     // Populate grid cells
     for(int i = 0; i < env->num_entities; i++){
-        if(env->entities[i].type > 3 && env->entities[i].type < 7){
+        if(env->entities[i].type == 6){
             for(int j = 0; j < env->entities[i].array_size - 1; j++){
                 float x_center = (env->entities[i].traj_x[j] + env->entities[i].traj_x[j+1]) / 2;
                 float y_center = (env->entities[i].traj_y[j] + env->entities[i].traj_y[j+1]) / 2;
@@ -896,7 +893,6 @@ void init(GPUDrive* env){
     env->human_agent_idx = 0;
     env->timestep = 0;
     env->entities = load_map_binary(env->map_name, env);
-    // printf("num entities: %d\n", env->num_entities);
     env->dynamics_model = CLASSIC;
     set_means(env);
     init_grid_map(env);

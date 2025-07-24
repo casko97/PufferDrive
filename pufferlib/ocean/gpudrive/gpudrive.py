@@ -37,6 +37,9 @@ class GPUDrive(pufferlib.PufferEnv):
         self.single_observation_space = gymnasium.spaces.Box(low=-1, high=1,
             shape=(self.num_obs,), dtype=np.float32)
         self.single_action_space = gymnasium.spaces.MultiDiscrete([7, 13])
+        # self.single_action_space = gymnasium.spaces.Box(
+        #     low=-1, high=1, shape=(2,), dtype=np.float32
+        # )
         # Check if resources directory exists
         binary_path = "resources/gpudrive/binaries/map_000.bin"
         if not os.path.exists(binary_path):
@@ -311,10 +314,10 @@ def process_all_maps():
         binary_path = binary_dir / binary_file
         
         print(f"Processing {map_path.name} -> {binary_file}")
-        try:
-            load_map(str(map_path), str(binary_path))
-        except Exception as e:
-            print(f"Error processing {map_path.name}: {e}")
+        # try:
+        load_map(str(map_path), str(binary_path))
+        # except Exception as e:
+        #     print(f"Error processing {map_path.name}: {e}")
 
 def test_performance(timeout=10, atn_cache=1024, num_agents=1024):
     import time
