@@ -32,17 +32,6 @@ typedef struct {
     int total_points;
 } Track;
 
-typedef struct TrackManager {
-    Image track_image;
-    Color* track_pixels;
-    Texture2D track_texture;
-    int circuit;
-    int ref_count;  // Track how many environments are using this
-    int is_loaded;
-} TrackManager;
-
-static TrackManager g_track_manager = {0};
-
 typedef struct Log {
     float perf;
     float score;
@@ -64,9 +53,6 @@ typedef struct Client {
     int circuit;
     int render;
     int debug;
-    Texture2D track_texture;
-    Image track_image;
-    Color* track_pixels;
 } Client;
 
 typedef struct WhiskerRacer {
@@ -138,10 +124,6 @@ typedef struct WhiskerRacer {
     float inv_height;
     float inv_maxv;
     float inv_pi2;
-    
-    Texture2D track_texture;
-    Image track_image;
-    Color* track_pixels;
 } WhiskerRacer;
 
 void init(WhiskerRacer* env) {
@@ -149,12 +131,6 @@ void init(WhiskerRacer* env) {
     env->tick = 0;
 
     env->debug = 0;
-
-    load_track_once(env->circuit, env->render);
-
-    env->track_pixels = g_track_manager.track_pixels;
-    env->track_texture = g_track_manager.track_texture;
-    env->track_image = g_track_manager.track_image;
 
     env->inv_width = 1.0f / env->width;
     env->inv_height = 1.0f / env->height;
@@ -181,7 +157,7 @@ void allocate(WhiskerRacer* env) {
 }
 
 void c_close(WhiskerRacer* env) {
-    unload_track();
+    //unload_track();
 }
 
 void free_allocated(WhiskerRacer* env) {
@@ -581,26 +557,45 @@ void GenerateRandomControlPoints(WhiskerRacer* env) {
     float center_x = SCREEN_WIDTH * 0.5f;
     float center_y = SCREEN_HEIGHT * 0.5f;
 
-    // Create a simple closed loop with varied corner radii
-    for (int i = 0; i < env->num_points; i++) {
-        float angle = (PI2 * i) / env->num_points;
+    int n = env->num_points;
 
-        float corner_radius;
-        if (i == 1 || i == 4) {
-            corner_radius = 40.0f + (rand() % 30);
-        } else if (i == 0 || i == 3) {
-            corner_radius = 150.0f + (rand() % 40);
+    // Randomly choose distinct, non-adjacent indices for tight and medium corners
+    int opt1 = rand() % n;
+    int opt2;
+    do {
+        opt2 = rand() % n;
+    } while (opt2 == opt1 || abs(opt2 - opt1) == 1 || abs(opt2 - opt1) == n - 1);
+
+    int opt3, opt4;
+    do {
+        opt3 = rand() % n;
+    } while (opt3 == opt1 || opt3 == opt2);
+
+    do {
+        opt4 = rand() % n;
+    } while (opt4 == opt1 || opt4 == opt2 || opt4 == opt3 || abs(opt4 - opt3) == 1 || abs(opt4 - opt3) == n - 1);
+
+    // Generate control points
+    for (int i = 0; i < n; i++) {
+        float angle = (PI2 * i) / n;
+
+        float dist_from_center;
+        if (i == opt1) {
+            dist_from_center = 100.0f + (rand() % 30);
+        } else if (i == opt2 || i == opt3 || i == opt4) {
+            dist_from_center = 150.0f + (rand() % 40);
         } else {
-            corner_radius = 220.0f + (rand() % 30);
+            dist_from_center = 220.0f + (rand() % 30);
         }
 
-        float x_offset = (rand() % 20 - 10); // ±10px variation
-        float y_offset = (rand() % 20 - 10); // ±10px variation
+        float x_offset = (rand() % 21 - 10); // ±10px
+        float y_offset = (rand() % 21 - 10); // ±10px
 
-        env->track.controls[i].position.x = center_x + corner_radius * cosf(angle) + x_offset;
-        env->track.controls[i].position.y = center_y + corner_radius * 0.8f * sinf(angle) + y_offset;
+        env->track.controls[i].position.x = center_x + dist_from_center * cosf(angle) + x_offset;
+        env->track.controls[i].position.y = center_y + dist_from_center * 0.8f * sinf(angle) + y_offset;
     }
 }
+
 
 void GenerateTrackCenterline(WhiskerRacer* env) {
     int point_index = 0;
@@ -622,11 +617,11 @@ void GenerateTrackCenterline(WhiskerRacer* env) {
         // Vary control length based on corner type - shorter = sharper turns
         float control_length;
         if (i == 1 || i == 3) {
-            control_length = dist * 0.1f; // Sharp hairpins
+            control_length = dist * 0.2f; // Sharp hairpins
         } else if (i == 0 || i == 4) {
-            control_length = dist * 0.2f; // Medium corners
+            control_length = dist * 0.3f; // Medium corners
         } else {
-            control_length = dist * 0.3f; // Sweeping turns
+            control_length = dist * 0.4f; // Sweeping turns
         }
 
         Vector2 p1 = (Vector2){p0.x + dir1.x * control_length, p0.y + dir1.y * control_length};
@@ -676,12 +671,6 @@ void c_render(WhiskerRacer* env) {
         env->client = make_client(env);
     }
 
-    // If we need texture but don't have it, load it
-    if (g_track_manager.track_texture.id == 0 && g_track_manager.is_loaded) {
-        g_track_manager.track_texture = LoadTextureFromImage(g_track_manager.track_image);
-        env->track_texture = g_track_manager.track_texture;
-    }
-
     Client* client = env->client;
 
     if (IsKeyDown(KEY_ESCAPE)) {
@@ -691,20 +680,7 @@ void c_render(WhiskerRacer* env) {
         ToggleFullscreen();
     }
 
-/*
-    BeginDrawing();
-
-    ClearBackground(BLACK);
-
-    if (env->track_texture.id != 0) {
-        DrawTexture(env->track_texture, 0, 0, WHITE);
-    } else {
-        DrawText("IMG FAIL", 10, 40, 20, RED);
-    }
-
-    DrawText(TextFormat("Score: %i", env->score), 10, 10, 20, WHITE);
-    EndDrawing();
-    */
+    //GenerateRandomTrack(env);
 
     Vector2* center_points = malloc(sizeof(Vector2) * (env->track.total_points + 3));
     //center_points[0] = (Vector2){SCREEN_WIDTH*0.5f, SCREEN_HEIGHT*0.5f};
@@ -749,71 +725,4 @@ void c_render(WhiskerRacer* env) {
     );
 
     EndDrawing();
-}
-
-static inline int get_color_type(Color color) {
-    if (color.g > 130 && color.g > color.r + 40 && color.g > color.b + 40)
-        return 1; // Green
-    if (color.r > 30 && color.g > 30 && color.b < 10)
-        return 2; // Yellow
-    if ((color.r & color.g & color.b) > 220)  // Bit trick for min
-        return 3; // White
-    return 0; // Other
-}
-
-void unload_track() {
-    if (!g_track_manager.is_loaded) return;
-
-    g_track_manager.ref_count--;
-
-    // Only unload when no environments are using it
-    if (g_track_manager.ref_count <= 0) {
-        if (g_track_manager.track_texture.id != 0) {
-            UnloadTexture(g_track_manager.track_texture);
-            g_track_manager.track_texture.id = 0;
-        }
-        if (g_track_manager.track_image.data != NULL) {
-            UnloadImage(g_track_manager.track_image);
-            g_track_manager.track_image.data = NULL;
-        }
-        if (g_track_manager.track_pixels != NULL) {
-            UnloadImageColors(g_track_manager.track_pixels);
-            g_track_manager.track_pixels = NULL;
-        }
-        g_track_manager.is_loaded = 0;
-        g_track_manager.ref_count = 0;
-    }
-}
-
-void load_track_once(int circuit, int need_texture) {
-    if (g_track_manager.is_loaded && g_track_manager.circuit == circuit) {
-        g_track_manager.ref_count++;
-        return; // Already loaded for this circuit
-    }
-
-    // If we have a different circuit loaded, unload it first
-    if (g_track_manager.is_loaded) {
-        unload_track();
-    }
-
-    char fname[128];
-    snprintf(fname, sizeof(fname), "./pufferlib/ocean/whisker_racer/img/circuits/circuit-1.jpg");
-
-    g_track_manager.track_image = LoadImage(fname);
-    g_track_manager.track_pixels = LoadImageColors(g_track_manager.track_image);
-
-    if (need_texture) {
-        g_track_manager.track_texture = LoadTextureFromImage(g_track_manager.track_image);
-    } else {
-        g_track_manager.track_texture.id = 0;
-    }
-
-    g_track_manager.circuit = circuit;
-    g_track_manager.ref_count = 1;
-    g_track_manager.is_loaded = 1;
-
-    if (g_track_manager.track_image.data == NULL) {
-        printf("Failed to load track image: %s\n", fname);
-        g_track_manager.is_loaded = 0;
-    }
 }
