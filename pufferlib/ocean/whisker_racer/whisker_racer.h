@@ -54,10 +54,10 @@ typedef struct Log {
 typedef struct Client {
     float width;   // 640
     float height;  // 480
-    float llw_ang; // left left whisker angle
+    //float llw_ang; // left left whisker angle
     float flw_ang; // front left whisker angle
     float frw_ang; // front right whisker angle
-    float rrw_ang; // right right whisker angle
+    //float rrw_ang; // right right whisker angle
     float max_whisker_length;
     float turn_pi_frac; //  (pi / turn_pi_frac is the turn angle)
     float maxv;    // 5
@@ -120,7 +120,7 @@ typedef struct WhiskerRacer {
     // Whiskers
     int num_whiskers;
     //float* whisker_angles;    // Array of whisker angles (radians)
-    Vector2 whisker_dirs[5];
+    Vector2 whisker_dirs[2];
     float llw_ang; // left left whisker angle
     float flw_ang; // front left whisker angle
     float frw_ang; // front right whisker angle
@@ -169,7 +169,7 @@ void init(WhiskerRacer* env) {
 void allocate(WhiskerRacer* env) {
     if (env->debug) printf("allocate");
     init(env);
-    env->observations = (float*)calloc(5, sizeof(float));
+    env->observations = (float*)calloc(3, sizeof(float));
     env->actions = (float*)calloc(1, sizeof(float));
     env->rewards = (float*)calloc(1, sizeof(float));
     env->terminals = (unsigned char*)calloc(1, sizeof(unsigned char));
@@ -202,18 +202,12 @@ void add_log(WhiskerRacer* env) {
 
 void compute_observations(WhiskerRacer* env) {
     //if (env->debug) printf("compute_observations\n");
-    env->observations[0] = env->llw_length;
-    env->observations[1] = env->flw_length;
-    env->observations[2] = env->ffw_length;
-    env->observations[3] = env->frw_length;
-    env->observations[4] = env->rrw_length;
-    env->observations[5] = env->score / 100.0f;
+    env->observations[0] = env->flw_length;
+    env->observations[1] = env->frw_length;
+    env->observations[2] = env->score / 100.0f;
     if (env->debug) printf("float0 %.3f \n", env->observations[0]);
     if (env->debug) printf("float1 %.3f \n", env->observations[1]);
     if (env->debug) printf("float2 %.3f \n", env->observations[2]);
-    if (env->debug) printf("float3 %.3f \n", env->observations[3]);
-    if (env->debug) printf("float4 %.3f \n", env->observations[4]);
-    if (env->debug) printf("float5 %.3f \n", env->observations[5]);
     if (env->debug) printf("\n\n\n");
     //if (env->debug) printf("end compute_observations\n");
 }
@@ -222,10 +216,10 @@ Client* make_client(WhiskerRacer* env) {
     Client* client = (Client*)calloc(1, sizeof(Client));
     client->width = env->width;
     client->height = env->height;
-    client->llw_ang = env->llw_ang;
+    //client->llw_ang = env->llw_ang;
     client->flw_ang = env->flw_ang;
     client->frw_ang = env->frw_ang;
-    client->rrw_ang = env->rrw_ang;
+    //client->rrw_ang = env->rrw_ang;
     client->max_whisker_length = env->max_whisker_length;
     client->turn_pi_frac = env->turn_pi_frac;
     client->maxv = env->maxv;
@@ -276,11 +270,13 @@ void step_frame(WhiskerRacer* env, float action) {
     if (env->continuous){
         act = action;
     }
-    env->whisker_dirs[0] = (Vector2){cosf(env->ang + env->llw_ang), sinf(env->ang + env->llw_ang)}; // left-left
-    env->whisker_dirs[1] = (Vector2){cosf(env->ang + env->flw_ang), sinf(env->ang + env->flw_ang)}; // front-left
-    env->whisker_dirs[2] = (Vector2){cosf(env->ang), sinf(env->ang)};                               // front-forward
-    env->whisker_dirs[3] = (Vector2){cosf(env->ang + env->frw_ang), sinf(env->ang + env->frw_ang)}; // front-right
-    env->whisker_dirs[4] = (Vector2){cosf(env->ang + env->rrw_ang), sinf(env->ang + env->rrw_ang)}; // right-right
+    //env->whisker_dirs[0] = (Vector2){cosf(env->ang + env->llw_ang), sinf(env->ang + env->llw_ang)}; // left-left
+    //env->whisker_dirs[1] = (Vector2){cosf(env->ang + env->flw_ang), sinf(env->ang + env->flw_ang)}; // front-left
+    //env->whisker_dirs[2] = (Vector2){cosf(env->ang), sinf(env->ang)};                               // front-forward
+    //env->whisker_dirs[3] = (Vector2){cosf(env->ang + env->frw_ang), sinf(env->ang + env->frw_ang)}; // front-right
+    //env->whisker_dirs[4] = (Vector2){cosf(env->ang + env->rrw_ang), sinf(env->ang + env->rrw_ang)}; // right-
+    env->whisker_dirs[0] = (Vector2){cosf(env->ang + env->flw_ang), sinf(env->ang + env->flw_ang)};
+    env->whisker_dirs[1] = (Vector2){cosf(env->ang + env->frw_ang), sinf(env->ang + env->frw_ang)};
 
     env->vx = env->v * cosf(env->ang);
     env->vy = env->v * sinf(env->ang);
@@ -326,29 +322,31 @@ void c_step(WhiskerRacer* env) {
 }
 
 void get_random_start(WhiskerRacer* env) {
-   int start_idx = rand() % env->track.total_points;
-   env->near_point_idx = start_idx;
+    int start_idx = rand() % env->track.total_points;
+    env->near_point_idx = start_idx;
 
-   env->px = env->track.centerline[start_idx].x;
-   env->py = env->track.centerline[start_idx].y;
+    env->px = env->track.centerline[start_idx].x;
+    env->py = env->track.centerline[start_idx].y;
 
-   int next_idx = (start_idx + 1) % env->track.total_points;
-   float dx = env->track.centerline[next_idx].x - env->px;
-   float dy = env->track.centerline[next_idx].y - env->py;
-   env->ang = atan2f(dy, dx);
+    int next_idx = (start_idx + 1) % env->track.total_points;
+    float dx = env->track.centerline[next_idx].x - env->px;
+    float dy = env->track.centerline[next_idx].y - env->py;
+    env->ang = atan2f(dy, dx);
 
-   env->whisker_dirs[0] = (Vector2){cosf(env->ang + env->llw_ang), sinf(env->ang + env->llw_ang)};
-   env->whisker_dirs[1] = (Vector2){cosf(env->ang + env->flw_ang), sinf(env->ang + env->flw_ang)};
-   env->whisker_dirs[2] = (Vector2){cosf(env->ang), sinf(env->ang)};
-   env->whisker_dirs[3] = (Vector2){cosf(env->ang + env->frw_ang), sinf(env->ang + env->frw_ang)};
-   env->whisker_dirs[4] = (Vector2){cosf(env->ang + env->rrw_ang), sinf(env->ang + env->rrw_ang)};
+    //env->whisker_dirs[0] = (Vector2){cosf(env->ang + env->llw_ang), sinf(env->ang + env->llw_ang)};
+    //env->whisker_dirs[1] = (Vector2){cosf(env->ang + env->flw_ang), sinf(env->ang + env->flw_ang)};
+    //env->whisker_dirs[2] = (Vector2){cosf(env->ang), sinf(env->ang)};
+    //env->whisker_dirs[3] = (Vector2){cosf(env->ang + env->frw_ang), sinf(env->ang + env->frw_ang)};
+    //env->whisker_dirs[4] = (Vector2){cosf(env->ang + env->rrw_ang), sinf(env->ang + env->rrw_ang)};
+    env->whisker_dirs[0] = (Vector2){cosf(env->ang + env->flw_ang), sinf(env->ang + env->flw_ang)};
+    env->whisker_dirs[1] = (Vector2){cosf(env->ang + env->frw_ang), sinf(env->ang + env->frw_ang)};
 
-   env->v = env->maxv;
-   env->llw_length = 0.25f;
-   env->flw_length = 0.50f;
-   env->ffw_length = 1.00f;
-   env->frw_length = 0.50f;
-   env->rrw_length = 0.25f;
+    env->v = env->maxv;
+    //env->llw_length = 0.25f;
+    env->flw_length = 0.50f;
+    //env->ffw_length = 1.00f;
+    env->frw_length = 0.50f;
+    //env->rrw_length = 0.25f;
 }
 
 // ============================================ Per Step Calculations =============================
@@ -383,71 +381,6 @@ static inline int line_segment_intersect(Vector2 ray_start, Vector2 ray_dir, flo
     return 0;
 }
 
-void calc_whisker_lengths_old(WhiskerRacer* env) {
-    float max_len = env->max_whisker_length;
-    float inv_max_len = 1.0f / max_len;
-
-    // Whisker angles relative to car's heading
-    float angles[5] = {
-        env->ang + env->llw_ang, // left-left
-        env->ang + env->flw_ang, // front-left
-        env->ang,                // front-forward
-        env->ang + env->frw_ang, // front-right
-        env->ang + env->rrw_ang  // right-right
-    };
-
-    float* lengths[5] = {
-        &env->llw_length,
-        &env->flw_length,
-        &env->ffw_length,
-        &env->frw_length,
-        &env->rrw_length
-    };
-
-    Vector2 car_pos = {env->px, env->py};
-
-    for (int w = 0; w < 5; ++w) {
-        float angle = angles[w];
-        Vector2 whisker_dir = {cosf(angle), sinf(angle)};
-        float min_hit_distance = max_len;
-
-        // Check intersections with track edges
-        for (int i = 0; i < env->track.total_points; i++) {
-            int next_i = (i + 1) % env->track.total_points;
-
-            float t;
-
-            // Check inner edge segment
-            if (line_segment_intersect(car_pos, whisker_dir, max_len,
-                                     env->track.inner_edge[i], env->track.inner_edge[next_i], &t)) {
-                if (t < min_hit_distance) {
-                    min_hit_distance = t;
-                }
-                if (t < 0.05) break;
-            }
-
-            // Check outer edge segment
-            if (line_segment_intersect(car_pos, whisker_dir, max_len,
-                                     env->track.outer_edge[i], env->track.outer_edge[next_i], &t)) {
-                if (t < min_hit_distance) {
-                    min_hit_distance = t;
-                }
-                if (t < 0.05) break;
-            }
-        }
-
-        // Normalize the length (0.0 to 1.0)
-        *lengths[w] = fminf(1.0f, fmaxf(0.0f, min_hit_distance * inv_max_len));
-
-        if (*lengths[w] < 0.05f) { // Car has left the track
-            for (int j = 0; j < 5; j++) *lengths[j] = 0.0f;
-            env->terminals[0] = 1;
-            add_log(env);
-            c_reset(env);
-        }
-    }
-}
-
 void calc_whisker_lengths(WhiskerRacer* env) {
     float max_len = env->max_whisker_length;
     float inv_max_len = 1.0f / max_len;
@@ -456,17 +389,17 @@ void calc_whisker_lengths(WhiskerRacer* env) {
     //env->near_point_idx = find_closest_centerline_segment(env);
     update_nearest_point(env);
 
-    float* lengths[5] = {
-        &env->llw_length,
+    float* lengths[2] = {
+        //&env->llw_length,
         &env->flw_length,
-        &env->ffw_length,
-        &env->frw_length,
-        &env->rrw_length
+        //&env->ffw_length,
+        &env->frw_length
+        //&env->rrw_length
     };
 
     Vector2 car_pos = {env->px, env->py};
 
-    for (int w = 0; w < 5; ++w) {
+    for (int w = 0; w < 2; ++w) {
         Vector2 whisker_dir = env->whisker_dirs[w];
         float min_hit_distance = max_len;
 
@@ -501,7 +434,7 @@ void calc_whisker_lengths(WhiskerRacer* env) {
         *lengths[w] = fminf(1.0f, fmaxf(0.0f, min_hit_distance * inv_max_len));
 
         if (*lengths[w] < 0.05f) { // Car has left the track
-            for (int j = 0; j < 5; j++) *lengths[j] = 0.0f;
+            for (int j = 0; j < 2; j++) *lengths[j] = 0.0f;
             env->terminals[0] = 1;
             add_log(env);
             c_reset(env);
