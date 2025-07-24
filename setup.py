@@ -243,15 +243,14 @@ environments = {
         #'magent2==0.3.2',
     ],
     'metta': [
-        'scikit-build-core>=0.10.0',  
-        'pybind11==2.10.4',           
         f'gym=={GYM_VERSION}',
         f'gymnasium=={GYMNASIUM_VERSION}',
         'omegaconf',
         'hydra-core',
         'duckdb',
         'raylib>=5.5.0',  # Python bindings for raylib graphics library
-        'metta @ git+https://github.com/metta-ai/metta.git@richard-alt-versions',
+        'metta-common @ git+https://github.com/metta-ai/metta.git@richard-alt-versions#subdirectory=common',
+        'metta-mettagrid @ git+https://github.com/metta-ai/metta.git@richard-alt-versions#subdirectory=mettagrid',
     ],
     'microrts': [
         f'gym=={GYM_VERSION}',
