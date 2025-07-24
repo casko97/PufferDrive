@@ -28,8 +28,8 @@ def make(name, config='pufferlib/environments/metta/metta.yaml', render_mode='au
     inventory_rewards['heart'] = float(heart_reward)
     inventory_rewards['battery_red'] = float(battery_reward)
     
-    cfg = SingleTaskCurriculum('puffer', cfg)
-    return MettaPuff(cfg, render_mode=render_mode, buf=buf)
+    curriculum = SingleTaskCurriculum('puffer', cfg)
+    return MettaPuff(curriculum, render_mode=render_mode, buf=buf, seed=seed)
 
 def oc_divide(a, b):
     """
@@ -43,12 +43,18 @@ def oc_divide(a, b):
     return result
 
 class MettaPuff(MettaGridEnv):
-    def __init__(self, config, render_mode='human', buf=None, seed=0):
+    def __init__(self, curriculum, render_mode='human', buf=None, seed=0):
         self.replay_writer = None
         #if render_mode == 'auto':
         #    self.replay_writer = ReplayWriter("metta/")
 
-        super().__init__(config, render_mode=render_mode, buf=buf, replay_writer=self.replay_writer)
+        # Call parent with proper arguments
+        super().__init__(
+            curriculum=curriculum,
+            render_mode=render_mode,
+            buf=buf,
+            replay_writer=self.replay_writer
+        )
         self.action_space = pufferlib.spaces.joint_space(self.single_action_space, self.num_agents)
         self.actions = self.actions.astype(np.int32)
 
