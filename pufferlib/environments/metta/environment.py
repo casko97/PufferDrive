@@ -20,13 +20,29 @@ def make(name, config='pufferlib/environments/metta/metta.yaml', render_mode='au
     '''Metta creation function'''
     
     OmegaConf.register_new_resolver("div", oc_divide, replace=True)
+    
+    # Debug: print config path and check if _target_ exists
+    import os
+    abs_config_path = os.path.abspath(config)
+    print(f"[DEBUG] Loading metta config from: {abs_config_path}")
+    print(f"[DEBUG] Config file exists: {os.path.exists(abs_config_path)}")
+    
     cfg = OmegaConf.load(config)
+    
+    # Debug: check if _target_ exists in loaded config
+    if '_target_' in cfg:
+        print(f"[DEBUG] WARNING: Found _target_ in config: {cfg._target_}")
+    else:
+        print("[DEBUG] Good: No _target_ found at top level of config")
     
     # Update rewards under the new structure: agent.rewards.inventory
     inventory_rewards = cfg['game']['agent']['rewards']['inventory']
     inventory_rewards['ore_red'] = float(ore_reward)
     inventory_rewards['heart'] = float(heart_reward)
     inventory_rewards['battery_red'] = float(battery_reward)
+    
+    print(f"[DEBUG] Creating SingleTaskCurriculum with config type: {type(cfg)}")
+    print(f"[DEBUG] Config keys: {list(cfg.keys())}")
     
     curriculum = SingleTaskCurriculum('puffer', cfg)
     return MettaPuff(curriculum, render_mode=render_mode, buf=buf, seed=seed)
