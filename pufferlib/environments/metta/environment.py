@@ -9,9 +9,6 @@ from metta.mettagrid.mettagrid_env import MettaGridEnv
 from metta.mettagrid.curriculum.core import SingleTaskCurriculum
 from metta.mettagrid.replay_writer import ReplayWriter
 
-#from mettagrid.mettagrid_env import MettaGridEnv
-#from mettagrid.curriculum import SingleTaskCurriculum
-
 def env_creator(name='metta'):
     return functools.partial(make, name)
 
@@ -27,6 +24,7 @@ def make(name, config='pufferlib/environments/metta/metta.yaml', render_mode='au
     inventory_rewards['ore_red'] = float(ore_reward)
     inventory_rewards['heart'] = float(heart_reward)
     inventory_rewards['battery_red'] = float(battery_reward)
+    
     curriculum = SingleTaskCurriculum('puffer', cfg)
     return MettaPuff(curriculum, render_mode=render_mode, buf=buf, seed=seed)
 
