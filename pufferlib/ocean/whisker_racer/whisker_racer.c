@@ -29,6 +29,7 @@ void demo() {
         .num_radial_sectors = 16,
         .num_points = 4,
         .bezier_resolution = 16,
+        .w_ang = 0.523,
     };
     printf("about to allocate\n");
     allocate(&env);

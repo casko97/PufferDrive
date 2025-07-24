@@ -25,6 +25,7 @@ static int my_init(Env* env, PyObject* args, PyObject* kwargs) {
     env->num_points = unpack(kwargs, "num_points");
     env->bezier_resolution = unpack(kwargs, "bezier_resolution");
     env->turn_pi_frac = unpack(kwargs, "turn_pi_frac");
+    env->w_ang = unpack(kwargs, "w_ang");
     init(env);
     return 0;
 }

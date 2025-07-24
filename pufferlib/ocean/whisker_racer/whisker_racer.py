@@ -1,5 +1,6 @@
 import numpy as np
 import gymnasium
+import time
 
 import pufferlib
 from pufferlib.ocean.whisker_racer import binding
@@ -14,7 +15,7 @@ class WhiskerRacer(pufferlib.PufferEnv):
                  maxv=5, circuit=1, render=0,
                  continuous=False, log_interval=128,
                  reward_yellow=0.25, reward_green=0.0, gamma=0.9, track_width=50,
-                 num_radial_sectors=16, num_points=4, bezier_resolution=16,
+                 num_radial_sectors=16, num_points=4, bezier_resolution=16, w_ang=0.523,
                  buf=None, seed=0):
         self.single_observation_space = gymnasium.spaces.Box(low=0, high=1,
                                             shape=(1,), dtype=np.float32)
@@ -40,7 +41,7 @@ class WhiskerRacer(pufferlib.PufferEnv):
             llw_ang=llw_ang, flw_ang=flw_ang, frw_ang=frw_ang, rrw_ang=rrw_ang, max_whisker_length=max_whisker_length,
             turn_pi_frac=turn_pi_frac, maxv=maxv, circuit=circuit, render=render, continuous=continuous,
             reward_yellow=reward_yellow, reward_green=reward_green, gamma=gamma, track_width=track_width,
-            num_radial_sectors=num_radial_sectors, num_points=num_points, bezier_resolution=bezier_resolution
+            num_radial_sectors=num_radial_sectors, num_points=num_points, bezier_resolution=bezier_resolution, w_ang=w_ang
         )
 
     def reset(self, seed=0):
@@ -49,6 +50,7 @@ class WhiskerRacer(pufferlib.PufferEnv):
         return self.observations, []
     
     def step(self, actions):
+        #start = time.time()
         if self.continuous:
             self.actions[:] = np.clip(actions.flatten(), -1.0, 1.0)
         else:
@@ -60,7 +62,8 @@ class WhiskerRacer(pufferlib.PufferEnv):
         info = []
         if self.tick % self.log_interval == 0:
             info.append(binding.vec_log(self.c_envs))
-
+        #end = time.time()
+        #print(f"python step took {end - start:.3e} seconds")
         return (self.observations, self.rewards,
             self.terminals, self.truncations, info)
 

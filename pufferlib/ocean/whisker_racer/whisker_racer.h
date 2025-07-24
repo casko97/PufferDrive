@@ -121,6 +121,7 @@ typedef struct WhiskerRacer {
     int num_whiskers;
     //float* whisker_angles;    // Array of whisker angles (radians)
     Vector2 whisker_dirs[2];
+    float w_ang;
     float llw_ang; // left left whisker angle
     float flw_ang; // front left whisker angle
     float frw_ang; // front right whisker angle
@@ -160,6 +161,9 @@ void init(WhiskerRacer* env) {
     env->inv_maxv = 1.0f / env->maxv;
     env->inv_pi2 = 1.0f / PI2;
     env->inv_bezier_res = 1.0f / env->bezier_resolution;
+
+    env->flw_ang = -env->w_ang;
+    env->frw_ang = env->w_ang;
 
     GenerateRandomTrack(env);
 
@@ -718,7 +722,7 @@ void c_render(WhiskerRacer* env) {
     SetWindowSize(640, 480);
     SetConfigFlags(FLAG_MSAA_4X_HINT);
     ClearBackground(GREEN);
-    DrawSplineBasis(center_points, env->track.total_points + 3, 50.0f, BLACK);
+    DrawSplineBasis(center_points, env->track.total_points + 3, env->track_width, BLACK);
     for (int i = 0; i < env->track.total_points/4; i++)
     {
         DrawCircle(center_points[i].x, center_points[i].y, 10, RED);
