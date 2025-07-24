@@ -120,6 +120,7 @@ typedef struct WhiskerRacer {
     // Whiskers
     int num_whiskers;
     //float* whisker_angles;    // Array of whisker angles (radians)
+    Vector2 whisker_dirs[5];
     float llw_ang; // left left whisker angle
     float flw_ang; // front left whisker angle
     float frw_ang; // front right whisker angle
@@ -275,6 +276,12 @@ void step_frame(WhiskerRacer* env, float action) {
     if (env->continuous){
         act = action;
     }
+    env->whisker_dirs[0] = (Vector2){cosf(env->ang + env->llw_ang), sinf(env->ang + env->llw_ang)}; // left-left
+    env->whisker_dirs[1] = (Vector2){cosf(env->ang + env->flw_ang), sinf(env->ang + env->flw_ang)}; // front-left
+    env->whisker_dirs[2] = (Vector2){cosf(env->ang), sinf(env->ang)};                               // front-forward
+    env->whisker_dirs[3] = (Vector2){cosf(env->ang + env->frw_ang), sinf(env->ang + env->frw_ang)}; // front-right
+    env->whisker_dirs[4] = (Vector2){cosf(env->ang + env->rrw_ang), sinf(env->ang + env->rrw_ang)}; // right-right
+
     env->vx = env->v * cosf(env->ang);
     env->vy = env->v * sinf(env->ang);
     env->px = env->px + env->vx;
@@ -329,6 +336,12 @@ void get_random_start(WhiskerRacer* env) {
    float dx = env->track.centerline[next_idx].x - env->px;
    float dy = env->track.centerline[next_idx].y - env->py;
    env->ang = atan2f(dy, dx);
+
+   env->whisker_dirs[0] = (Vector2){cosf(env->ang + env->llw_ang), sinf(env->ang + env->llw_ang)};
+   env->whisker_dirs[1] = (Vector2){cosf(env->ang + env->flw_ang), sinf(env->ang + env->flw_ang)};
+   env->whisker_dirs[2] = (Vector2){cosf(env->ang), sinf(env->ang)};
+   env->whisker_dirs[3] = (Vector2){cosf(env->ang + env->frw_ang), sinf(env->ang + env->frw_ang)};
+   env->whisker_dirs[4] = (Vector2){cosf(env->ang + env->rrw_ang), sinf(env->ang + env->rrw_ang)};
 
    env->v = env->maxv;
    env->llw_length = 0.25f;
@@ -443,15 +456,6 @@ void calc_whisker_lengths(WhiskerRacer* env) {
     //env->near_point_idx = find_closest_centerline_segment(env);
     update_nearest_point(env);
 
-    // Whisker angles relative to car's heading
-    float angles[5] = {
-        env->ang + env->llw_ang, // left-left
-        env->ang + env->flw_ang, // front-left
-        env->ang,                // front-forward
-        env->ang + env->frw_ang, // front-right
-        env->ang + env->rrw_ang  // right-right
-    };
-
     float* lengths[5] = {
         &env->llw_length,
         &env->flw_length,
@@ -463,8 +467,7 @@ void calc_whisker_lengths(WhiskerRacer* env) {
     Vector2 car_pos = {env->px, env->py};
 
     for (int w = 0; w < 5; ++w) {
-        float angle = angles[w];
-        Vector2 whisker_dir = {cosf(angle), sinf(angle)};
+        Vector2 whisker_dir = env->whisker_dirs[w];
         float min_hit_distance = max_len;
 
         // Check intersections with track edges - LOCAL SEARCH ONLY
