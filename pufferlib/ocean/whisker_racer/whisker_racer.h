@@ -5,6 +5,7 @@
 #include <limits.h>
 #include <string.h>
 #include "raylib.h"
+#include <time.h>
 
 #define LEFT 0
 #define NOOP 1
@@ -110,7 +111,6 @@ typedef struct WhiskerRacer {
     float vx;
     float vy;
     float v;
-    float vang;
     int near_point_idx;
 
     // Physics Constraints
@@ -159,8 +159,6 @@ void init(WhiskerRacer* env) {
     env->inv_maxv = 1.0f / env->maxv;
     env->inv_pi2 = 1.0f / PI2;
     env->inv_bezier_res = 1.0f / env->bezier_resolution;
-
-    env->track.num_points = 4;
 
     GenerateRandomTrack(env);
 
@@ -249,7 +247,6 @@ void reset_round(WhiskerRacer* env) {
     env->vx = 0.0f;
     env->vy = 0.0f;
     env->v = env->maxv;
-    env->vang = 0.0f;
 }
 
 void c_reset(WhiskerRacer* env) {
@@ -287,7 +284,13 @@ void step_frame(WhiskerRacer* env, float action) {
     if (env->py < 0) env->py = 0;
     else if (env->py > env->height) env->py = env->height;
 
+    //clock_t start, end;
+    //double cpu_time_used;
+    //start = clock();
     calc_whisker_lengths(env);
+    //end = clock();
+
+    //printf("calc_whisker_lengths took %.3e\n", (double)(end - start) / CLOCKS_PER_SEC);
 
     update_radial_progress(env);
 
@@ -367,7 +370,7 @@ static inline int line_segment_intersect(Vector2 ray_start, Vector2 ray_dir, flo
     return 0;
 }
 
-void calc_whisker_lengths(WhiskerRacer* env) {
+void calc_whisker_lengths_old(WhiskerRacer* env) {
     float max_len = env->max_whisker_length;
     float inv_max_len = 1.0f / max_len;
 
@@ -430,6 +433,101 @@ void calc_whisker_lengths(WhiskerRacer* env) {
             c_reset(env);
         }
     }
+}
+
+void calc_whisker_lengths(WhiskerRacer* env) {
+    float max_len = env->max_whisker_length;
+    float inv_max_len = 1.0f / max_len;
+
+    // Update near point index first
+    //env->near_point_idx = find_closest_centerline_segment(env);
+    update_nearest_point(env);
+
+    // Whisker angles relative to car's heading
+    float angles[5] = {
+        env->ang + env->llw_ang, // left-left
+        env->ang + env->flw_ang, // front-left
+        env->ang,                // front-forward
+        env->ang + env->frw_ang, // front-right
+        env->ang + env->rrw_ang  // right-right
+    };
+
+    float* lengths[5] = {
+        &env->llw_length,
+        &env->flw_length,
+        &env->ffw_length,
+        &env->frw_length,
+        &env->rrw_length
+    };
+
+    Vector2 car_pos = {env->px, env->py};
+
+    for (int w = 0; w < 5; ++w) {
+        float angle = angles[w];
+        Vector2 whisker_dir = {cosf(angle), sinf(angle)};
+        float min_hit_distance = max_len;
+
+        // Check intersections with track edges - LOCAL SEARCH ONLY
+        int window_size = 20; // Adjust as needed
+        for (int offset = -window_size/2; offset <= window_size/2; offset++) {
+            int i = (env->near_point_idx + offset + env->track.total_points) % env->track.total_points;
+            int next_i = (i + 1) % env->track.total_points;
+
+            float t;
+
+            // Check inner edge segment
+            if (line_segment_intersect(car_pos, whisker_dir, max_len,
+                                     env->track.inner_edge[i], env->track.inner_edge[next_i], &t)) {
+                if (t < min_hit_distance) {
+                    min_hit_distance = t;
+                }
+                if (t < 0.05) break;
+            }
+
+            // Check outer edge segment
+            if (line_segment_intersect(car_pos, whisker_dir, max_len,
+                                     env->track.outer_edge[i], env->track.outer_edge[next_i], &t)) {
+                if (t < min_hit_distance) {
+                    min_hit_distance = t;
+                }
+                if (t < 0.05) break;
+            }
+        }
+
+        // Normalize the length (0.0 to 1.0)
+        *lengths[w] = fminf(1.0f, fmaxf(0.0f, min_hit_distance * inv_max_len));
+
+        if (*lengths[w] < 0.05f) { // Car has left the track
+            for (int j = 0; j < 5; j++) *lengths[j] = 0.0f;
+            env->terminals[0] = 1;
+            add_log(env);
+            c_reset(env);
+        }
+    }
+}
+
+void update_nearest_point(WhiskerRacer* env) {
+    float min_dist_sq = 100000;
+    int closest_seg = env->near_point_idx; // Start with current
+    Vector2 car_pos = {env->px, env->py};
+
+    // Only search +/- 5 points around current nearest
+    int search_range = 3;
+    for (int offset = 0; offset <= search_range; offset++) {
+        int i = (env->near_point_idx + offset + env->track.total_points) % env->track.total_points;
+
+        Vector2 center = env->track.centerline[i];
+        float dx = car_pos.x - center.x;
+        float dy = car_pos.y - center.y;
+        float dist_sq = dx * dx + dy * dy;
+
+        if (dist_sq < min_dist_sq) {
+            min_dist_sq = dist_sq;
+            closest_seg = i;
+        }
+    }
+
+    env->near_point_idx = closest_seg;
 }
 
 int find_closest_centerline_segment(WhiskerRacer* env) {
@@ -544,8 +642,8 @@ void GenerateRandomControlPoints(WhiskerRacer* env) {
     float center_y = SCREEN_HEIGHT * 0.5f;
 
     // Create a simple closed loop with varied corner radii
-    for (int i = 0; i < env->track.num_points; i++) {
-        float angle = (PI2 * i) / env->track.num_points;
+    for (int i = 0; i < env->num_points; i++) {
+        float angle = (PI2 * i) / env->num_points;
 
         float corner_radius;
         if (i == 1 || i == 4) {
@@ -567,13 +665,13 @@ void GenerateRandomControlPoints(WhiskerRacer* env) {
 void GenerateTrackCenterline(WhiskerRacer* env) {
     int point_index = 0;
 
-    for (int i = 0; i < env->track.num_points; i++) {
+    for (int i = 0; i < env->num_points; i++) {
         Vector2 p0 = env->track.controls[i].position;
-        Vector2 p3 = env->track.controls[(i + 1) % env->track.num_points].position;
+        Vector2 p3 = env->track.controls[(i + 1) % env->num_points].position;
 
         // Create control points for varied turn sharpness
-        Vector2 prev = env->track.controls[(i - 1 + env->track.num_points) % env->track.num_points].position;
-        Vector2 next = env->track.controls[(i + 2) % env->track.num_points].position;
+        Vector2 prev = env->track.controls[(i - 1 + env->num_points) % env->num_points].position;
+        Vector2 next = env->track.controls[(i + 2) % env->num_points].position;
 
         // Calculate control points
         Vector2 dir1 = NormalizeVector((Vector2){p3.x - prev.x, p3.y - prev.y});
@@ -676,9 +774,9 @@ void c_render(WhiskerRacer* env) {
     }
 
     // Without enough overlap it draws a C rather than an O
-    center_points[env->track.total_points] = env->track.centerline[0];
-    center_points[env->track.total_points + 1] = env->track.centerline[1];
-    center_points[env->track.total_points + 2] = env->track.centerline[2];
+    center_points[env->track.total_points] = center_points[0];
+    center_points[env->track.total_points + 1] = center_points[1];
+    center_points[env->track.total_points + 2] = center_points[2];
 
     BeginDrawing();
     SetWindowSize(640, 480);
