@@ -248,6 +248,9 @@ environments = {
         'omegaconf',
         'hydra-core',
         'duckdb',
+        'raylib>=5.5.0',  # Python bindings for raylib graphics library
+        'metta-common @ git+https://github.com/metta-ai/metta.git@richard-alt-versions#subdirectory=common',
+        'metta-mettagrid @ git+https://github.com/metta-ai/metta.git@richard-alt-versions#subdirectory=mettagrid',
     ],
     'microrts': [
         f'gym=={GYM_VERSION}',
@@ -470,7 +473,9 @@ install_requires = [
     f'gymnasium<={GYMNASIUM_VERSION}',
     f'pettingzoo<={PETTINGZOO_VERSION}',
     'shimmy[gym-v21]',
-    'setuptools'
+    'setuptools',
+    'scikit-build-core>=0.10.0',  
+    'pybind11==2.10.4',           
 ]
 
 if not NO_TRAIN:
