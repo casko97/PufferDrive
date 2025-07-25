@@ -30,6 +30,8 @@ typedef struct {
     Vector2 inner_edge[MAX_CONTROL_POINTS * MAX_BEZIER_RESOLUTION];
     Vector2 outer_edge[MAX_CONTROL_POINTS * MAX_BEZIER_RESOLUTION];
     int total_points;
+    Vector2 curbs[MAX_CONTROL_POINTS][4];
+    int curb_count;
 } Track;
 
 typedef struct Log {
@@ -697,12 +699,64 @@ void GenerateTrackEdges(WhiskerRacer* env) {
     }
 }
 
+void GenerateCurbs(WhiskerRacer* env) {
+    env->track.curb_count = 0;
+    
+    for (int i = 0; i < env->num_points; i++) {
+        // Get previous, current, and next control points
+        Vector2 prev = env->track.controls[(i - 1 + env->num_points) % env->num_points].position;
+        Vector2 curr = env->track.controls[i].position;
+        Vector2 next = env->track.controls[(i + 1) % env->num_points].position;
+        
+        // Calculate vectors from current to prev/next
+        Vector2 to_prev = {prev.x - curr.x, prev.y - curr.y};
+        Vector2 to_next = {next.x - curr.x, next.y - curr.y};
+        
+        // Cross product to determine turn direction
+        float cross = to_prev.x * to_prev.y - to_prev.y * to_next.x;
+        
+        // Find the actual apex by looking for maximum curvature in this segment
+        int start_idx = i * env->bezier_resolution;
+        int end_idx = ((i + 1) % env->num_points) * env->bezier_resolution;
+        int apex_idx = start_idx;
+        float max_curvature = 0.0f;
+        
+        for (int k = start_idx + 1; k < end_idx - 1; k++) {
+            Vector2 p1 = env->track.centerline[(k - 1 + env->track.total_points) % env->track.total_points];
+            Vector2 p2 = env->track.centerline[k];
+            Vector2 p3 = env->track.centerline[(k + 1) % env->track.total_points];
+            
+            // Calculate curvature using three consecutive points
+            Vector2 v1 = {p2.x - p1.x, p2.y - p1.y};
+            Vector2 v2 = {p3.x - p2.x, p3.y - p2.y};
+            float curvature = fabsf(v1.x * v2.y - v1.y * v2.x);
+            
+            if (curvature > max_curvature) {
+                max_curvature = curvature;
+                apex_idx = k;
+            }
+        }
+        
+        // Choose inner or outer edge based on turn direction
+        Vector2* edge_points = (cross > 0) ? env->track.inner_edge : env->track.outer_edge;
+        
+        // Copy 4 points: 2 before apex, 2 after apex
+        for (int j = 0; j < 4; j++) {
+            int idx = (apex_idx - 2 + j + env->track.total_points) % env->track.total_points;
+            env->track.curbs[env->track.curb_count][j] = edge_points[idx];
+        }
+        
+        env->track.curb_count++;
+    }
+}
+
 // =========================================================================== END BEZIER ===========================================
 
 void GenerateRandomTrack(WhiskerRacer* env) {
     GenerateRandomControlPoints(env);
     GenerateTrackCenterline(env);
     GenerateTrackEdges(env);
+    GenerateCurbs(env);
 }
 
 void c_render(WhiskerRacer* env) {
@@ -745,6 +799,14 @@ void c_render(WhiskerRacer* env) {
     SetConfigFlags(FLAG_MSAA_4X_HINT);
     ClearBackground(GREEN);
     DrawSplineBasis(center_points, env->track.total_points + 3, env->track_width, BLACK);
+    for (int i = 0; i < env->track.curb_count; i++) {
+        Vector2 curb_points[4];
+        for (int j = 0; j < 4; j++) {
+            curb_points[j] = env->track.curbs[i][j];
+            curb_points[j].y = height - curb_points[j].y; // Flip Y coordinate
+        }
+        DrawSplineBasis(curb_points, 4, 5.0f, RED); // 5 pixel wide red curbs
+    }
     free(center_points);
 
     float car_width = 24.0f;
