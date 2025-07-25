@@ -136,37 +136,6 @@ typedef struct WhiskerRacer {
     float inv_pi2;
 } WhiskerRacer;
 
-void init(WhiskerRacer* env) {
-    if (env->debug) printf("init\n");
-    env->tick = 0;
-    srand(env->rng);
-
-    env->debug = 0;
-
-    env->inv_width = 1.0f / env->width;
-    env->inv_height = 1.0f / env->height;
-    env->inv_maxv = 1.0f / env->maxv;
-    env->inv_pi2 = 1.0f / PI2;
-    env->inv_bezier_res = 1.0f / env->bezier_resolution;
-
-    env->flw_ang = -env->w_ang;
-    env->frw_ang = env->w_ang;
-
-    GenerateRandomTrack(env);
-
-    if (env->debug) printf("end init\n");
-}
-
-void allocate(WhiskerRacer* env) {
-    if (env->debug) printf("allocate");
-    init(env);
-    env->observations = (float*)calloc(3, sizeof(float));
-    env->actions = (float*)calloc(1, sizeof(float));
-    env->rewards = (float*)calloc(1, sizeof(float));
-    env->terminals = (unsigned char*)calloc(1, sizeof(unsigned char));
-    if (env->debug) printf("end allocate");
-}
-
 void c_close(WhiskerRacer* env) {
     //unload_track();
 }
@@ -225,25 +194,6 @@ Client* make_client(WhiskerRacer* env) {
 void close_client(Client* client) {
     CloseWindow();
     free(client);
-}
-
-void c_reset(WhiskerRacer* env) {
-    env->score = 0;
-    reset_round(env);
-    env->tick = 0;
-    compute_observations(env);
-}
-
-void c_step(WhiskerRacer* env) {
-    env->terminals[0] = 0;
-    env->rewards[0] = 0.0;
-
-    float action = env->actions[0];
-    for (int i = 0; i < env->frameskip; i++) {
-        env->tick += 1;
-        step_frame(env, action);
-    }
-    compute_observations(env);
 }
 
 void get_random_start(WhiskerRacer* env) {
@@ -744,6 +694,37 @@ void c_render(WhiskerRacer* env) {
     EndDrawing();
 }
 
+void init(WhiskerRacer* env) {
+    if (env->debug) printf("init\n");
+    env->tick = 0;
+    srand(env->rng);
+
+    env->debug = 0;
+
+    env->inv_width = 1.0f / env->width;
+    env->inv_height = 1.0f / env->height;
+    env->inv_maxv = 1.0f / env->maxv;
+    env->inv_pi2 = 1.0f / PI2;
+    env->inv_bezier_res = 1.0f / env->bezier_resolution;
+
+    env->flw_ang = -env->w_ang;
+    env->frw_ang = env->w_ang;
+
+    GenerateRandomTrack(env);
+
+    if (env->debug) printf("end init\n");
+}
+
+void allocate(WhiskerRacer* env) {
+    if (env->debug) printf("allocate");
+    init(env);
+    env->observations = (float*)calloc(3, sizeof(float));
+    env->actions = (float*)calloc(1, sizeof(float));
+    env->rewards = (float*)calloc(1, sizeof(float));
+    env->terminals = (unsigned char*)calloc(1, sizeof(unsigned char));
+    if (env->debug) printf("end allocate");
+}
+
 void step_frame(WhiskerRacer* env, float action) {
     float act = 0.0;
 
@@ -785,10 +766,29 @@ void step_frame(WhiskerRacer* env, float action) {
     update_radial_progress(env);
 }
 
+void c_step(WhiskerRacer* env) {
+    env->terminals[0] = 0;
+    env->rewards[0] = 0.0;
+
+    float action = env->actions[0];
+    for (int i = 0; i < env->frameskip; i++) {
+        env->tick += 1;
+        step_frame(env, action);
+    }
+    compute_observations(env);
+}
+
 void reset_round(WhiskerRacer* env) {
     get_random_start(env);
     reset_radial_progress(env);
     env->vx = 0.0f;
     env->vy = 0.0f;
     env->v = env->maxv;
+}
+
+void c_reset(WhiskerRacer* env) {
+    env->score = 0;
+    reset_round(env);
+    env->tick = 0;
+    compute_observations(env);
 }
