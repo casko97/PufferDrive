@@ -375,7 +375,7 @@ void calc_whisker_lengths(WhiskerRacer* env) {
         Vector2 whisker_dir = env->whisker_dirs[w];
         float min_hit_distance = max_len;
 
-        int window_size = 20;
+        int window_size = 10;
         for (int offset = -window_size/2; offset <= window_size/2; offset++) {
             int i = (env->near_point_idx + offset + env->track.total_points) % env->track.total_points;
             int next_i = (i + 1) % env->track.total_points;
