@@ -227,60 +227,11 @@ void close_client(Client* client) {
     free(client);
 }
 
-void reset_round(WhiskerRacer* env) {
-    get_random_start(env);
-    reset_radial_progress(env);
-    env->vx = 0.0f;
-    env->vy = 0.0f;
-    env->v = env->maxv;
-}
-
 void c_reset(WhiskerRacer* env) {
     env->score = 0;
     reset_round(env);
     env->tick = 0;
     compute_observations(env);
-}
-
-void step_frame(WhiskerRacer* env, float action) {
-    float act = 0.0;
-
-    if (action == LEFT) {
-        act = -1.0;
-        env->ang += PI / env->turn_pi_frac;
-    } else if (action == RIGHT) {
-        act = 1.0;
-        env->ang -= PI / env->turn_pi_frac;
-    }
-    if (env->ang > PI2) {
-        env->ang -= PI2;
-    }
-    else if (env->ang < 0) {
-        env->ang += PI2;
-    }
-    if (env->continuous){
-        act = action;
-    }
-    //env->whisker_dirs[0] = (Vector2){cosf(env->ang + env->llw_ang), sinf(env->ang + env->llw_ang)}; // left-left
-    //env->whisker_dirs[1] = (Vector2){cosf(env->ang + env->flw_ang), sinf(env->ang + env->flw_ang)}; // front-left
-    //env->whisker_dirs[2] = (Vector2){cosf(env->ang), sinf(env->ang)};                               // front-forward
-    //env->whisker_dirs[3] = (Vector2){cosf(env->ang + env->frw_ang), sinf(env->ang + env->frw_ang)}; // front-right
-    //env->whisker_dirs[4] = (Vector2){cosf(env->ang + env->rrw_ang), sinf(env->ang + env->rrw_ang)}; // right-
-    env->whisker_dirs[0] = (Vector2){cosf(env->ang + env->flw_ang), sinf(env->ang + env->flw_ang)};
-    env->whisker_dirs[1] = (Vector2){cosf(env->ang + env->frw_ang), sinf(env->ang + env->frw_ang)};
-
-    env->vx = env->v * cosf(env->ang);
-    env->vy = env->v * sinf(env->ang);
-    env->px = env->px + env->vx;
-    env->py = env->py + env->vy;
-    if (env->px < 0) env->px = 0;
-    else if (env->px > env->width) env->px = env->width;
-    if (env->py < 0) env->py = 0;
-    else if (env->py > env->height) env->py = env->height;
-
-    calc_whisker_lengths(env);
-
-    update_radial_progress(env);
 }
 
 void c_step(WhiskerRacer* env) {
@@ -355,6 +306,30 @@ static inline int line_segment_intersect(Vector2 ray_start, Vector2 ray_dir, flo
     return 0;
 }
 
+void update_nearest_point(WhiskerRacer* env) {
+    float min_dist_sq = 100000;
+    int closest_seg = env->near_point_idx; // Start with current
+    Vector2 car_pos = {env->px, env->py};
+
+    // Only search +/- 5 points around current nearest
+    int search_range = 3;
+    for (int offset = 0; offset <= search_range; offset++) {
+        int i = (env->near_point_idx + offset + env->track.total_points) % env->track.total_points;
+
+        Vector2 center = env->track.centerline[i];
+        float dx = car_pos.x - center.x;
+        float dy = car_pos.y - center.y;
+        float dist_sq = dx * dx + dy * dy;
+
+        if (dist_sq < min_dist_sq) {
+            min_dist_sq = dist_sq;
+            closest_seg = i;
+        }
+    }
+
+    env->near_point_idx = closest_seg;
+}
+
 void calc_whisker_lengths(WhiskerRacer* env) {
     float max_len = env->max_whisker_length;
     float inv_max_len = 1.0f / max_len;
@@ -408,30 +383,6 @@ void calc_whisker_lengths(WhiskerRacer* env) {
             c_reset(env);
         }
     }
-}
-
-void update_nearest_point(WhiskerRacer* env) {
-    float min_dist_sq = 100000;
-    int closest_seg = env->near_point_idx; // Start with current
-    Vector2 car_pos = {env->px, env->py};
-
-    // Only search +/- 5 points around current nearest
-    int search_range = 3;
-    for (int offset = 0; offset <= search_range; offset++) {
-        int i = (env->near_point_idx + offset + env->track.total_points) % env->track.total_points;
-
-        Vector2 center = env->track.centerline[i];
-        float dx = car_pos.x - center.x;
-        float dy = car_pos.y - center.y;
-        float dist_sq = dx * dx + dy * dy;
-
-        if (dist_sq < min_dist_sq) {
-            min_dist_sq = dist_sq;
-            closest_seg = i;
-        }
-    }
-
-    env->near_point_idx = closest_seg;
 }
 
 int find_closest_centerline_segment(WhiskerRacer* env) {
@@ -791,4 +742,53 @@ void c_render(WhiskerRacer* env) {
     );
 
     EndDrawing();
+}
+
+void step_frame(WhiskerRacer* env, float action) {
+    float act = 0.0;
+
+    if (action == LEFT) {
+        act = -1.0;
+        env->ang += PI / env->turn_pi_frac;
+    } else if (action == RIGHT) {
+        act = 1.0;
+        env->ang -= PI / env->turn_pi_frac;
+    }
+    if (env->ang > PI2) {
+        env->ang -= PI2;
+    }
+    else if (env->ang < 0) {
+        env->ang += PI2;
+    }
+    if (env->continuous){
+        act = action;
+    }
+    //env->whisker_dirs[0] = (Vector2){cosf(env->ang + env->llw_ang), sinf(env->ang + env->llw_ang)}; // left-left
+    //env->whisker_dirs[1] = (Vector2){cosf(env->ang + env->flw_ang), sinf(env->ang + env->flw_ang)}; // front-left
+    //env->whisker_dirs[2] = (Vector2){cosf(env->ang), sinf(env->ang)};                               // front-forward
+    //env->whisker_dirs[3] = (Vector2){cosf(env->ang + env->frw_ang), sinf(env->ang + env->frw_ang)}; // front-right
+    //env->whisker_dirs[4] = (Vector2){cosf(env->ang + env->rrw_ang), sinf(env->ang + env->rrw_ang)}; // right-
+    env->whisker_dirs[0] = (Vector2){cosf(env->ang + env->flw_ang), sinf(env->ang + env->flw_ang)};
+    env->whisker_dirs[1] = (Vector2){cosf(env->ang + env->frw_ang), sinf(env->ang + env->frw_ang)};
+
+    env->vx = env->v * cosf(env->ang);
+    env->vy = env->v * sinf(env->ang);
+    env->px = env->px + env->vx;
+    env->py = env->py + env->vy;
+    if (env->px < 0) env->px = 0;
+    else if (env->px > env->width) env->px = env->width;
+    if (env->py < 0) env->py = 0;
+    else if (env->py > env->height) env->py = env->height;
+
+    calc_whisker_lengths(env);
+
+    update_radial_progress(env);
+}
+
+void reset_round(WhiskerRacer* env) {
+    get_random_start(env);
+    reset_radial_progress(env);
+    env->vx = 0.0f;
+    env->vy = 0.0f;
+    env->v = env->maxv;
 }
