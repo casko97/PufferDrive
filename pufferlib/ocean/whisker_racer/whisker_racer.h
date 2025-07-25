@@ -52,7 +52,6 @@ typedef struct Client {
     float max_whisker_length;
     float turn_pi_frac; //  (pi / turn_pi_frac is the turn angle)
     float maxv;    // 5
-    int circuit;
     int render;
     int debug;
 } Client;
@@ -64,30 +63,27 @@ typedef struct WhiskerRacer {
     float* actions;
     float* rewards;
     unsigned char* terminals;
+
     int debug;
     unsigned int rng;
+    int render_many;
 
     float ftmp1;
     float ftmp2;
     float ftmp3;
     float ftmp4;
 
-    int render_many;
-
     float reward_yellow;
     float reward_green;
     float gamma;
 
-    Track track;
-
-    // Game State
+    // Game
     int width;
     int height;
     float score;
     int tick;
     int max_score;
     int half_max_score;
-    int circuit;
     int frameskip;
     int render;
     int continuous;
@@ -98,9 +94,9 @@ typedef struct WhiskerRacer {
     int num_radial_sectors;
     int num_points;
     int bezier_resolution;
-    float inv_bezier_res;
+    Track track;
 
-    // Car State
+    // Car
     float px;
     float py;
     float ang;
@@ -108,21 +104,17 @@ typedef struct WhiskerRacer {
     float vy;
     float v;
     int near_point_idx;
-
-    // Physics Constraints
     float maxv;
     float turn_pi_frac;
 
     // Whiskers
     int num_whiskers;
-    //float* whisker_angles;    // Array of whisker angles (radians)
     Vector2 whisker_dirs[2];
     float w_ang;
     float llw_ang; // left left whisker angle
     float flw_ang; // front left whisker angle
     float frw_ang; // front right whisker angle
     float rrw_ang; // right right whisker angle
-    //float* whisker_lengths;   // Array of current whisker readings
     float llw_length;
     float flw_length;
     float ffw_length;
@@ -130,10 +122,12 @@ typedef struct WhiskerRacer {
     float rrw_length;
     float max_whisker_length;
 
+    // Math
     float inv_width;
     float inv_height;
     float inv_maxv;
     float inv_pi2;
+    float inv_bezier_res;
 } WhiskerRacer;
 
 void c_close(WhiskerRacer* env) {
@@ -175,7 +169,6 @@ Client* make_client(WhiskerRacer* env) {
     client->max_whisker_length = env->max_whisker_length;
     client->turn_pi_frac = env->turn_pi_frac;
     client->maxv = env->maxv;
-    client->circuit = env->circuit;
 
     InitWindow(env->width, env->height, "PufferLib Whisker Racer");
     SetTargetFPS(60 / env->frameskip);
@@ -278,10 +271,9 @@ static inline int line_segment_intersect(Vector2 ray_start, Vector2 ray_dir, flo
 
 void update_nearest_point(WhiskerRacer* env) {
     float min_dist_sq = 100000;
-    int closest_seg = env->near_point_idx; // Start with current
+    int closest_seg = env->near_point_idx;
     Vector2 car_pos = {env->px, env->py};
 
-    // Only search +/- 5 points around current nearest
     int search_range = 3;
     for (int offset = 0; offset <= search_range; offset++) {
         int i = (env->near_point_idx + offset + env->track.total_points) % env->track.total_points;
@@ -401,9 +393,6 @@ void update_radial_progress(WhiskerRacer* env) {
     }
 }
 
-// ================================================================== BEZIER ==============================================
-
-// Cubic Bezier curve evaluation
 Vector2 EvaluateCubicBezier(Vector2 p0, Vector2 p1, Vector2 p2, Vector2 p3, float t) {
     float u = 1.0f - t;
     float tt = t * t;
@@ -417,7 +406,6 @@ Vector2 EvaluateCubicBezier(Vector2 p0, Vector2 p1, Vector2 p2, Vector2 p3, floa
     return result;
 }
 
-// Get the derivative (tangent) of cubic Bezier curve
 Vector2 GetBezierDerivative(Vector2 p0, Vector2 p1, Vector2 p2, Vector2 p3, float t) {
     float u = 1.0f - t;
     float tt = t * t;
@@ -429,14 +417,12 @@ Vector2 GetBezierDerivative(Vector2 p0, Vector2 p1, Vector2 p2, Vector2 p3, floa
     return result;
 }
 
-// Normalize a vector
 Vector2 NormalizeVector(Vector2 v) {
     float length = sqrtf(v.x * v.x + v.y * v.y);
     if (length == 0.0f) return (Vector2){0, 0};
     return (Vector2){v.x / length, v.y / length};
 }
 
-// Get perpendicular vector (rotated 90 degrees)
 Vector2 GetPerpendicular(Vector2 v) {
     return (Vector2){-v.y, v.x};
 }
@@ -521,22 +507,19 @@ void GenerateTrackCenterline(WhiskerRacer* env) {
         Vector2 p0 = env->track.controls[i].position;
         Vector2 p3 = env->track.controls[(i + 1) % env->num_points].position;
 
-        // Create control points for varied turn sharpness
         Vector2 prev = env->track.controls[(i - 1 + env->num_points) % env->num_points].position;
         Vector2 next = env->track.controls[(i + 2) % env->num_points].position;
 
-        // Calculate control points
         Vector2 dir1 = NormalizeVector((Vector2){p3.x - prev.x, p3.y - prev.y});
         Vector2 dir2 = NormalizeVector((Vector2){next.x - p0.x, next.y - p0.y});
 
         float dist = sqrtf((p3.x - p0.x) * (p3.x - p0.x) + (p3.y - p0.y) * (p3.y - p0.y));
 
-        // Vary control length based on corner type - shorter = sharper turns
         float control_length;
         if (i == 1 || i == 3) {
-            control_length = dist * 0.2f; // Sharp hairpins
+            control_length = dist * 0.2f; // Sharp turns
         } else if (i == 0 || i == 4) {
-            control_length = dist * 0.3f; // Medium corners
+            control_length = dist * 0.3f; // Medium turns
         } else {
             control_length = dist * 0.4f; // Sweeping turns
         }
@@ -544,7 +527,6 @@ void GenerateTrackCenterline(WhiskerRacer* env) {
         Vector2 p1 = (Vector2){p0.x + dir1.x * control_length, p0.y + dir1.y * control_length};
         Vector2 p2 = (Vector2){p3.x - dir2.x * control_length, p3.y - dir2.y * control_length};
 
-        // Generate points along this Bezier segment
         for (int j = 0; j < env->bezier_resolution && point_index < MAX_CONTROL_POINTS * env->bezier_resolution - 1; j++) {
             float t = (float)j * env->inv_bezier_res;
             env->track.centerline[point_index] = EvaluateCubicBezier(p0, p1, p2, p3, t);
@@ -554,13 +536,11 @@ void GenerateTrackCenterline(WhiskerRacer* env) {
     env->track.total_points = point_index;
 }
 
-// Generate inner and outer env->track edges
 void GenerateTrackEdges(WhiskerRacer* env) {
     for (int i = 0; i < env->track.total_points; i++) {
         Vector2 current = env->track.centerline[i];
         Vector2 next = env->track.centerline[(i + 1) % env->track.total_points];
 
-        // Calculate tangent direction
         Vector2 tangent = NormalizeVector((Vector2){next.x - current.x, next.y - current.y});
         Vector2 normal = GetPerpendicular(tangent);
 
@@ -615,8 +595,6 @@ void GenerateCurbs(WhiskerRacer* env) {
         env->track.curb_count++;
     }
 }
-
-// =========================================================================== END BEZIER ===========================================
 
 void GenerateRandomTrack(WhiskerRacer* env) {
     GenerateRandomControlPoints(env);

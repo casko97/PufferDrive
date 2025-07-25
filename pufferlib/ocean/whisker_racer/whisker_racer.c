@@ -19,7 +19,6 @@ void demo() {
         .max_whisker_length = 100,
         .turn_pi_frac = 20,
         .maxv = 5,
-        .circuit = 1,
         .render = 0,
         .continuous = 0,
         .reward_yellow = 0.25,

@@ -14,7 +14,6 @@ static int my_init(Env* env, PyObject* args, PyObject* kwargs) {
     env->max_whisker_length = unpack(kwargs, "max_whisker_length");
     env->turn_pi_frac = unpack(kwargs, "turn_pi_frac");
     env->maxv = unpack(kwargs, "maxv");
-    env->circuit = unpack(kwargs, "circuit");
     env->render = unpack(kwargs, "render");
     env->continuous = unpack(kwargs, "continuous");
     env->reward_yellow = unpack(kwargs, "reward_yellow");
