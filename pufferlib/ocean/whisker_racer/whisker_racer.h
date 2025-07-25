@@ -375,15 +375,13 @@ void calc_whisker_lengths(WhiskerRacer* env) {
         Vector2 whisker_dir = env->whisker_dirs[w];
         float min_hit_distance = max_len;
 
-        // Check intersections with track edges - LOCAL SEARCH ONLY
-        int window_size = 20; // Adjust as needed
+        int window_size = 20;
         for (int offset = -window_size/2; offset <= window_size/2; offset++) {
             int i = (env->near_point_idx + offset + env->track.total_points) % env->track.total_points;
             int next_i = (i + 1) % env->track.total_points;
 
             float t;
 
-            // Check inner edge segment
             if (line_segment_intersect(car_pos, whisker_dir, max_len,
                                      env->track.inner_edge[i], env->track.inner_edge[next_i], &t)) {
                 if (t < min_hit_distance) {
@@ -392,7 +390,6 @@ void calc_whisker_lengths(WhiskerRacer* env) {
                 if (t < 0.05) break;
             }
 
-            // Check outer edge segment
             if (line_segment_intersect(car_pos, whisker_dir, max_len,
                                      env->track.outer_edge[i], env->track.outer_edge[next_i], &t)) {
                 if (t < min_hit_distance) {
@@ -402,10 +399,9 @@ void calc_whisker_lengths(WhiskerRacer* env) {
             }
         }
 
-        // Normalize the length (0.0 to 1.0)
         *lengths[w] = fminf(1.0f, fmaxf(0.0f, min_hit_distance * inv_max_len));
 
-        if (*lengths[w] < 0.05f) { // Car has left the track
+        if (*lengths[w] < 0.05f) { // Car has crashed
             for (int j = 0; j < 2; j++) *lengths[j] = 0.0f;
             env->terminals[0] = 1;
             add_log(env);
@@ -460,7 +456,6 @@ void update_radial_progress(WhiskerRacer* env) {
     float center_x = SCREEN_WIDTH * 0.5f;
     float center_y = SCREEN_HEIGHT * 0.5f;
 
-    //float angle = atan2f(env->py - center_y, env->px - center_x);
     float angle = atan2f(env->py - center_y, env->px - center_x);
 
     if (angle < 0) angle += PI2;
@@ -483,8 +478,6 @@ void update_radial_progress(WhiskerRacer* env) {
         }
         env->current_sector = sector;
     }
-    //env->rewards[0] += 0.1f;
-    //env->score += 1.0f;
 }
 
 void reset_radial_progress(WhiskerRacer* env) {
@@ -544,7 +537,6 @@ Vector2 GetPerpendicular(Vector2 v) {
     return (Vector2){-v.y, v.x};
 }
 
-/// Generate random control points for a closed circuit with F1-style characteristics
 void GenerateRandomControlPoints(WhiskerRacer* env) {
     float center_x = SCREEN_WIDTH * 0.5f;
     float center_y = SCREEN_HEIGHT * 0.5f;
@@ -580,11 +572,8 @@ void GenerateRandomControlPoints(WhiskerRacer* env) {
             dist_from_center = 220.0f + (rand() % 30);
         }
 
-        float x_offset = (rand() % 21 - 10); // ±10px
-        float y_offset = (rand() % 21 - 10); // ±10px
-
-        env->track.controls[i].position.x = center_x + dist_from_center * cosf(angle) + x_offset;
-        env->track.controls[i].position.y = center_y + dist_from_center * 0.8f * sinf(angle) + y_offset;
+        env->track.controls[i].position.x = center_x + dist_from_center * cosf(angle);
+        env->track.controls[i].position.y = center_y + dist_from_center * 0.8f * sinf(angle);
     }
 
     for (int i = 0; i < n; i++) {
@@ -592,7 +581,6 @@ void GenerateRandomControlPoints(WhiskerRacer* env) {
         Vector2 curr = env->track.controls[i].position;
         Vector2 next = env->track.controls[(i + 1) % n].position;
 
-        // Vectors from curr to prev/next
         float vx1 = prev.x - curr.x;
         float vy1 = prev.y - curr.y;
         float vx2 = next.x - curr.x;
@@ -602,12 +590,11 @@ void GenerateRandomControlPoints(WhiskerRacer* env) {
         float mag1 = sqrtf(vx1 * vx1 + vy1 * vy1);
         float mag2 = sqrtf(vx2 * vx2 + vy2 * vy2);
 
-        if (mag1 < 1e-3f || mag2 < 1e-3f) continue;  // avoid divide by zero
+        if (mag1 < 1e-3f || mag2 < 1e-3f) continue;
 
         float angle_cos = dot / (mag1 * mag2);
 
         if (angle_cos > 0.0f) {
-            // Pull or push the point slightly
             float dx = curr.x - center_x;
             float dy = curr.y - center_y;
             float dist = sqrtf(dx * dx + dy * dy);
