@@ -278,26 +278,9 @@ void step_frame(WhiskerRacer* env, float action) {
     if (env->py < 0) env->py = 0;
     else if (env->py > env->height) env->py = env->height;
 
-    //clock_t start, end;
-    //double cpu_time_used;
-    //start = clock();
     calc_whisker_lengths(env);
-    //end = clock();
-
-    //printf("calc_whisker_lengths took %.3e\n", (double)(end - start) / CLOCKS_PER_SEC);
 
     update_radial_progress(env);
-
-    // What color is the car touching
-    //int ix = (int)env->px;
-    //int iy = (int)env->py;
-    //Color color = env->track_pixels[iy * env->track_image.width + ix];
-    //if (env->debug) printf("Color at (%d, %d): r=%d g=%d b=%d\n", ix, iy, (int)color.r, (int)color.g, (int)color.b);
-    //if (get_color_type(color) == 1) {
-    //    env->terminals[0] = 1;
-    //    add_log(env);
-    //    c_reset(env);
-    //}
 }
 
 void c_step(WhiskerRacer* env) {
