@@ -591,7 +591,7 @@ void GenerateRandomControlPoints(WhiskerRacer* env) {
         float dist_from_center;
         if (i == opt1) {
             dist_from_center = 100.0f + (rand() % 30);
-        } else if (i == opt2 || i == opt3 || i == opt4) {
+        } else if (i == opt2 || i == opt3) {
             dist_from_center = 150.0f + (rand() % 40);
         } else {
             dist_from_center = 220.0f + (rand() % 30);
@@ -745,10 +745,6 @@ void c_render(WhiskerRacer* env) {
     SetConfigFlags(FLAG_MSAA_4X_HINT);
     ClearBackground(GREEN);
     DrawSplineBasis(center_points, env->track.total_points + 3, env->track_width, BLACK);
-    for (int i = 0; i < env->track.total_points/4; i++)
-    {
-        DrawCircle(center_points[i].x, center_points[i].y, 10, RED);
-    }
     free(center_points);
 
     float car_width = 24.0f;
