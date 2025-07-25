@@ -149,7 +149,6 @@ void free_allocated(WhiskerRacer* env) {
 }
 
 void add_log(WhiskerRacer* env) {
-    if (env->debug) printf("add_log\n");
     env->log.episode_length += env->tick;
     if (env->log.episode_length > 0.01f) {
     }
@@ -157,19 +156,12 @@ void add_log(WhiskerRacer* env) {
     env->log.score += env->score;
     env->log.perf += env->score / (float)env->max_score;
     env->log.n += 1;
-    if (env->debug) printf("end add_log\n");
 }
 
 void compute_observations(WhiskerRacer* env) {
-    //if (env->debug) printf("compute_observations\n");
     env->observations[0] = env->flw_length;
     env->observations[1] = env->frw_length;
     env->observations[2] = env->score / 100.0f;
-    if (env->debug) printf("float0 %.3f \n", env->observations[0]);
-    if (env->debug) printf("float1 %.3f \n", env->observations[1]);
-    if (env->debug) printf("float2 %.3f \n", env->observations[2]);
-    if (env->debug) printf("\n\n\n");
-    //if (env->debug) printf("end compute_observations\n");
 }
 
 Client* make_client(WhiskerRacer* env) {
@@ -224,7 +216,35 @@ void get_random_start(WhiskerRacer* env) {
     //env->rrw_length = 0.25f;
 }
 
-// ============================================ Per Step Calculations =============================
+void reset_radial_progress(WhiskerRacer* env) {
+    float center_x = SCREEN_WIDTH * 0.5f;
+    float center_y = SCREEN_HEIGHT * 0.5f;
+
+    float angle = atan2f(env->py - center_y, env->px - center_x);
+    if (angle < 0) angle += PI2;
+
+    env->current_sector = (int)(angle / (PI2 / 16.0f)) % 16;
+
+    for (int i = 0; i < 16; i++) {
+        env->sectors_completed[i] = 0;
+    }
+    env->total_sectors_crossed = 0;
+}
+
+void reset_round(WhiskerRacer* env) {
+    get_random_start(env);
+    reset_radial_progress(env);
+    env->vx = 0.0f;
+    env->vy = 0.0f;
+    env->v = env->maxv;
+}
+
+void c_reset(WhiskerRacer* env) {
+    env->score = 0;
+    reset_round(env);
+    env->tick = 0;
+    compute_observations(env);
+}
 
 // Line segment intersection helper function
 // Returns 1 if intersection found, 0 otherwise
@@ -380,23 +400,6 @@ void update_radial_progress(WhiskerRacer* env) {
         env->current_sector = sector;
     }
 }
-
-void reset_radial_progress(WhiskerRacer* env) {
-    float center_x = SCREEN_WIDTH * 0.5f;
-    float center_y = SCREEN_HEIGHT * 0.5f;
-
-    float angle = atan2f(env->py - center_y, env->px - center_x);
-    if (angle < 0) angle += PI2;
-
-    env->current_sector = (int)(angle / (PI2 / 16.0f)) % 16;
-
-    for (int i = 0; i < 16; i++) {
-        env->sectors_completed[i] = 0;
-    }
-    env->total_sectors_crossed = 0;
-}
-
-// ============================================ End Per Step Calculations =============================
 
 // ================================================================== BEZIER ==============================================
 
@@ -631,8 +634,6 @@ void c_render(WhiskerRacer* env) {
         env->client = make_client(env);
     }
 
-    Client* client = env->client;
-
     if (IsKeyDown(KEY_ESCAPE)) {
         exit(0);
     }
@@ -676,13 +677,6 @@ void c_render(WhiskerRacer* env) {
     float car_height = 12.0f;
     float car_x = env->px;
     float car_y = height - env->py;
-    Vector2 car_center = {car_x, car_y};
-    Rectangle car_rect = {
-        car_x - car_width / 2.0f,
-        car_y - car_height / 2.0f,
-        car_width,
-        car_height
-    };
     Vector2 origin = {car_width / 2.0f, car_height / 2.0f};
     DrawRectanglePro(
         (Rectangle){car_x, car_y, car_width, car_height},
@@ -695,7 +689,6 @@ void c_render(WhiskerRacer* env) {
 }
 
 void init(WhiskerRacer* env) {
-    if (env->debug) printf("init\n");
     env->tick = 0;
     srand(env->rng);
 
@@ -711,18 +704,14 @@ void init(WhiskerRacer* env) {
     env->frw_ang = env->w_ang;
 
     GenerateRandomTrack(env);
-
-    if (env->debug) printf("end init\n");
 }
 
 void allocate(WhiskerRacer* env) {
-    if (env->debug) printf("allocate");
     init(env);
     env->observations = (float*)calloc(3, sizeof(float));
     env->actions = (float*)calloc(1, sizeof(float));
     env->rewards = (float*)calloc(1, sizeof(float));
     env->terminals = (unsigned char*)calloc(1, sizeof(unsigned char));
-    if (env->debug) printf("end allocate");
 }
 
 void step_frame(WhiskerRacer* env, float action) {
@@ -775,20 +764,5 @@ void c_step(WhiskerRacer* env) {
         env->tick += 1;
         step_frame(env, action);
     }
-    compute_observations(env);
-}
-
-void reset_round(WhiskerRacer* env) {
-    get_random_start(env);
-    reset_radial_progress(env);
-    env->vx = 0.0f;
-    env->vy = 0.0f;
-    env->v = env->maxv;
-}
-
-void c_reset(WhiskerRacer* env) {
-    env->score = 0;
-    reset_round(env);
-    env->tick = 0;
     compute_observations(env);
 }
