@@ -63,6 +63,14 @@ typedef struct WhiskerRacer {
     float* rewards;
     unsigned char* terminals;
     int debug;
+    unsigned int rng;
+
+    float ftmp1;
+    float ftmp2;
+    float ftmp3;
+    float ftmp4;
+
+    int render_many;
 
     float reward_yellow;
     float reward_green;
@@ -129,6 +137,7 @@ typedef struct WhiskerRacer {
 void init(WhiskerRacer* env) {
     if (env->debug) printf("init\n");
     env->tick = 0;
+    srand(env->rng);
 
     env->debug = 0;
 
@@ -594,6 +603,40 @@ void GenerateRandomControlPoints(WhiskerRacer* env) {
         env->track.controls[i].position.x = center_x + dist_from_center * cosf(angle) + x_offset;
         env->track.controls[i].position.y = center_y + dist_from_center * 0.8f * sinf(angle) + y_offset;
     }
+
+    for (int i = 0; i < n; i++) {
+        Vector2 prev = env->track.controls[(i - 1 + n) % n].position;
+        Vector2 curr = env->track.controls[i].position;
+        Vector2 next = env->track.controls[(i + 1) % n].position;
+
+        // Vectors from curr to prev/next
+        float vx1 = prev.x - curr.x;
+        float vy1 = prev.y - curr.y;
+        float vx2 = next.x - curr.x;
+        float vy2 = next.y - curr.y;
+
+        float dot = vx1 * vx2 + vy1 * vy2;
+        float mag1 = sqrtf(vx1 * vx1 + vy1 * vy1);
+        float mag2 = sqrtf(vx2 * vx2 + vy2 * vy2);
+
+        if (mag1 < 1e-3f || mag2 < 1e-3f) continue;  // avoid divide by zero
+
+        float angle_cos = dot / (mag1 * mag2);
+
+        if (angle_cos > 0.0f) {
+            // Pull or push the point slightly
+            float dx = curr.x - center_x;
+            float dy = curr.y - center_y;
+            float dist = sqrtf(dx * dx + dy * dy);
+
+            float adjust_scale = env->ftmp1;
+            if (dist < 150.0f) adjust_scale = env->ftmp2;
+            else if (dist > 200) adjust_scale = env->ftmp3;
+
+            env->track.controls[i].position.x = center_x + dx * adjust_scale;
+            env->track.controls[i].position.y = center_y + dy * adjust_scale;
+        }
+    }
 }
 
 
@@ -680,7 +723,10 @@ void c_render(WhiskerRacer* env) {
         ToggleFullscreen();
     }
 
-    //GenerateRandomTrack(env);
+    if (env->render_many)
+    {
+        GenerateRandomTrack(env);
+    }
 
     Vector2* center_points = malloc(sizeof(Vector2) * (env->track.total_points + 3));
     //center_points[0] = (Vector2){SCREEN_WIDTH*0.5f, SCREEN_HEIGHT*0.5f};

@@ -30,6 +30,12 @@ void demo() {
         .num_points = 4,
         .bezier_resolution = 16,
         .w_ang = 0.523,
+        .ftmp1 = 0.1,
+        .ftmp2 = 0.1,
+        .ftmp3 = 0.1,
+        .ftmp4 = 0.1,
+        .render_many = 0,
+        .rng=42,
     };
     printf("about to allocate\n");
     allocate(&env);

@@ -16,7 +16,9 @@ class WhiskerRacer(pufferlib.PufferEnv):
                  continuous=False, log_interval=128,
                  reward_yellow=0.25, reward_green=0.0, gamma=0.9, track_width=50,
                  num_radial_sectors=16, num_points=4, bezier_resolution=16, w_ang=0.523,
-                 buf=None, seed=0):
+                 ftmp1=0.1, ftmp2=0.1, ftmp3=0.1, ftmp4=0.1,
+                 render_many=0, seed=42,
+                 buf=None, rng=42):
         self.single_observation_space = gymnasium.spaces.Box(low=0, high=1,
                                             shape=(3,), dtype=np.float32)
         self.render_mode = render_mode
@@ -41,7 +43,9 @@ class WhiskerRacer(pufferlib.PufferEnv):
             llw_ang=llw_ang, flw_ang=flw_ang, frw_ang=frw_ang, rrw_ang=rrw_ang, max_whisker_length=max_whisker_length,
             turn_pi_frac=turn_pi_frac, maxv=maxv, circuit=circuit, render=render, continuous=continuous,
             reward_yellow=reward_yellow, reward_green=reward_green, gamma=gamma, track_width=track_width,
-            num_radial_sectors=num_radial_sectors, num_points=num_points, bezier_resolution=bezier_resolution, w_ang=w_ang
+            num_radial_sectors=num_radial_sectors, num_points=num_points, bezier_resolution=bezier_resolution, w_ang=w_ang,
+            ftmp1=ftmp1,ftmp2=ftmp2,ftmp3=ftmp3,ftmp4=ftmp4,
+            render_many=render_many, rng=rng
         )
 
     def reset(self, seed=0):
