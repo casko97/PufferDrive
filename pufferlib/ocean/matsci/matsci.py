@@ -7,17 +7,18 @@ import pufferlib
 from pufferlib.ocean.matsci import binding
 
 class Matsci(pufferlib.PufferEnv):
-    def __init__(self, num_envs=1, render_mode=None, log_interval=128, size=5, buf=None, seed=0):
+    def __init__(self, num_envs=1, render_mode=None, log_interval=128, buf=None, seed=0):
         self.single_observation_space = gymnasium.spaces.Box(low=0, high=1,
-            shape=(1,), dtype=np.uint8)
-        self.single_action_space = gymnasium.spaces.Discrete(2)
+            shape=(3,), dtype=np.float32)
+        self.single_action_space = gymnasium.spaces.Box(
+            low=-1, high=1, shape=(3,), dtype=np.float32
+        )
         self.render_mode = render_mode
         self.num_agents = num_envs
 
         super().__init__(buf)
         self.c_envs = binding.vec_init(self.observations, self.actions, self.rewards,
-            self.terminals, self.truncations, num_envs, seed, size=size)
-        self.size = size
+            self.terminals, self.truncations, num_envs, seed)
  
     def reset(self, seed=0):
         binding.vec_reset(self.c_envs, seed)
