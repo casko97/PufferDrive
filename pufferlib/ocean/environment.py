@@ -128,6 +128,7 @@ MAKE_FUNCTIONS = {
     'tetris': 'Tetris',
     'cartpole': 'Cartpole',
     'moba': 'Moba',
+    'matsci': 'Matsci',
     'boids': 'Boids',
     'drone_race': 'DroneRace',
     'drone_swarm': 'DroneSwarm',
