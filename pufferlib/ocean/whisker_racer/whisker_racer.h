@@ -13,9 +13,7 @@
 
 #define PI2 PI * 2
 
-#define SCREEN_WIDTH 640
-#define SCREEN_HEIGHT 480
-#define MAX_CONTROL_POINTS 8
+#define MAX_CONTROL_POINTS 32
 #define NUM_RADIAL_SECTORS 16
 #define MAX_BEZIER_RESOLUTION 16
 
@@ -210,8 +208,8 @@ void get_random_start(WhiskerRacer* env) {
 }
 
 void reset_radial_progress(WhiskerRacer* env) {
-    float center_x = SCREEN_WIDTH * 0.5f;
-    float center_y = SCREEN_HEIGHT * 0.5f;
+    float center_x = env->width * 0.5f;
+    float center_y = env->height * 0.5f;
 
     float angle = atan2f(env->py - center_y, env->px - center_x);
     if (angle < 0) angle += PI2;
@@ -347,27 +345,9 @@ void calc_whisker_lengths(WhiskerRacer* env) {
     }
 }
 
-int find_closest_centerline_segment(WhiskerRacer* env) {
-    float min_dist_sq = 100000;
-    int closest_seg = 0;
-    Vector2 car_pos = {env->px, env->py};
-
-    for (int i = 0; i < env->track.total_points; i++) {
-        Vector2 center = env->track.centerline[i];
-        float dx = car_pos.x - center.x;
-        float dy = car_pos.y - center.y;
-        float dist_sq = dx * dx + dy * dy;
-        if (dist_sq < min_dist_sq) {
-            min_dist_sq = dist_sq;
-            closest_seg = i;
-        }
-    }
-    return closest_seg;
-}
-
 void update_radial_progress(WhiskerRacer* env) {
-    float center_x = SCREEN_WIDTH * 0.5f;
-    float center_y = SCREEN_HEIGHT * 0.5f;
+    float center_x = env->width * 0.5f;
+    float center_y = env->height * 0.5f;
 
     float angle = atan2f(env->py - center_y, env->px - center_x);
 
@@ -419,7 +399,7 @@ Vector2 GetBezierDerivative(Vector2 p0, Vector2 p1, Vector2 p2, Vector2 p3, floa
 
 Vector2 NormalizeVector(Vector2 v) {
     float length = sqrtf(v.x * v.x + v.y * v.y);
-    if (length == 0.0f) return (Vector2){0, 0};
+    if (length < 0.00001f) return (Vector2){0, 0};
     return (Vector2){v.x / length, v.y / length};
 }
 
@@ -428,8 +408,8 @@ Vector2 GetPerpendicular(Vector2 v) {
 }
 
 void GenerateRandomControlPoints(WhiskerRacer* env) {
-    float center_x = SCREEN_WIDTH * 0.5f;
-    float center_y = SCREEN_HEIGHT * 0.5f;
+    float center_x = env->width * 0.5f;
+    float center_y = env->height * 0.5f;
 
     int n = env->num_points;
 
@@ -455,11 +435,11 @@ void GenerateRandomControlPoints(WhiskerRacer* env) {
 
         float dist_from_center;
         if (i == opt1) {
-            dist_from_center = 100.0f + (rand() % 30);
+            dist_from_center = env->height * 0.2 + (rand() % 30);
         } else if (i == opt2 || i == opt3) {
-            dist_from_center = 150.0f + (rand() % 40);
+            dist_from_center = env->height * 0.3 + (rand() % 40);
         } else {
-            dist_from_center = 220.0f + (rand() % 30);
+            dist_from_center = env->height * 0.5 + (rand() % 30);
         }
 
         env->track.controls[i].position.x = center_x + dist_from_center * cosf(angle);
@@ -637,7 +617,6 @@ void c_render(WhiskerRacer* env) {
     center_points[env->track.total_points + 2] = center_points[2];
 
     BeginDrawing();
-    SetWindowSize(640, 480);
     SetConfigFlags(FLAG_MSAA_4X_HINT);
     ClearBackground(GREEN);
     DrawSplineBasis(center_points, env->track.total_points + 3, env->track_width, BLACK);
@@ -668,7 +647,6 @@ void c_render(WhiskerRacer* env) {
 
 void init(WhiskerRacer* env) {
     env->tick = 0;
-    srand(env->rng);
 
     env->debug = 0;
 
@@ -680,6 +658,8 @@ void init(WhiskerRacer* env) {
 
     env->flw_ang = -env->w_ang;
     env->frw_ang = env->w_ang;
+
+    srand(env->rng);
 
     GenerateRandomTrack(env);
 }
