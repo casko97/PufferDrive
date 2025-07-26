@@ -1,8 +1,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <math.h>
+#include <lammps/library.h>
 #include "raylib.h"
-#include "math.h"
 
 #define WIDTH 1080
 #define HEIGHT 720
@@ -74,8 +75,43 @@ typedef struct {
     Vec3 goal;
     int tick;
     Client* client;
+    void* handle;
 } Matsci;
 
+void init(Matsci* env) {
+  void *handle;
+  const char *lmpargv[] = { "liblammps", "-log", "none", "-screen", "none"};
+  int lmpargc = sizeof(lmpargv)/sizeof(const char *);
+
+  /* create LAMMPS instance */
+  handle = lammps_open_no_mpi(lmpargc, (char **)lmpargv, NULL);
+  if (handle == NULL) {
+    printf("LAMMPS initialization failed\n");
+    lammps_mpi_finalize();
+  }
+
+  // Setup the basic simulation parameters via string commands
+  lammps_command(handle, "units lj");
+  lammps_command(handle, "dimension 3");
+  lammps_command(handle, "boundary p p p");
+  lammps_command(handle, "atom_style atomic");
+  lammps_command(handle, "pair_style zero 1.0 nocoeff");  // Dummy pair style for no interactions
+  lammps_command(handle, "region box block -10 10 -10 10 -10 10");
+  lammps_command(handle, "create_box 1 box");
+  lammps_command(handle, "mass 1 1.0");
+  lammps_command(handle, "pair_coeff * *");
+
+  // Load a single atom at a specific position (0.0, 0.0, 0.0)
+  lammps_command(handle, "create_atoms 1 single 0.0 0.0 0.0");
+
+  // Setup for running simulations (timestep and integrator)
+  lammps_command(handle, "timestep 0.05");
+  lammps_command(handle, "fix 1 all nve");
+
+  // Initialize
+  lammps_command(handle, "run 0");
+  env->handle = handle;
+}
 
 void compute_observations(Matsci* env) {
     env->observations[0] = env->pos.x - env->goal.x;
@@ -84,9 +120,11 @@ void compute_observations(Matsci* env) {
 }
 
 void c_reset(Matsci* env) {
-    env->pos.x = rndf(-1.0f, 1.0f);
-    env->pos.y = rndf(-1.0f, 1.0f);
-    env->pos.z = rndf(-1.0f, 1.0f);
+    void* handle = env->handle;
+    double** x = (double **) lammps_extract_atom(handle, "x");
+    x[0][0] = rndf(-1.0f, 1.0f);
+    x[0][1] = rndf(-1.0f, 1.0f);
+    x[0][2] = rndf(-1.0f, 1.0f);
     env->goal.x = rndf(-1.0f, 1.0f);
     env->goal.y = rndf(-1.0f, 1.0f);
     env->goal.z = rndf(-1.0f, 1.0f);
@@ -94,6 +132,7 @@ void c_reset(Matsci* env) {
 }
 
 void c_step(Matsci* env) {
+    void* handle = env->handle;
     env->rewards[0] = 0;
     env->terminals[0] = 0;
     env->tick++;
@@ -106,13 +145,21 @@ void c_step(Matsci* env) {
 	return;
     }
 
-    env->vel = (Vec3){
-        0.1f*env->actions[0],
-        0.1f*env->actions[1],
-        0.1f*env->actions[2],
-    };
+    double **v = (double **) lammps_extract_atom(handle, "v");
+    v[0][0] = 1.0f*env->actions[0];
+    v[0][1] = 1.0f*env->actions[1];
+    v[0][2] = 1.0f*env->actions[2];
 
-    env->pos = add3(env->pos, env->vel);
+    lammps_command(handle, "run 1");
+
+    double** x = (double **) lammps_extract_atom(handle, "x");
+
+    // Example of moving again and rerunning: reset position and set new velocity
+    x = (double **) lammps_extract_atom(handle, "x");
+    env->pos.x = x[0][0];
+    env->pos.y = x[0][1];
+    env->pos.z = x[0][2];
+
     float dist = norm3(sub3(env->pos, env->goal));
 
     if (dist > 2.0f) {

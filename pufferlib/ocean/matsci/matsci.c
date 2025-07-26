@@ -6,6 +6,7 @@ int main() {
     env.actions = (float*)calloc(3, sizeof(float));
     env.rewards = (float*)calloc(1, sizeof(float));
     env.terminals = (unsigned char*)calloc(1, sizeof(unsigned char));
+    init(&env);
 
     c_reset(&env);
     c_render(&env);
