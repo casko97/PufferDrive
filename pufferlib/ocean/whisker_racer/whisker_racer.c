@@ -35,6 +35,7 @@ void demo() {
         .ftmp4 = 0.1,
         .render_many = 0,
         .rng=42,
+        .i = 1,
     };
     printf("about to allocate\n");
     allocate(&env);

@@ -31,6 +31,7 @@ static int my_init(Env* env, PyObject* args, PyObject* kwargs) {
     env->ftmp4 = unpack(kwargs, "ftmp4");
     env->render_many = unpack(kwargs, "render_many");
     env->rng = unpack(kwargs, "rng");
+    env->i = unpack(kwargs, "i");
 
     init(env);
     return 0;

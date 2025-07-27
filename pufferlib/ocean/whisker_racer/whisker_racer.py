@@ -18,7 +18,7 @@ class WhiskerRacer(pufferlib.PufferEnv):
                  num_radial_sectors=16, num_points=4, bezier_resolution=16, w_ang=0.523,
                  ftmp1=0.1, ftmp2=0.1, ftmp3=0.1, ftmp4=0.1,
                  render_many=0, seed=42,
-                 buf=None, rng=42):
+                 buf=None, rng=42, i=1):
         self.single_observation_space = gymnasium.spaces.Box(low=0, high=1,
                                             shape=(3,), dtype=np.float32)
         self.render_mode = render_mode
@@ -33,20 +33,30 @@ class WhiskerRacer(pufferlib.PufferEnv):
             self.single_action_space = gymnasium.spaces.Discrete(3)
 
         super().__init__(buf)
+
         if continuous:
             self.actions = self.actions.flatten()
         else:
             self.actions = self.actions.astype(np.float32)
 
-        self.c_envs = binding.vec_init(self.observations, self.actions, self.rewards,
-            self.terminals, self.truncations, num_envs, seed, frameskip=frameskip, width=width, height=height,
-            llw_ang=llw_ang, flw_ang=flw_ang, frw_ang=frw_ang, rrw_ang=rrw_ang, max_whisker_length=max_whisker_length,
-            turn_pi_frac=turn_pi_frac, maxv=maxv, render=render, continuous=continuous,
-            reward_yellow=reward_yellow, reward_green=reward_green, gamma=gamma, track_width=track_width,
-            num_radial_sectors=num_radial_sectors, num_points=num_points, bezier_resolution=bezier_resolution, w_ang=w_ang,
-            ftmp1=ftmp1,ftmp2=ftmp2,ftmp3=ftmp3,ftmp4=ftmp4,
-            render_many=render_many, rng=rng
-        )
+        c_envs = []
+        for i in range(num_envs):
+            env_id = binding.env_init(
+                self.observations[i:i+1],
+                self.actions[i:i+1],
+                self.rewards[i:i+1],
+                self.terminals[i:i+1],
+                self.truncations[i:i+1],
+                seed, num_envs=num_envs, seed=seed, frameskip=frameskip, width=width, height=height,
+                llw_ang=llw_ang, flw_ang=flw_ang, frw_ang=frw_ang, rrw_ang=rrw_ang, max_whisker_length=max_whisker_length,
+                turn_pi_frac=turn_pi_frac, maxv=maxv, render=render, continuous=continuous,
+                reward_yellow=reward_yellow, reward_green=reward_green, gamma=gamma, track_width=track_width,
+                num_radial_sectors=num_radial_sectors, num_points=num_points, bezier_resolution=bezier_resolution, w_ang=w_ang,
+                ftmp1=ftmp1,ftmp2=ftmp2,ftmp3=ftmp3,ftmp4=ftmp4,
+                render_many=render_many, rng=rng+i, i=i
+            )
+            c_envs.append(env_id)
+        self.c_envs = binding.vectorize(*c_envs)
 
     def reset(self, seed=0):
         binding.vec_reset(self.c_envs, seed)

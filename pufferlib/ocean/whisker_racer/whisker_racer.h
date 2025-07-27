@@ -61,6 +61,7 @@ typedef struct WhiskerRacer {
     float* actions;
     float* rewards;
     unsigned char* terminals;
+    int i;
 
     int debug;
     unsigned int rng;
@@ -513,6 +514,7 @@ void GenerateTrackCenterline(WhiskerRacer* env) {
             point_index++;
         }
     }
+    //printf("env->track.centerline[0].x = %0.3f\n", env->track.centerline[0].x);
     env->track.total_points = point_index;
 }
 
@@ -659,7 +661,7 @@ void init(WhiskerRacer* env) {
     env->flw_ang = -env->w_ang;
     env->frw_ang = env->w_ang;
 
-    srand(env->rng);
+    srand(env->rng + env->i);
 
     GenerateRandomTrack(env);
 }
