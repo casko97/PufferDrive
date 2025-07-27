@@ -70,8 +70,7 @@ typedef struct {
     float* actions;              // Required field. Ensure type matches in .py and .c
     float* rewards;              // Required field
     unsigned char* terminals;    // Required field
-    Vec3 pos;
-    Vec3 vel;
+    int num_agents;
     Vec3 goal;
     int tick;
     Client* client;
@@ -99,13 +98,16 @@ void init(Matsci* env) {
   lammps_command(handle, "region box block -10 10 -10 10 -10 10");
   lammps_command(handle, "create_box 1 box");
   lammps_command(handle, "mass 1 1.0");
-  lammps_command(handle, "pair_coeff * *");
+  lammps_command(handle, "pair_coeff 1 1 1.0 1.0");
 
-  // Load a single atom at a specific position (0.0, 0.0, 0.0)
-  lammps_command(handle, "create_atoms 1 single 0.0 0.0 0.0");
+  lammps_command(handle, "region randbox block -10 10 -10 10 -10 10");
+  char cmd[256];
+  int seed = 123;
+  snprintf(cmd, sizeof(cmd), "create_atoms 1 random %d %d randbox overlap 0.8", env->num_agents, seed);
+  lammps_command(handle, cmd);
 
   // Setup for running simulations (timestep and integrator)
-  lammps_command(handle, "timestep 0.05");
+  lammps_command(handle, "timestep 0.5");
   lammps_command(handle, "fix 1 all nve");
 
   // Initialize
@@ -114,68 +116,77 @@ void init(Matsci* env) {
 }
 
 void compute_observations(Matsci* env) {
-    env->observations[0] = env->pos.x - env->goal.x;
-    env->observations[1] = env->pos.y - env->goal.y;
-    env->observations[2] = env->pos.z - env->goal.z;
+    double** x = (double **) lammps_extract_atom(env->handle, "x");
+    for (int i=0; i<env->num_agents; i++) {
+        env->observations[3*i] = x[i][0] - env->goal.x;
+        env->observations[3*i + 1] = x[i][1] - env->goal.y;
+        env->observations[3*i + 2] = x[i][2] - env->goal.z;
+    }
+}
+
+void reset_atom(Matsci* env, double** x, int i) {
+    x[i][0] = rndf(-10.0f, 10.0f);
+    x[i][1] = rndf(-10.0f, 10.0f);
+    x[i][2] = rndf(-10.0f, 10.0f);
 }
 
 void c_reset(Matsci* env) {
     void* handle = env->handle;
     double** x = (double **) lammps_extract_atom(handle, "x");
-    x[0][0] = rndf(-1.0f, 1.0f);
-    x[0][1] = rndf(-1.0f, 1.0f);
-    x[0][2] = rndf(-1.0f, 1.0f);
-    env->goal.x = rndf(-1.0f, 1.0f);
-    env->goal.y = rndf(-1.0f, 1.0f);
-    env->goal.z = rndf(-1.0f, 1.0f);
+    for (int i=0; i<env->num_agents; i++) {
+	reset_atom(env, x, i);
+    }
+    env->goal.x = rndf(-10.0f, 10.0f);
+    env->goal.y = rndf(-10.0f, 10.0f);
+    env->goal.z = rndf(-10.0f, 10.0f);
     env->tick = 0;
 }
 
 void c_step(Matsci* env) {
     void* handle = env->handle;
-    env->rewards[0] = 0;
-    env->terminals[0] = 0;
     env->tick++;
 
-    if (env->tick >= 128) {
+    if (env->tick >= 1024) {
         c_reset(env);
-        env->rewards[0] = -1;
-        env->terminals[0] = 1;
-        env->log.n += 1;
+        for (int i=0; i<env->num_agents; i++) {
+            env->rewards[i] = -1;
+            env->terminals[i] = 1;
+            env->log.n += 1;
+	}
 	return;
     }
 
     double **v = (double **) lammps_extract_atom(handle, "v");
-    v[0][0] = 1.0f*env->actions[0];
-    v[0][1] = 1.0f*env->actions[1];
-    v[0][2] = 1.0f*env->actions[2];
+    for (int i=0; i<env->num_agents; i++) {
+	env->rewards[i] = 0;
+	env->terminals[i] = 0;
+
+        v[i][0] = env->actions[3*i];
+        v[i][1] = env->actions[3*i + 1];
+        v[i][2] = env->actions[3*i + 2];
+    }
 
     lammps_command(handle, "run 1");
 
     double** x = (double **) lammps_extract_atom(handle, "x");
+    for (int i=0; i<env->num_agents; i++) {
+        Vec3 pos = (Vec3){x[i][0], x[i][1], x[i][2]};
+        float dist = norm3(sub3(pos, env->goal));
 
-    // Example of moving again and rerunning: reset position and set new velocity
-    x = (double **) lammps_extract_atom(handle, "x");
-    env->pos.x = x[0][0];
-    env->pos.y = x[0][1];
-    env->pos.z = x[0][2];
+        if (dist > 20.0f) {
+            reset_atom(env, x, i);
+            env->rewards[i] = -1;
+            env->terminals[i] = 1;
+            env->log.n += 1;
+	}
 
-    float dist = norm3(sub3(env->pos, env->goal));
-
-    if (dist > 2.0f) {
-        c_reset(env);
-        env->rewards[0] = -1;
-        env->terminals[0] = 1;
-        env->log.n += 1;
-	return;
-    }
-
-    if (dist < 0.1) {
-        c_reset(env);
-        env->rewards[0] = 1;
-        env->terminals[0] = 1;
-        env->log.score += 1;
-        env->log.n += 1;
+        if (dist < 1.0f) {
+           reset_atom(env, x, i);
+           env->rewards[i] = 1;
+           env->terminals[i] = 1;
+           env->log.score += 1;
+           env->log.n += 1;
+	}
     }
 
     compute_observations(env);
@@ -285,9 +296,13 @@ void c_render(Matsci* env) {
     BeginDrawing();
     ClearBackground(PUFF_BACKGROUND);
     BeginMode3D(client->camera);
-    DrawCubeWires((Vector3){0.0f, 0.0f, 0.0f}, 2.0f, 2.0f, 2.0f, WHITE);
+    DrawCubeWires((Vector3){0.0f, 0.0f, 0.0f}, 20.0f, 20.0f, 20.0f, WHITE);
 
-    DrawSphere((Vector3){env->pos.x, env->pos.y, env->pos.z}, 0.1f, PUFF_CYAN);
+    double** x = (double **) lammps_extract_atom(env->handle, "x");
+    for (int i=0; i<env->num_agents; i++) {
+        DrawSphere((Vector3){x[i][0], x[i][1], x[i][2]}, 0.1f, PUFF_CYAN);
+    }
+
     DrawSphere((Vector3){env->goal.x, env->goal.y, env->goal.z}, 0.1f, PUFF_RED);
     EndMode3D();
 

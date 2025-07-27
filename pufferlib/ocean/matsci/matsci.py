@@ -7,18 +7,29 @@ import pufferlib
 from pufferlib.ocean.matsci import binding
 
 class Matsci(pufferlib.PufferEnv):
-    def __init__(self, num_envs=1, render_mode=None, log_interval=128, buf=None, seed=0):
+    def __init__(self, num_envs=1, num_atoms=2, render_mode=None, log_interval=128, buf=None, seed=0):
         self.single_observation_space = gymnasium.spaces.Box(low=0, high=1,
             shape=(3,), dtype=np.float32)
         self.single_action_space = gymnasium.spaces.Box(
             low=-1, high=1, shape=(3,), dtype=np.float32
         )
         self.render_mode = render_mode
-        self.num_agents = num_envs
+        self.num_agents = num_envs*num_atoms
 
         super().__init__(buf)
-        self.c_envs = binding.vec_init(self.observations, self.actions, self.rewards,
-            self.terminals, self.truncations, num_envs, seed)
+        c_envs = []
+        for i in range(num_envs):
+            c_envs.append(binding.env_init(
+                self.observations[i*num_atoms:(i+1)*num_atoms],
+                self.actions[i*num_atoms:(i+1)*num_atoms],
+                self.rewards[i*num_atoms:(i+1)*num_atoms],
+                self.terminals[i*num_atoms:(i+1)*num_atoms],
+                self.truncations[i*num_atoms:(i+1)*num_atoms],
+                i,
+                num_agents=num_atoms,
+            ))
+
+        self.c_envs = binding.vectorize(*c_envs)
  
     def reset(self, seed=0):
         binding.vec_reset(self.c_envs, seed)

@@ -422,7 +422,7 @@ if not NO_OCEAN:
             sources=[path],
             **extension_kwargs,
         )
-        for path in c_extension_paths
+        for path in c_extension_paths if 'matsci' not in path
     ]
     c_extension_paths = [os.path.join(*path.split('/')[:-1]) for path in c_extension_paths]
 
@@ -430,6 +430,10 @@ if not NO_OCEAN:
         if "impulse_wars" in c_ext.name:
             print(f"Adding {c_ext.name} to extra objects")
             c_ext.extra_objects.append(f'{BOX2D_NAME}/libbox2d.a')
+
+        if 'matsci' in c_ext.name:
+            c_ext.include_dirs.append('/usr/local/include')
+            c_ext.extra_link_args.extend(['-L/usr/local/lib', '-llammps'])
 
 # Check if CUDA compiler is available. You need cuda dev, not just runtime.
 torch_extensions = []

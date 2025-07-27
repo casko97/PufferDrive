@@ -1,19 +1,20 @@
 #include "matsci.h"
 
 int main() {
-    Matsci env = {};
-    env.observations = (float*)calloc(3, sizeof(float));
-    env.actions = (float*)calloc(3, sizeof(float));
-    env.rewards = (float*)calloc(1, sizeof(float));
-    env.terminals = (unsigned char*)calloc(1, sizeof(unsigned char));
+    int num_agents = 16;
+    Matsci env = {.num_agents=num_agents};
+    env.observations = (float*)calloc(3*num_agents, sizeof(float));
+    env.actions = (float*)calloc(3*num_agents, sizeof(float));
+    env.rewards = (float*)calloc(num_agents, sizeof(float));
+    env.terminals = (unsigned char*)calloc(num_agents, sizeof(unsigned char));
     init(&env);
 
     c_reset(&env);
     c_render(&env);
     while (!WindowShouldClose()) {
-        env.actions[0] = rndf(-0.05f, 0.05f);
-        env.actions[1] = rndf(-0.05f, 0.05f);
-        env.actions[2] = rndf(-0.05f, 0.05f);
+	for (int i=0; i<3*num_agents; i++) {
+            env.actions[i] = rndf(-1.0f, 1.0f);
+	}
         c_step(&env);
         c_render(&env);
     }
