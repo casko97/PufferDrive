@@ -25,12 +25,14 @@ static int my_init(Env* env, PyObject* args, PyObject* kwargs) {
     env->bezier_resolution = unpack(kwargs, "bezier_resolution");
     env->turn_pi_frac = unpack(kwargs, "turn_pi_frac");
     env->w_ang = unpack(kwargs, "w_ang");
+    env->corner_thresh = unpack(kwargs, "corner_thresh");
     env->ftmp1 = unpack(kwargs, "ftmp1");
     env->ftmp2 = unpack(kwargs, "ftmp2");
     env->ftmp3 = unpack(kwargs, "ftmp3");
     env->ftmp4 = unpack(kwargs, "ftmp4");
     env->render_many = unpack(kwargs, "render_many");
     env->rng = unpack(kwargs, "rng");
+    env->method = unpack(kwargs, "method");
     env->i = unpack(kwargs, "i");
 
     init(env);

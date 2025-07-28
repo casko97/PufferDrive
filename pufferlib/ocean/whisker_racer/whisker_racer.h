@@ -67,10 +67,12 @@ typedef struct WhiskerRacer {
     unsigned int rng;
     int render_many;
 
+    float corner_thresh;
     float ftmp1;
     float ftmp2;
     float ftmp3;
     float ftmp4;
+    int method;
 
     float reward_yellow;
     float reward_green;
@@ -170,7 +172,8 @@ Client* make_client(WhiskerRacer* env) {
     client->maxv = env->maxv;
 
     InitWindow(env->width, env->height, "PufferLib Whisker Racer");
-    SetTargetFPS(60 / env->frameskip);
+    if (env->render_many) SetTargetFPS(10 / env->frameskip);
+    else SetTargetFPS(60 / env->frameskip);
 
     return client;
 }
@@ -414,38 +417,126 @@ void GenerateRandomControlPoints(WhiskerRacer* env) {
 
     int n = env->num_points;
 
-    // Randomly choose distinct, non-adjacent indices for tight and medium corners
-    int opt1 = rand() % n;
-    int opt2;
-    do {
-        opt2 = rand() % n;
-    } while (opt2 == opt1 || abs(opt2 - opt1) == 1 || abs(opt2 - opt1) == n - 1);
+    if (env->method == 0) {
+        // Randomly choose distinct, non-adjacent indices for tight and medium corners
+        int opt1 = rand() % n;
+        int opt2;
+        do {
+            opt2 = rand() % n;
+        } while (opt2 == opt1 || abs(opt2 - opt1) == 1 || abs(opt2 - opt1) == n - 1);
 
-    int opt3, opt4;
-    do {
-        opt3 = rand() % n;
-    } while (opt3 == opt1 || opt3 == opt2);
+        int opt3, opt4;
+        do {
+            opt3 = rand() % n;
+        } while (opt3 == opt1 || opt3 == opt2);
 
-    do {
-        opt4 = rand() % n;
-    } while (opt4 == opt1 || opt4 == opt2 || opt4 == opt3 || abs(opt4 - opt3) == 1 || abs(opt4 - opt3) == n - 1);
+        do {
+            opt4 = rand() % n;
+        } while (opt4 == opt1 || opt4 == opt2 || opt4 == opt3 || abs(opt4 - opt3) == 1 || abs(opt4 - opt3) == n - 1);
 
-    // Generate control points
-    for (int i = 0; i < n; i++) {
-        float angle = (PI2 * i) / n;
+        // Generate control points
+        for (int i = 0; i < n; i++) {
+            float angle = (PI2 * i) / n;
 
-        float dist_from_center;
-        if (i == opt1) {
-            dist_from_center = env->height * 0.2 + (rand() % 30);
-        } else if (i == opt2 || i == opt3) {
-            dist_from_center = env->height * 0.3 + (rand() % 40);
-        } else {
-            dist_from_center = env->height * 0.5 + (rand() % 30);
+            float dist_from_center;
+            if (i == opt1) {
+                dist_from_center = env->height * 0.2 + (rand() % 30);
+            } else if (i == opt2 || i == opt3) {
+                dist_from_center = env->height * 0.3 + (rand() % 40);
+            } else {
+                dist_from_center = env->height * 0.5 + (rand() % 30);
+            }
+
+            env->track.controls[i].position.x = center_x + dist_from_center * cosf(angle);
+            env->track.controls[i].position.y = center_y + dist_from_center * 0.8f * sinf(angle);
+        }
+    }
+    else {
+
+        int corner_types[n];
+        int assigned[n];
+
+        // type 0 is close to center, 1 is medium, 2 is far from center
+        for (int i = 0; i < n; i++) {
+            corner_types[i] = 2;
+            assigned[i] = 0;
         }
 
-        env->track.controls[i].position.x = center_x + dist_from_center * cosf(angle);
-        env->track.controls[i].position.y = center_y + dist_from_center * 0.8f * sinf(angle);
-    }
+        int num_med = (n + 2) / 5;
+        for (int placed = 0; placed < num_med; placed++) {
+            int attempts = 0;
+            int pos;
+            do {
+                pos = rand() % n;
+                int prev = (pos - 1 + n) % n;
+                int next = (pos + 1) % n;
+
+                bool valid = (assigned[pos] == 0);
+
+                if (valid) break;
+                attempts++;
+            } while (attempts < 50);
+
+            if (attempts < 50) {
+                corner_types[pos] = 1;
+                assigned[pos] = 1;
+            }
+        }
+
+        int num_close = (n + 2) / 8;
+        for (int placed = 0; placed < num_close; placed++) {
+            int attempts = 0;
+            int pos;
+            do {
+                pos = rand() % n;
+                int prev_prev = (pos - 2 + n) % n;
+                int prev = (pos - 1 + n) % n;
+                int next = (pos + 1) % n;
+                int next_next = (pos + 2) % n;
+
+                bool valid = (corner_types[pos] == 2) &&
+                            (corner_types[prev_prev] > 0) &&
+                            (corner_types[prev] > 0) &&
+                            (corner_types[next] > 0) &&
+                            //(corner_types[next_next] > 0) &&
+                            (assigned[pos] == 0);
+
+                if (valid) break;
+                attempts++;
+            } while (attempts < 50);
+
+            if (attempts < 50) {
+                corner_types[pos] = 0;
+                assigned[pos] = 1;
+            }
+        }
+
+        for (int i = 0; i < n; i++ ) {
+            int prev = (i - 1 + n) % n;
+            int next = (i + 1 + n) % n;
+            if (corner_types[prev] == 0 && corner_types[i] == 2 && corner_types[next] == 0) {
+                corner_types[i] = 1;
+            }
+        }
+
+        // Generate control points
+        for (int i = 0; i < n; i++) {
+            float angle = (PI2 * i) / n;
+
+            float dist_from_center;
+            if (corner_types[i] == 0) {
+                dist_from_center = env->height * 0.35 + (rand() % 30);
+            } else if (corner_types[i] == 1) {
+                dist_from_center = env->height * 0.45 + (rand() % 40);
+            } else {
+                dist_from_center = env->height * 0.6 + (rand() % 30);
+            }
+
+            env->track.controls[i].position.x = center_x + dist_from_center * 1.2f * cosf(angle);
+            env->track.controls[i].position.y = center_y + dist_from_center * 0.7f * sinf(angle);
+        }
+
+    } // end method else
 
     for (int i = 0; i < n; i++) {
         Vector2 prev = env->track.controls[(i - 1 + n) % n].position;
@@ -465,21 +556,24 @@ void GenerateRandomControlPoints(WhiskerRacer* env) {
 
         float angle_cos = dot / (mag1 * mag2);
 
-        if (angle_cos > 0.0f) {
+        if (angle_cos > env->corner_thresh) {
             float dx = curr.x - center_x;
             float dy = curr.y - center_y;
             float dist = sqrtf(dx * dx + dy * dy);
 
-            float adjust_scale = env->ftmp1;
-            if (dist < 150.0f) adjust_scale = env->ftmp2;
-            else if (dist > 200) adjust_scale = env->ftmp3;
+            float adjust_scale = 0.0;
+            if (dist < 170.0f) {
+                adjust_scale = env->ftmp1 * angle_cos + env->ftmp2;
+            }
+            else if (dist > 200) {
+                adjust_scale = env->ftmp3 * angle_cos + env->ftmp4;
+            }
 
-            env->track.controls[i].position.x = center_x + dx * adjust_scale;
-            env->track.controls[i].position.y = center_y + dy * adjust_scale;
+            env->track.controls[i].position.x = env->track.controls[i].position.x - dx * adjust_scale;
+            env->track.controls[i].position.y = env->track.controls[i].position.y - dy * adjust_scale;
         }
     }
 }
-
 
 void GenerateTrackCenterline(WhiskerRacer* env) {
     int point_index = 0;
@@ -622,6 +716,7 @@ void c_render(WhiskerRacer* env) {
     SetConfigFlags(FLAG_MSAA_4X_HINT);
     ClearBackground(GREEN);
     DrawSplineBasis(center_points, env->track.total_points + 3, env->track_width, BLACK);
+    DrawSplineBasis(center_points, env->track.total_points + 3, 2, WHITE);
     for (int i = 0; i < env->track.curb_count; i++) {
         Vector2 curb_points[4];
         for (int j = 0; j < 4; j++) {
