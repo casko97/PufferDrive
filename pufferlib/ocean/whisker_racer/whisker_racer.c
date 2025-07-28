@@ -6,38 +6,38 @@ void demo() {
     printf("demo\n");
     Weights* weights = load_weights("resources/whisker_racer/whisker_racer_weights.bin", 147844);
     int logit_sizes[1] = {3};
-    LinearLSTM* net = make_linearlstm(weights, 1, 118, logit_sizes, 1);
+    LinearLSTM* net = make_linearlstm(weights, 1, 3, logit_sizes, 1);
 
     WhiskerRacer env = {
         .frameskip = 1,
-        .width = 640,
-        .height = 480,
-        .llw_ang = -PI/4,
+        .width = 1920,
+        .height = 1080,
+        //.llw_ang = -PI/4,
         .flw_ang = -PI/6,
         .frw_ang = PI/6,
-        .rrw_ang = PI/4,
+        //.rrw_ang = PI/4,
         .max_whisker_length = 100,
-        .turn_pi_frac = 20,
+        .turn_pi_frac = 40,
         .maxv = 5,
         .render = 0,
         .continuous = 0,
         .reward_yellow = 0.25,
         .reward_green = 0.0,
         .gamma = 0.9,
-        .track_width = 50,
+        .track_width = 75,
         .num_radial_sectors = 16,
         .num_points = 4,
-        .bezier_resolution = 16,
-        .w_ang = 0.523,
+        .bezier_resolution = 4,
+        .w_ang = 0.777,
         .corner_thresh = 0.5,
         .ftmp1 = 0.1,
         .ftmp2 = 0.1,
         .ftmp3 = 0.1,
         .ftmp4 = 0.1,
         .render_many = 0,
-        .rng=42,
+        .rng=6,
         .i = 1,
-        .method = 0,
+        .method = 2,
     };
     printf("about to allocate\n");
     allocate(&env);
