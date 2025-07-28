@@ -543,7 +543,7 @@ void GenerateRandomControlPoints(WhiskerRacer* env) {
     } // end method 1
     else {
         float base_radius = env->height * 0.5f;
-        float variation_strength = env->ftmp1;
+        float variation_strength = 0.5;
         float track_stretch_x = 1.0;
         float track_stretch_y = 0.6;
 
@@ -596,12 +596,9 @@ void GenerateRandomControlPoints(WhiskerRacer* env) {
             float dy = curr.y - center_y;
             float dist = sqrtf(dx * dx + dy * dy);
 
-            float adjust_scale = 0.0;
-            if (dist < 170.0f) {
-                adjust_scale = env->ftmp1 * angle_cos + env->ftmp2;
-            }
-            else if (dist > 200) {
-                adjust_scale = env->ftmp3 * angle_cos + env->ftmp4;
+            float adjust_scale = 0.0f;
+            if (dist > 200) {
+                adjust_scale = 0.3f * angle_cos;
             }
 
             env->track.controls[i].position.x = env->track.controls[i].position.x - dx * adjust_scale;
