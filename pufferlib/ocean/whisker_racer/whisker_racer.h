@@ -624,11 +624,11 @@ void GenerateTrackCenterline(WhiskerRacer* env) {
 
         float control_length;
         if (i == 1 || i == 3) {
-            control_length = dist * 0.2f; // Sharp turns
+            control_length = dist * 0.2f;
         } else if (i == 0 || i == 4) {
-            control_length = dist * 0.3f; // Medium turns
+            control_length = dist * 0.3f;
         } else {
-            control_length = dist * 0.4f; // Sweeping turns
+            control_length = dist * 0.4f;
         }
 
         Vector2 p1 = (Vector2){p0.x + dir1.x * control_length, p0.y + dir1.y * control_length};
@@ -640,7 +640,6 @@ void GenerateTrackCenterline(WhiskerRacer* env) {
             point_index++;
         }
     }
-    //printf("env->track.centerline[0].x = %0.3f\n", env->track.centerline[0].x);
     env->track.total_points = point_index;
 }
 
@@ -749,7 +748,7 @@ void c_render(WhiskerRacer* env) {
     SetConfigFlags(FLAG_MSAA_4X_HINT);
     ClearBackground(GREEN);
     DrawSplineBasis(center_points, env->track.total_points + 3, env->track_width, BLACK);
-    DrawSplineBasis(center_points, env->track.total_points + 3, 2, WHITE);
+    //DrawSplineBasis(center_points, env->track.total_points + 3, 2, WHITE);
     for (int i = 0; i < env->track.curb_count; i++) {
         Vector2 curb_points[4];
         for (int j = 0; j < 4; j++) {
