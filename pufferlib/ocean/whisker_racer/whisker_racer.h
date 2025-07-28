@@ -417,6 +417,10 @@ void GenerateRandomControlPoints(WhiskerRacer* env) {
 
     int n = env->num_points;
 
+    if (env->method == -1) {
+        env->method = rand() % 3;
+    }
+
     if (env->method == 0) {
         // Randomly choose distinct, non-adjacent indices for tight and medium corners
         int opt1 = rand() % n;
@@ -450,8 +454,8 @@ void GenerateRandomControlPoints(WhiskerRacer* env) {
             env->track.controls[i].position.x = center_x + dist_from_center * cosf(angle);
             env->track.controls[i].position.y = center_y + dist_from_center * 0.8f * sinf(angle);
         }
-    }
-    else {
+    } // end method 0
+    else if (env->method == 1) {
 
         int corner_types[n];
         int assigned[n];
@@ -536,7 +540,38 @@ void GenerateRandomControlPoints(WhiskerRacer* env) {
             env->track.controls[i].position.y = center_y + dist_from_center * 0.7f * sinf(angle);
         }
 
-    } // end method else
+    } // end method 1
+    else {
+        float base_radius = env->height * 0.5f;
+        float variation_strength = env->ftmp1;
+        float track_stretch_x = 1.0;
+        float track_stretch_y = 0.6;
+
+        float freq1 = 2.0f + (rand() % 5);
+        float amp1 = (1.0f / freq1) * (0.9f + 0.2f * (rand() % 100) / 100.0f);
+        float phase1 = PI2 * (rand() % 100) / 100.0f;
+
+        float freq2 = 1.0f + (rand() % 2);
+        float amp2 = 0.2f + 0.2f * (rand() % 100) / 100.0f;
+        float phase2 = PI2 * (rand() % 100) / 100.0f;
+
+        float freq3 = 10.0f + 0.5f * (rand() % 3);
+        float amp3 = 0.3f + 0.1f * (rand() % 100) / 100.0f;
+        float phase3 = PI2 * (rand() % 100) / 100.0f;
+
+        for (int i = 0; i < n; i++) {
+            float angle = (PI2 * i) / n;
+
+            float radius_variation = amp1 * cosf(freq1 * angle + phase1) +
+                                amp2 * cosf(freq2 * angle + phase2) +
+                                amp3 * cosf(freq3 * angle + phase3);
+
+            float radius = base_radius + (base_radius * variation_strength * radius_variation);
+
+            env->track.controls[i].position.x = center_x + radius * track_stretch_x * cosf(angle);
+            env->track.controls[i].position.y = center_y + radius * track_stretch_y * sinf(angle);
+        }
+    } // end method 2
 
     for (int i = 0; i < n; i++) {
         Vector2 prev = env->track.controls[(i - 1 + n) % n].position;
@@ -697,6 +732,7 @@ void c_render(WhiskerRacer* env) {
 
     if (env->render_many)
     {
+        env->method = rand() % 3;
         GenerateRandomTrack(env);
     }
 
