@@ -756,32 +756,41 @@ void Mode7(WhiskerRacer* env, RenderTexture2D mode7RenderTexture) {
     Image sceneImage = LoadImageFromTexture(scene);
     Color* pixels = LoadImageColors(sceneImage);
 
+    int height = env->height;
+    int width = env->width;
+    float inv_width = env->inv_width;
+
     int horizon = env->height / 2;
     float cos_ang = cosf(camAngle);
     float sin_ang = sinf(camAngle);
 
-    for (int screenY = horizon; screenY < env->height; screenY++) {
+    float cos_ang2 = -2.0f * cos_ang;
+    float sin_ang2 = 2.0f * sin_ang;
+
+    float height9 = 9.0f * height;
+
+    for (int screenY = horizon; screenY < height; screenY++) {
         float row = (float)(screenY - horizon);
 
         // Adjust camera height and perspective (tweak constants if needed)
-        float z = (9.0f * env->height) / row;
+        float z = height9 / row;
 
         float dx = -sin_ang * z;
         float dy =  cos_ang * z;
 
-        float sx = camX + cos_ang * z + dx;
-        float sy = camY + sin_ang * z + dy;
+        float sx = camX + dy + dx;
+        float sy = camY - dx + dy;
 
-        dx = (2.0f * sin_ang * z) / env->width;
-        dy = (-2.0f * cos_ang * z) / env->width;
+        dx = (sin_ang2 * z) * inv_width;
+        dy = (cos_ang2 * z) * inv_width;
 
-        for (int screenX = 0; screenX < env->width; screenX++) {
+        for (int screenX = 0; screenX < width; screenX++) {
             int srcX = (int)sx;
             int srcY = (int)sy;
 
-            if (srcX >= 0 && srcX < env->width &&
-                srcY >= 0 && srcY < env->height) {
-                Color color = pixels[srcY * env->width + srcX];
+            if (srcX >= 0 && srcX < width &&
+                srcY >= 0 && srcY < height) {
+                Color color = pixels[srcY * width + srcX];
                 DrawPixel(screenX, screenY, color);
             }
 
