@@ -746,7 +746,7 @@ void c_render(WhiskerRacer* env) {
 
     BeginDrawing();
     SetConfigFlags(FLAG_MSAA_4X_HINT);
-    ClearBackground(GREEN);
+    ClearBackground(DARKGREEN);
     DrawSplineBasis(center_points, env->track.total_points + 3, env->track_width, BLACK);
     //DrawSplineBasis(center_points, env->track.total_points + 3, 2, WHITE);
     for (int i = 0; i < env->track.curb_count; i++) {
@@ -768,7 +768,7 @@ void c_render(WhiskerRacer* env) {
         (Rectangle){car_x, car_y, car_width, car_height},
         origin,
         -env->ang * 180.0f / PI,
-        (Color){255, 0, 255, 255}
+        (Color){0, 255, 255, 255}
     );
 
     EndDrawing();
