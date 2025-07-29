@@ -149,7 +149,7 @@ MAKE_FUNCTIONS = {
     'grid': 'Grid',
     'cpr': 'PyCPR',
     'impulse_wars': 'ImpulseWars',
-    'gpudrive': 'GPUDrive',
+    'drive': 'Drive',
     'pacman': 'Pacman',
     'checkers': 'Checkers',
     'asteroids': 'Asteroids',
