@@ -25,7 +25,7 @@ void demo() {
         .bezier_resolution = 4,
         .w_ang = 0.777,
         .corner_thresh = 0.5,
-        .mode7 = 0,
+        .mode7 = 0, // If mode7 = 1 then 640X480 recommended
         .render_many = 0,
         .rng = 3, // rng = 3 for puffer track
         .i = 1, // i = 1 for puffer track

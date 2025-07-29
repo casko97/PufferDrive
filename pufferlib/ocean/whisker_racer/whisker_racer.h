@@ -580,10 +580,18 @@ void GenerateRandomControlPoints(WhiskerRacer* env) {
         }
     } // end method 2
 
+    float tw2 = env->track_width * 0.5f;
+
     for (int i = 0; i < n; i++) {
+        if (env->track.controls[i].position.x < tw2) env->track.controls[i].position.x = tw2;
+        if (env->track.controls[i].position.x > env->width - tw2) env->track.controls[i].position.x = env->width - tw2;
+        if (env->track.controls[i].position.y < tw2) env->track.controls[i].position.y = tw2;
+        if (env->track.controls[i].position.y > env->height - tw2) env->track.controls[i].position.y = env->height - tw2;
+
         Vector2 prev = env->track.controls[(i - 1 + n) % n].position;
         Vector2 curr = env->track.controls[i].position;
         Vector2 next = env->track.controls[(i + 1) % n].position;
+
 
         float vx1 = prev.x - curr.x;
         float vy1 = prev.y - curr.y;
