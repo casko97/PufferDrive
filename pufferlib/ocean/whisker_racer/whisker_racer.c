@@ -4,7 +4,7 @@
 
 void demo() {
     printf("demo\n");
-    Weights* weights = load_weights("resources/whisker_racer/puffer_whisker_racer_weights.bin", 133124); // 133124 33797
+    Weights* weights = load_weights("resources/whisker_racer/puffer_whisker_racer_weights.bin", 133124);
     int logit_sizes[1] = {3};
     LinearLSTM* net = make_linearlstm(weights, 1, 3, logit_sizes, 1);
 
@@ -18,22 +18,17 @@ void demo() {
         .render = 0,
         .continuous = 0,
         .reward_yellow = 0.25,
-        .reward_green = 0.0,
-        .gamma = 0.9,
+        .reward_green = -0.001,
         .track_width = 75,
-        .num_radial_sectors = 16,
+        .num_radial_sectors = 180,
         .num_points = 16,
         .bezier_resolution = 4,
         .w_ang = 0.777,
         .corner_thresh = 0.5,
-        .ftmp1 = 0.1,
-        .ftmp2 = 0.1,
-        .ftmp3 = 0.1,
-        .ftmp4 = 0.1,
         .render_many = 0,
-        .rng = 3,
-        .i = 1,
-        .method = 1,
+        .rng = 3, // rng = 3 for puffer track
+        .i = 1, // i = 1 for puffer track
+        .method = 1, // method = 1 for puffer track
     };
 
     allocate(&env);
@@ -51,9 +46,9 @@ void demo() {
                 float clamped_wheel = fmaxf(-1.0f, fminf(1.0f, move));
                 env.actions[0] = clamped_wheel;
             } else {
-                env.actions[0] = 1.0;
-                if (IsKeyDown(KEY_LEFT)  || IsKeyDown(KEY_A)) env.actions[0] = 0.0;
-                if (IsKeyDown(KEY_RIGHT) || IsKeyDown(KEY_D)) env.actions[0] = 2.0;
+                env.actions[0] = 1.0;                                               // Straight
+                if (IsKeyDown(KEY_LEFT)  || IsKeyDown(KEY_A)) env.actions[0] = 0.0; // Left
+                if (IsKeyDown(KEY_RIGHT) || IsKeyDown(KEY_D)) env.actions[0] = 2.0; // Right
             }
         } else if (frame % 4 == 0) {
             // Apply frameskip outside the env for smoother rendering
