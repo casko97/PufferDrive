@@ -129,6 +129,9 @@ typedef struct WhiskerRacer {
     float inv_maxv;
     float inv_pi2;
     float inv_bezier_res;
+
+    Texture2D puffer;
+
 } WhiskerRacer;
 
 void c_close(WhiskerRacer* env) {
@@ -174,6 +177,7 @@ Client* make_client(WhiskerRacer* env) {
     InitWindow(env->width, env->height, "PufferLib Whisker Racer");
     if (env->render_many) SetTargetFPS(10 / env->frameskip);
     else SetTargetFPS(60 / env->frameskip);
+    env->puffer = LoadTexture("resources/shared/puffers_128.png");
 
     return client;
 }
@@ -759,15 +763,18 @@ void c_render(WhiskerRacer* env) {
     }
     free(center_points);
 
-    float car_width = 24.0f;
-    float car_height = 12.0f;
+    float puffer_width = 48.0f;
+    float puffer_height = 48.0f;
     float car_x = env->px;
     float car_y = height - env->py;
-    Vector2 origin = {car_width / 2.0f, car_height / 2.0f};
-    DrawRectanglePro(
-        (Rectangle){car_x, car_y, car_width, car_height},
+    Vector2 origin = {puffer_width / 2.0f, puffer_height / 2.0f};
+
+    DrawTexturePro(
+        env->puffer,
+        (Rectangle){0, 0, 128, 128},
+        (Rectangle){car_x, car_y, puffer_width, puffer_height},
         origin,
-        -env->ang * 180.0f / PI,
+        (-env->ang * 180.0f / PI) - 10,
         (Color){0, 255, 255, 255}
     );
 
