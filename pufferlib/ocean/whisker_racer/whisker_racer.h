@@ -670,40 +670,35 @@ void GenerateCurbs(WhiskerRacer* env) {
         Vector2 curr = env->track.controls[i].position;
         Vector2 next = env->track.controls[(i + 1) % env->num_points].position;
 
-        Vector2 to_prev = {prev.x - curr.x, prev.y - curr.y};
-        Vector2 to_next = {next.x - curr.x, next.y - curr.y};
+        float vx1 = prev.x - curr.x;
+        float vy1 = prev.y - curr.y;
+        float vx2 = next.x - curr.x;
+        float vy2 = next.y - curr.y;
 
-        float cross = to_prev.x * to_prev.y - to_prev.y * to_next.x;
+        Vector2 to_prev = {vx1, vy1};
+        Vector2 to_next = {vx2, vy2};
 
-        // Find the actual apex by looking for maximum curvature in this segment
-        int start_idx = i * env->bezier_resolution;
-        int end_idx = ((i + 1) % env->num_points) * env->bezier_resolution;
-        int apex_idx = start_idx;
-        float max_curvature = 0.0f;
+        float cross = to_prev.x * to_next.y - to_prev.y * to_next.x;
+        float dot = vx1 * vx2 + vy1 * vy2;
 
-        for (int k = start_idx + 1; k < end_idx - 1; k++) {
-            Vector2 p1 = env->track.centerline[(k - 1 + env->track.total_points) % env->track.total_points];
-            Vector2 p2 = env->track.centerline[k];
-            Vector2 p3 = env->track.centerline[(k + 1) % env->track.total_points];
+        float mag1 = sqrtf(vx1 * vx1 + vy1 * vy1);
+        float mag2 = sqrtf(vx2 * vx2 + vy2 * vy2);
 
-            Vector2 v1 = {p2.x - p1.x, p2.y - p1.y};
-            Vector2 v2 = {p3.x - p2.x, p3.y - p2.y};
-            float curvature = fabsf(v1.x * v2.y - v1.y * v2.x);
+        if (mag1 < 1e-3f || mag2 < 1e-3f) continue;
 
-            if (curvature > max_curvature) {
-                max_curvature = curvature;
-                apex_idx = k;
+        float angle_cos = dot / (mag1 * mag2);
+
+        if (angle_cos > -0.8f) {
+            int apex_idx = i * env->bezier_resolution;
+
+            Vector2* edge_points = (cross > 0) ? env->track.inner_edge : env->track.outer_edge;
+
+            for (int j = 0; j < 4; j++) {
+                int idx = (apex_idx - 1 + j + env->track.total_points) % env->track.total_points; // -2? todo
+                env->track.curbs[env->track.curb_count][j] = edge_points[idx];
             }
+            env->track.curb_count++;
         }
-
-        Vector2* edge_points = (cross > 0) ? env->track.inner_edge : env->track.outer_edge;
-
-        for (int j = 0; j < 4; j++) {
-            int idx = (apex_idx - 2 + j + env->track.total_points) % env->track.total_points;
-            env->track.curbs[env->track.curb_count][j] = edge_points[idx];
-        }
-
-        env->track.curb_count++;
     }
 }
 
@@ -753,6 +748,7 @@ void c_render(WhiskerRacer* env) {
     ClearBackground(DARKGREEN);
     DrawSplineBasis(center_points, env->track.total_points + 3, env->track_width, BLACK);
     //DrawSplineBasis(center_points, env->track.total_points + 3, 2, WHITE);
+
     for (int i = 0; i < env->track.curb_count; i++) {
         Vector2 curb_points[4];
         for (int j = 0; j < 4; j++) {
@@ -761,6 +757,7 @@ void c_render(WhiskerRacer* env) {
         }
         DrawSplineBasis(curb_points, 4, 5.0f, RED); // 5 pixel wide red curbs
     }
+
     free(center_points);
 
     float puffer_width = 48.0f;
