@@ -13,23 +13,6 @@
 #include "raylib.h"
 #include "dronelib.h"
 
-// Visualisation properties
-#define WIDTH 1080
-#define HEIGHT 720
-#define TRAIL_LENGTH 50
-#define HORIZON 1024
-
-// Simulation properties
-#define GRID_SIZE 10.0f
-#define MARGIN (GRID_SIZE - 1)
-#define V_TARGET 0.05f
-#define RING_RAD 2.0f
-#define RING_MARGIN 4.0f
-#define DT 0.02f
-
-// Corner to corner distance
-#define MAX_DIST sqrtf(3*(2*GRID_SIZE)*(2*GRID_SIZE))
-
 #define TASK_IDLE 0
 #define TASK_HOVER 1
 #define TASK_ORBIT 2
@@ -37,9 +20,13 @@
 #define TASK_CUBE 4
 #define TASK_CONGO 5
 #define TASK_FLAG 6
-#define TASK_N 7
+#define TASK_RACE 7
+#define TASK_N 8
 
-char* TASK_NAMES[TASK_N] = {"Idle", "Hover", "Orbit", "Follow", "Cube", "Congo", "FLAG"};
+char* TASK_NAMES[TASK_N] = {
+    "Idle", "Hover", "Orbit", "Follow",
+    "Cube", "Congo", "FLAG", "Race"
+};
 
 #define R (Color){255, 0, 0, 255}
 #define W (Color){255, 255, 255, 255}
@@ -74,8 +61,7 @@ struct Client {
     Trail* trails;
 };
 
-typedef struct DroneSwarm DroneSwarm;
-struct DroneSwarm {
+typedef struct {
     float *observations;
     float *actions;
     float *rewards;
@@ -89,11 +75,15 @@ struct DroneSwarm {
     int num_agents;
     Drone* agents;
 
+    int max_rings;
+    Ring* ring_buffer;
+
     Client *client;
-};
+} DroneSwarm;
 
 void init(DroneSwarm *env) {
     env->agents = calloc(env->num_agents, sizeof(Drone));
+    env->ring_buffer = calloc(env->max_rings, sizeof(Ring));
     env->log = (Log){0};
     env->tick = 0;
 }
@@ -131,6 +121,10 @@ Drone* nearest_drone(DroneSwarm* env, Drone *agent) {
             nearest = other;
         }
     }
+    if (nearest == NULL) {
+        int x = 0;
+
+    }
     return nearest;
 }
 
@@ -143,13 +137,14 @@ void compute_observations(DroneSwarm *env) {
         Vec3 linear_vel_body = quat_rotate(q_inv, agent->vel);
         Vec3 drone_up_world = quat_rotate(agent->quat, (Vec3){0.0f, 0.0f, 1.0f});
 
-        env->observations[idx++] = linear_vel_body.x / MAX_VEL;
-        env->observations[idx++] = linear_vel_body.y / MAX_VEL;
-        env->observations[idx++] = linear_vel_body.z / MAX_VEL;
+        // TODO: Need abs observations now right?
+        env->observations[idx++] = linear_vel_body.x / agent->max_vel;
+        env->observations[idx++] = linear_vel_body.y / agent->max_vel;
+        env->observations[idx++] = linear_vel_body.z / agent->max_vel;
 
-        env->observations[idx++] = agent->omega.x / MAX_OMEGA;
-        env->observations[idx++] = agent->omega.y / MAX_OMEGA;
-        env->observations[idx++] = agent->omega.z / MAX_OMEGA;
+        env->observations[idx++] = agent->omega.x / agent->max_omega;
+        env->observations[idx++] = agent->omega.y / agent->max_omega;
+        env->observations[idx++] = agent->omega.z / agent->max_omega;
 
         env->observations[idx++] = drone_up_world.x;
         env->observations[idx++] = drone_up_world.y;
@@ -160,26 +155,64 @@ void compute_observations(DroneSwarm *env) {
         env->observations[idx++] = agent->quat.y;
         env->observations[idx++] = agent->quat.z;
 
-        env->observations[idx++] = agent->pos.x / GRID_SIZE;
-        env->observations[idx++] = agent->pos.y / GRID_SIZE;
-        env->observations[idx++] = agent->pos.z / GRID_SIZE;
+        env->observations[idx++] = agent->rpms[0] / agent->max_rpm;
+        env->observations[idx++] = agent->rpms[1] / agent->max_rpm;
+        env->observations[idx++] = agent->rpms[2] / agent->max_rpm;
+        env->observations[idx++] = agent->rpms[3] / agent->max_rpm;
 
-        env->observations[idx++] = agent->spawn_pos.x / GRID_SIZE;
-        env->observations[idx++] = agent->spawn_pos.y / GRID_SIZE;
-        env->observations[idx++] = agent->spawn_pos.z / GRID_SIZE;
+        env->observations[idx++] = agent->pos.x / GRID_X;
+        env->observations[idx++] = agent->pos.y / GRID_Y;
+        env->observations[idx++] = agent->pos.z / GRID_Z;
 
-        env->observations[idx++] = clampf(agent->target_pos.x - agent->pos.x, -1.0f, 1.0f);
-        env->observations[idx++] = clampf(agent->target_pos.y - agent->pos.y, -1.0f, 1.0f);
-        env->observations[idx++] = clampf(agent->target_pos.z - agent->pos.z, -1.0f, 1.0f);
+        env->observations[idx++] = agent->spawn_pos.x / GRID_X;
+        env->observations[idx++] = agent->spawn_pos.y / GRID_Y;
+        env->observations[idx++] = agent->spawn_pos.z / GRID_Z;
+
+        float dx = agent->target_pos.x - agent->pos.x;
+        float dy = agent->target_pos.y - agent->pos.y;
+        float dz = agent->target_pos.z - agent->pos.z;
+        env->observations[idx++] = clampf(dx, -1.0f, 1.0f);
+        env->observations[idx++] = clampf(dy, -1.0f, 1.0f);
+        env->observations[idx++] = clampf(dz, -1.0f, 1.0f);
+        env->observations[idx++] = dx / GRID_X;
+        env->observations[idx++] = dy / GRID_Y;
+        env->observations[idx++] = dz / GRID_Z;
 
         env->observations[idx++] = agent->last_collision_reward;
         env->observations[idx++] = agent->last_target_reward;
         env->observations[idx++] = agent->last_abs_reward;
 
+        // Multiagent obs
         Drone* nearest = nearest_drone(env, agent);
-        env->observations[idx++] = clampf(nearest->pos.x - agent->pos.x, -1.0f, 1.0f);
-        env->observations[idx++] = clampf(nearest->pos.y - agent->pos.y, -1.0f, 1.0f);
-        env->observations[idx++] = clampf(nearest->pos.z - agent->pos.z, -1.0f, 1.0f);
+        if (env->num_agents > 1) {
+            env->observations[idx++] = clampf(nearest->pos.x - agent->pos.x, -1.0f, 1.0f);
+            env->observations[idx++] = clampf(nearest->pos.y - agent->pos.y, -1.0f, 1.0f);
+            env->observations[idx++] = clampf(nearest->pos.z - agent->pos.z, -1.0f, 1.0f);
+        } else {
+            env->observations[idx++] = 0.0f;
+            env->observations[idx++] = 0.0f;
+            env->observations[idx++] = 0.0f;
+        }
+
+        // Ring obs
+        if (env->task == TASK_RACE) {
+            Ring ring = env->ring_buffer[agent->ring_idx];
+            Vec3 to_ring = quat_rotate(q_inv, sub3(ring.pos, agent->pos));
+            Vec3 ring_norm = quat_rotate(q_inv, ring.normal);
+            env->observations[idx++] = to_ring.x / GRID_X;
+            env->observations[idx++] = to_ring.y / GRID_Y;
+            env->observations[idx++] = to_ring.z / GRID_Z;
+            env->observations[idx++] = ring_norm.x;
+            env->observations[idx++] = ring_norm.y;
+            env->observations[idx++] = ring_norm.z;
+        } else {
+            env->observations[idx++] = 0.0f;
+            env->observations[idx++] = 0.0f;
+            env->observations[idx++] = 0.0f;
+            env->observations[idx++] = 0.0f;
+            env->observations[idx++] = 0.0f;
+            env->observations[idx++] = 0.0f;
+        }
     }
 }
 
@@ -187,20 +220,20 @@ void move_target(DroneSwarm* env, Drone *agent) {
     agent->target_pos.x += agent->target_vel.x;
     agent->target_pos.y += agent->target_vel.y;
     agent->target_pos.z += agent->target_vel.z;
-    if (agent->target_pos.x < -GRID_SIZE || agent->target_pos.x > GRID_SIZE) {
+    if (agent->target_pos.x < -GRID_X || agent->target_pos.x > GRID_X) {
         agent->target_vel.x = -agent->target_vel.x;
     }
-    if (agent->target_pos.y < -GRID_SIZE || agent->target_pos.y > GRID_SIZE) {
+    if (agent->target_pos.y < -GRID_Y || agent->target_pos.y > GRID_Y) {
         agent->target_vel.y = -agent->target_vel.y;
     }
-    if (agent->target_pos.z < -GRID_SIZE || agent->target_pos.z > GRID_SIZE) {
+    if (agent->target_pos.z < -GRID_Z || agent->target_pos.z > GRID_Z) {
         agent->target_vel.z = -agent->target_vel.z;
     }
 }
 
 void set_target_idle(DroneSwarm* env, int idx) {
     Drone *agent = &env->agents[idx];
-    agent->target_pos = (Vec3){rndf(-MARGIN, MARGIN), rndf(-MARGIN, MARGIN), rndf(-MARGIN, MARGIN)};
+    agent->target_pos = (Vec3){rndf(-MARGIN_X, MARGIN_X), rndf(-MARGIN_Y, MARGIN_Y), rndf(-MARGIN_Z, MARGIN_Z)};
     agent->target_vel = (Vec3){rndf(-V_TARGET, V_TARGET), rndf(-V_TARGET, V_TARGET), rndf(-V_TARGET, V_TARGET)};
 }
 
@@ -257,7 +290,8 @@ void set_target_congo(DroneSwarm* env, int idx) {
     lead->target_pos = follow->target_pos;
     lead->target_vel = follow->target_vel;
 
-    for (int i = 0; i < 20; i++) {
+    // TODO: Slow hack
+    for (int i = 0; i < 40; i++) {
         move_target(env, lead);
     }
 }
@@ -269,6 +303,12 @@ void set_target_flag(DroneSwarm* env, int idx) {
     x = 2.0f*x - 7;
     y = 5 - 1.5f*y;
     agent->target_pos = (Vec3){0.0f, x, y};
+    agent->target_vel = (Vec3){0.0f, 0.0f, 0.0f};
+}
+
+void set_target_race(DroneSwarm* env, int idx) {
+    Drone* agent = &env->agents[idx];
+    agent->target_pos = env->ring_buffer[agent->ring_idx].pos;
     agent->target_vel = (Vec3){0.0f, 0.0f, 0.0f};
 }
 
@@ -287,10 +327,12 @@ void set_target(DroneSwarm* env, int idx) {
         set_target_congo(env, idx);
     } else if (env->task == TASK_FLAG) {
         set_target_flag(env, idx);
+    } else if (env->task == TASK_RACE) {
+        set_target_race(env, idx);
     }
 }
 
-float compute_reward(DroneSwarm* env, Drone *agent) {
+float compute_reward(DroneSwarm* env, Drone *agent, bool collision) {
     // Distance reward
     float dx = (agent->pos.x - agent->target_pos.x);
     float dy = (agent->pos.y - agent->target_pos.y);
@@ -301,18 +343,20 @@ float compute_reward(DroneSwarm* env, Drone *agent) {
     //float dist_reward = 1.0f - dist;
 
     // Density penalty
-    Drone *nearest = nearest_drone(env, agent);
-    dx = agent->pos.x - nearest->pos.x;
-    dy = agent->pos.y - nearest->pos.y;
-    dz = agent->pos.z - nearest->pos.z;
-    float min_dist = sqrtf(dx*dx + dy*dy + dz*dz);
-    float density_reward = 1.0f;
-    if (min_dist < 1.0f) {
-        density_reward = -1.0f;
-        agent->collisions += 1.0f;
+    float density_reward = 0.0f;
+    if (collision && env->num_agents > 1) {
+        Drone *nearest = nearest_drone(env, agent);
+        dx = agent->pos.x - nearest->pos.x;
+        dy = agent->pos.y - nearest->pos.y;
+        dz = agent->pos.z - nearest->pos.z;
+        float min_dist = sqrtf(dx*dx + dy*dy + dz*dz);
+        if (min_dist < 1.0f) {
+            density_reward = -1.0f;
+            agent->collisions += 1.0f;
+        }
     }
 
-    float abs_reward = dist_reward * density_reward;
+    float abs_reward = dist_reward + density_reward;
 
     // Prevent negative dist and density from making a positive reward
     if (dist_reward < 0.0f && density_reward < 0.0f) {
@@ -325,7 +369,6 @@ float compute_reward(DroneSwarm* env, Drone *agent) {
     agent->last_target_reward = dist_reward;
     agent->last_abs_reward = abs_reward;
 
-    agent->episode_return += delta_reward;
     agent->episode_length++;
     agent->score += abs_reward;
 
@@ -342,20 +385,63 @@ void reset_agent(DroneSwarm* env, Drone *agent, int idx) {
     agent->vel = (Vec3){0.0f, 0.0f, 0.0f};
     agent->omega = (Vec3){0.0f, 0.0f, 0.0f};
     agent->quat = (Quat){1.0f, 0.0f, 0.0f, 0.0f};
-    compute_reward(env, agent);
+    agent->ring_idx = 0;
+
+    //float size = 0.2f;
+    //init_drone(agent, size, 0.0f);
+    float size = rndf(0.1f, 0.4);
+    init_drone(agent, size, 0.1f);
+    compute_reward(env, agent, env->task != TASK_RACE);
 }
 
 void c_reset(DroneSwarm *env) {
     env->tick = 0;
-    //env->task = TASK_HOVER;
-    env->task = rand() % TASK_N;
+    //env->task = rand() % (TASK_N - 1);
     //env->task = TASK_FLAG;
+    env->task = TASK_CONGO;
+    //env->task = rand() % (TASK_N - 1);
+    /*
+    if (rand() % 4) {
+        env->task = TASK_RACE;
+    } else {
+        env->task = rand() % (TASK_N - 1);
+    }
+    */
+    //env->task = TASK_RACE;
+    //env->task = TASK_HOVER;
+    //env->task = TASK_FLAG;
+
     for (int i = 0; i < env->num_agents; i++) {
         Drone *agent = &env->agents[i];
         reset_agent(env, agent, i);
         set_target(env, i);
     }
 
+    for (int i = 0; i < env->max_rings; i++) {
+        Ring *ring = &env->ring_buffer[i];
+        *ring = (Ring){0};
+    }
+    if (env->task == TASK_RACE) {
+        float ring_radius = 2.0f;
+        if (env->max_rings + 1 > 0) {
+            env->ring_buffer[0] = rndring(ring_radius);
+        }
+
+        for (int i = 1; i < env->max_rings; i++) {
+            do {
+                env->ring_buffer[i] = rndring(ring_radius);
+            } while (norm3(sub3(env->ring_buffer[i].pos, env->ring_buffer[i - 1].pos)) < 2.0f*ring_radius);
+        }
+
+        // start drone at least MARGIN away from the first ring
+        for (int i = 0; i < env->num_agents; i++) {
+            Drone *drone = &env->agents[i];
+            do {
+                drone->pos = (Vec3){rndf(-9, 9), rndf(-9, 9), rndf(-9, 9)};
+            } while (norm3(sub3(drone->pos, env->ring_buffer[0].pos)) < 2.0f*ring_radius);
+        }
+    }
+ 
     compute_observations(env);
 }
 
@@ -370,15 +456,31 @@ void c_step(DroneSwarm *env) {
         move_drone(agent, atn);
 
         // check out of bounds
-        bool out_of_bounds = agent->pos.x < -GRID_SIZE || agent->pos.x > GRID_SIZE ||
-                             agent->pos.y < -GRID_SIZE || agent->pos.y > GRID_SIZE ||
-                             agent->pos.z < -GRID_SIZE || agent->pos.z > GRID_SIZE;
+        bool out_of_bounds = agent->pos.x < -GRID_X || agent->pos.x > GRID_X ||
+                             agent->pos.y < -GRID_Y || agent->pos.y > GRID_Y ||
+                             agent->pos.z < -GRID_Z || agent->pos.z > GRID_Z;
 
         move_target(env, agent);
 
-        // Delta reward
-        float reward = compute_reward(env, agent);
+        float reward = 0.0f;
+        if (env->task == TASK_RACE) {
+            Ring *ring = &env->ring_buffer[agent->ring_idx];
+            reward = compute_reward(env, agent, true);
+            float passed_ring = check_ring(agent, ring);
+            if (passed_ring > 0) {
+                agent->ring_idx = (agent->ring_idx + 1) % env->max_rings;
+                env->log.rings_passed += 1.0f;
+                set_target(env, i);
+                compute_reward(env, agent, true);
+            }
+            reward += passed_ring;
+        } else {
+            // Delta reward
+            reward = compute_reward(env, agent, true);
+        }
+
         env->rewards[i] += reward;
+        agent->episode_return += reward;
 
         if (out_of_bounds) {
             env->rewards[i] -= 1;
@@ -508,6 +610,25 @@ const Color PUFF_CYAN = (Color){0, 187, 187, 255};
 const Color PUFF_WHITE = (Color){241, 241, 241, 241};
 const Color PUFF_BACKGROUND = (Color){6, 24, 24, 255};
 
+void DrawRing3D(Ring ring, float thickness, Color entryColor, Color exitColor) {
+    float half_thick = thickness / 2.0f;
+
+    Vector3 center_pos = {ring.pos.x, ring.pos.y, ring.pos.z};
+
+    Vector3 entry_start_pos = {center_pos.x - half_thick * ring.normal.x,
+                               center_pos.y - half_thick * ring.normal.y,
+                               center_pos.z - half_thick * ring.normal.z};
+
+    DrawCylinderWiresEx(entry_start_pos, center_pos, ring.radius, ring.radius, 32, entryColor);
+
+    Vector3 exit_end_pos = {center_pos.x + half_thick * ring.normal.x,
+                            center_pos.y + half_thick * ring.normal.y,
+                            center_pos.z + half_thick * ring.normal.z};
+
+    DrawCylinderWiresEx(center_pos, exit_end_pos, ring.radius, ring.radius, 32, exitColor);
+}
+
+
 void c_render(DroneSwarm *env) {
     if (env->client == NULL) {
         env->client = make_client(env);
@@ -558,8 +679,8 @@ void c_render(DroneSwarm *env) {
     BeginMode3D(client->camera);
 
     // draws bounding cube
-    DrawCubeWires((Vector3){0.0f, 0.0f, 0.0f}, GRID_SIZE * 2.0f,
-        GRID_SIZE * 2.0f, GRID_SIZE * 2.0f, WHITE);
+    DrawCubeWires((Vector3){0.0f, 0.0f, 0.0f}, GRID_X * 2.0f,
+        GRID_Y * 2.0f, GRID_Z * 2.0f, WHITE);
 
     for (int i = 0; i < env->num_agents; i++) {
         Drone *agent = &env->agents[i];
@@ -571,12 +692,12 @@ void c_render(DroneSwarm *env) {
         // draws rotors according to thrust
         float T[4];
         for (int j = 0; j < 4; j++) {
-            float rpm = (env->actions[4*i + j] + 1.0f) * 0.5f * MAX_RPM;
-            T[j] = K_THRUST * rpm * rpm;
+            float rpm = (env->actions[4*i + j] + 1.0f) * 0.5f * agent->max_rpm;
+            T[j] = agent->k_thrust * rpm * rpm;
         }
 
         const float rotor_radius = 0.15f;
-        const float visual_arm_len = ARM_LEN * 4.0f;
+        const float visual_arm_len = agent->arm_len * 4.0f;
 
         Vec3 rotor_offsets_body[4] = {{+visual_arm_len, 0.0f, 0.0f},
                                       {-visual_arm_len, 0.0f, 0.0f},
@@ -592,8 +713,8 @@ void c_render(DroneSwarm *env) {
             Vector3 rotor_pos = {agent->pos.x + world_off.x, agent->pos.y + world_off.y,
                                  agent->pos.z + world_off.z};
 
-            float rpm = (env->actions[4*i + j] + 1.0f) * 0.5f * MAX_RPM;
-            float intensity = 0.75f + 0.25f * (rpm / MAX_RPM);
+            float rpm = (env->actions[4*i + j] + 1.0f) * 0.5f * agent->max_rpm;
+            float intensity = 0.75f + 0.25f * (rpm / agent->max_rpm);
 
             Color rotor_color = (Color){(unsigned char)(base_colors[j].r * intensity),
                                         (unsigned char)(base_colors[j].g * intensity),
@@ -628,6 +749,15 @@ void c_render(DroneSwarm *env) {
                        trail_color);
         }
 
+    }
+
+    // Rings
+    if (env->task == TASK_RACE) {
+        float ring_thickness = 0.2f;
+        for (int i = 0; i < env->max_rings; i++) {
+            Ring ring = env->ring_buffer[i];
+            DrawRing3D(ring, ring_thickness, GREEN, BLUE);
+        }
     }
 
     if (IsKeyDown(KEY_TAB)) {

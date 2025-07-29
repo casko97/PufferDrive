@@ -195,6 +195,7 @@ typedef struct {
     float collisions;
     int episode_length;
     float score;
+    int ring_idx;
 
     // Physical properties. Modeled as part of the drone
     // to make domain randomization easier.
