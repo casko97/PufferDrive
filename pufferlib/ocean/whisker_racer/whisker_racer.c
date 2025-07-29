@@ -4,7 +4,7 @@
 
 void demo() {
     printf("demo\n");
-    Weights* weights = load_weights("resources/whisker_racer/whisker_racer_weights.bin", 147844);
+    Weights* weights = load_weights("resources/whisker_racer/puffer_whisker_racer_weights.bin", 133124); // 133124 33797
     int logit_sizes[1] = {3};
     LinearLSTM* net = make_linearlstm(weights, 1, 3, logit_sizes, 1);
 
@@ -12,10 +12,6 @@ void demo() {
         .frameskip = 1,
         .width = 1920,
         .height = 1080,
-        //.llw_ang = -PI/4,
-        .flw_ang = -PI/6,
-        .frw_ang = PI/6,
-        //.rrw_ang = PI/4,
         .max_whisker_length = 100,
         .turn_pi_frac = 40,
         .maxv = 5,
@@ -26,7 +22,7 @@ void demo() {
         .gamma = 0.9,
         .track_width = 75,
         .num_radial_sectors = 16,
-        .num_points = 4,
+        .num_points = 16,
         .bezier_resolution = 4,
         .w_ang = 0.777,
         .corner_thresh = 0.5,
@@ -35,17 +31,15 @@ void demo() {
         .ftmp3 = 0.1,
         .ftmp4 = 0.1,
         .render_many = 0,
-        .rng=6,
+        .rng = 3,
         .i = 1,
-        .method = 2,
+        .method = 1,
     };
-    printf("about to allocate\n");
+
     allocate(&env);
 
-    printf("demo about to make_client\n");
     env.client = make_client(&env);
 
-    printf("demo about to c_reset\n");
     c_reset(&env);
     int frame = 0;
     SetTargetFPS(60);
@@ -76,7 +70,6 @@ void demo() {
     free(weights);
     free_allocated(&env);
     close_client(env.client);
-    printf("end demo\n");
 }
 
 int main() {
