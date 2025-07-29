@@ -772,7 +772,7 @@ void c_render(WhiskerRacer* env) {
         (Rectangle){car_x, car_y, puffer_width, puffer_height},
         origin,
         (-env->ang * 180.0f / PI) - 10,
-        (Color){0, 255, 255, 255}
+        (Color){255, 255, 255, 255}
     );
 
     EndDrawing();
