@@ -132,6 +132,9 @@ typedef struct WhiskerRacer {
 
     Texture2D puffer;
 
+    int texture_initialized;
+    int mode7;
+
 } WhiskerRacer;
 
 void c_close(WhiskerRacer* env) {
@@ -709,9 +712,125 @@ void GenerateRandomTrack(WhiskerRacer* env) {
     GenerateCurbs(env);
 }
 
+void TopDownTexture(WhiskerRacer* env, RenderTexture2D* mode7RenderTexture, Vector2* center_points) {
+    if (env->texture_initialized == 0) {
+        *mode7RenderTexture = LoadRenderTexture(env->width, env->height);
+
+        BeginTextureMode(*mode7RenderTexture);
+        ClearBackground(DARKGREEN);
+        SetConfigFlags(FLAG_MSAA_4X_HINT);
+        ClearBackground(DARKGREEN);
+        DrawSplineBasis(center_points, env->track.total_points + 3, env->track_width, BLACK);
+        //DrawSplineBasis(center_points, env->track.total_points + 3, 2, WHITE);
+
+        for (int i = 0; i < env->track.curb_count; i++) {
+            Vector2 curb_points[4];
+            for (int j = 0; j < 4; j++) {
+                curb_points[j] = env->track.curbs[i][j];
+                curb_points[j].y = env->height - curb_points[j].y; // Flip Y coordinate
+            }
+            DrawSplineBasis(curb_points, 4, 5.0f, RED); // 5 pixel wide red curbs
+        }
+
+        float puffer_width = 48.0f;
+        float puffer_height = 48.0f;
+        float car_x = env->px;
+        float car_y = env->height - env->py;
+        Vector2 origin = {puffer_width / 2.0f, puffer_height / 2.0f};
+
+        EndTextureMode();
+
+        env->texture_initialized = 1;
+    }
+}
+
+void Mode7(WhiskerRacer* env, RenderTexture2D mode7RenderTexture) {
+    BeginDrawing();
+    ClearBackground(SKYBLUE);
+
+    Texture2D scene = mode7RenderTexture.texture;
+    float camX = env->px;
+    float camY = env->py;
+    float camAngle = env->ang;
+
+    Image sceneImage = LoadImageFromTexture(scene);
+    Color* pixels = LoadImageColors(sceneImage);
+
+    int horizon = env->height / 2;
+    float cos_ang = cosf(camAngle);
+    float sin_ang = sinf(camAngle);
+
+    for (int screenY = horizon; screenY < env->height; screenY++) {
+        float row = (float)(screenY - horizon);
+
+        // Adjust camera height and perspective (tweak constants if needed)
+        float z = (9.0f * env->height) / row;
+
+        float dx = -sin_ang * z;
+        float dy =  cos_ang * z;
+
+        float sx = camX + cos_ang * z + dx;
+        float sy = camY + sin_ang * z + dy;
+
+        dx = (2.0f * sin_ang * z) / env->width;
+        dy = (-2.0f * cos_ang * z) / env->width;
+
+        for (int screenX = 0; screenX < env->width; screenX++) {
+            int srcX = (int)sx;
+            int srcY = (int)sy;
+
+            if (srcX >= 0 && srcX < env->width &&
+                srcY >= 0 && srcY < env->height) {
+                Color color = pixels[srcY * env->width + srcX];
+                DrawPixel(screenX, screenY, color);
+            }
+
+            sx += dx;
+            sy += dy;
+        }
+    }
+    UnloadImageColors(pixels);
+    UnloadImage(sceneImage);
+
+    EndDrawing();
+}
+
+void Draw(WhiskerRacer* env, Vector2* center_points) {
+    BeginDrawing();
+    SetConfigFlags(FLAG_MSAA_4X_HINT);
+    ClearBackground(DARKGREEN);
+    DrawSplineBasis(center_points, env->track.total_points + 3, env->track_width, BLACK);
+    //DrawSplineBasis(center_points, env->track.total_points + 3, 2, WHITE);
+    for (int i = 0; i < env->track.curb_count; i++) {
+        Vector2 curb_points[4];
+        for (int j = 0; j < 4; j++) {
+            curb_points[j] = env->track.curbs[i][j];
+            curb_points[j].y = env->height - curb_points[j].y; // Flip Y coordinate
+        }
+        DrawSplineBasis(curb_points, 4, 5.0f, RED); // 5 pixel wide red curbs
+    }
+
+    float puffer_width = 48.0f;
+    float puffer_height = 48.0f;
+    float puffer_x = env->px;
+    float puffer_y = env->height - env->py;
+    Vector2 origin = {puffer_width / 2.0f, puffer_height / 2.0f};
+
+    DrawTexturePro(
+        env->puffer,
+        (Rectangle){0, 0, 128, 128},
+        (Rectangle){puffer_x, puffer_y, puffer_width, puffer_height},
+        origin,
+        (-env->ang * 180.0f / PI) - 10,
+        (Color){255, 255, 255, 255}
+    );
+
+    EndDrawing();
+}
+
 void c_render(WhiskerRacer* env) {
 
-    int height = env->height;
+    static RenderTexture2D mode7RenderTexture;
 
     env->render = 1;
     if (env->client == NULL) {
@@ -735,7 +854,7 @@ void c_render(WhiskerRacer* env) {
     //center_points[0] = (Vector2){SCREEN_WIDTH*0.5f, SCREEN_HEIGHT*0.5f};
     for (int i = 0; i < env->track.total_points; i++) {
         center_points[i] = env->track.centerline[i];
-        center_points[i].y = height - center_points[i].y;
+        center_points[i].y = env->height - center_points[i].y;
     }
 
     // Without enough overlap it draws a C rather than an O
@@ -743,39 +862,15 @@ void c_render(WhiskerRacer* env) {
     center_points[env->track.total_points + 1] = center_points[1];
     center_points[env->track.total_points + 2] = center_points[2];
 
-    BeginDrawing();
-    SetConfigFlags(FLAG_MSAA_4X_HINT);
-    ClearBackground(DARKGREEN);
-    DrawSplineBasis(center_points, env->track.total_points + 3, env->track_width, BLACK);
-    //DrawSplineBasis(center_points, env->track.total_points + 3, 2, WHITE);
-
-    for (int i = 0; i < env->track.curb_count; i++) {
-        Vector2 curb_points[4];
-        for (int j = 0; j < 4; j++) {
-            curb_points[j] = env->track.curbs[i][j];
-            curb_points[j].y = height - curb_points[j].y; // Flip Y coordinate
-        }
-        DrawSplineBasis(curb_points, 4, 5.0f, RED); // 5 pixel wide red curbs
+    if (env->mode7 == 1) {
+        TopDownTexture(env, &mode7RenderTexture, center_points);
+        Mode7(env, mode7RenderTexture);
+    }
+    else {
+        Draw(env, center_points);
     }
 
     free(center_points);
-
-    float puffer_width = 48.0f;
-    float puffer_height = 48.0f;
-    float car_x = env->px;
-    float car_y = height - env->py;
-    Vector2 origin = {puffer_width / 2.0f, puffer_height / 2.0f};
-
-    DrawTexturePro(
-        env->puffer,
-        (Rectangle){0, 0, 128, 128},
-        (Rectangle){car_x, car_y, puffer_width, puffer_height},
-        origin,
-        (-env->ang * 180.0f / PI) - 10,
-        (Color){255, 255, 255, 255}
-    );
-
-    EndDrawing();
 }
 
 void init(WhiskerRacer* env) {
@@ -791,6 +886,8 @@ void init(WhiskerRacer* env) {
 
     env->flw_ang = -env->w_ang;
     env->frw_ang = env->w_ang;
+
+    env->texture_initialized = 0;
 
     srand(env->rng + env->i);
 

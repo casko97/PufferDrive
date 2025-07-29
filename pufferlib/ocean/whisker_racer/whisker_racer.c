@@ -25,6 +25,7 @@ void demo() {
         .bezier_resolution = 4,
         .w_ang = 0.777,
         .corner_thresh = 0.5,
+        .mode7 = 0,
         .render_many = 0,
         .rng = 3, // rng = 3 for puffer track
         .i = 1, // i = 1 for puffer track
