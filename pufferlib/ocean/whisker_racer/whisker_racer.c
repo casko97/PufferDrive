@@ -51,9 +51,9 @@ void demo() {
                 float clamped_wheel = fmaxf(-1.0f, fminf(1.0f, move));
                 env.actions[0] = clamped_wheel;
             } else {
-                env.actions[0] = 0.0;
-                if (IsKeyDown(KEY_LEFT)  || IsKeyDown(KEY_A)) env.actions[0] = 1;
-                if (IsKeyDown(KEY_RIGHT) || IsKeyDown(KEY_D)) env.actions[0] = 2;
+                env.actions[0] = 1.0;
+                if (IsKeyDown(KEY_LEFT)  || IsKeyDown(KEY_A)) env.actions[0] = 0.0;
+                if (IsKeyDown(KEY_RIGHT) || IsKeyDown(KEY_D)) env.actions[0] = 2.0;
             }
         } else if (frame % 4 == 0) {
             // Apply frameskip outside the env for smoother rendering
@@ -74,5 +74,4 @@ void demo() {
 
 int main() {
     demo();
-    //test_performance(10); // found in breakout.c
 }
