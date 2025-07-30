@@ -249,8 +249,8 @@ environments = {
         'hydra-core',
         'duckdb',
         'raylib>=5.5.0',  # Python bindings for raylib graphics library
-        'metta-common @ git+https://github.com/metta-ai/metta.git@richard-alt-versions#subdirectory=common',
-        'metta-mettagrid @ git+https://github.com/metta-ai/metta.git@richard-alt-versions#subdirectory=mettagrid',
+        'metta-common @ git+https://github.com/metta-ai/metta.git@main#subdirectory=common',
+        'metta-mettagrid @ git+https://github.com/metta-ai/metta.git@main#subdirectory=mettagrid',
     ],
     'microrts': [
         f'gym=={GYM_VERSION}',
