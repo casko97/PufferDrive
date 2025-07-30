@@ -50,6 +50,14 @@ void demo() {
                 env.actions[0] = 1.0;                                               // Straight
                 if (IsKeyDown(KEY_LEFT)  || IsKeyDown(KEY_A)) env.actions[0] = 0.0; // Left
                 if (IsKeyDown(KEY_RIGHT) || IsKeyDown(KEY_D)) env.actions[0] = 2.0; // Right
+                if (IsKeyDown(KEY_M)) {
+                    if (env.mode7 == 1) {
+                        env.mode7 = 0;
+                    }
+                    else {
+                        env.mode7 = 1;
+                    }
+                }
             }
         } else if (frame % 4 == 0) {
             // Apply frameskip outside the env for smoother rendering

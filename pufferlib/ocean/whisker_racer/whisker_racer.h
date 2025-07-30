@@ -768,7 +768,8 @@ void Mode7(WhiskerRacer* env, RenderTexture2D mode7RenderTexture) {
     int width = env->width;
     float inv_width = env->inv_width;
 
-    int horizon = env->height / 2;
+    int horizon = height / 2;
+
     float cos_ang = cosf(camAngle);
     float sin_ang = sinf(camAngle);
 
@@ -777,10 +778,9 @@ void Mode7(WhiskerRacer* env, RenderTexture2D mode7RenderTexture) {
 
     float height9 = 9.0f * height;
 
-    for (int screenY = horizon; screenY < height; screenY++) {
+    for (int screenY = horizon; screenY < height; screenY += 3) {
         float row = (float)(screenY - horizon);
 
-        // Adjust camera height and perspective (tweak constants if needed)
         if (row < 0.0001) row = 0.0001;
         float z = height9 / row;
 
@@ -790,17 +790,17 @@ void Mode7(WhiskerRacer* env, RenderTexture2D mode7RenderTexture) {
         float sx = camX + dy + dx;
         float sy = camY - dx + dy;
 
-        dx = (sin_ang2 * z) * inv_width;
-        dy = (cos_ang2 * z) * inv_width;
+        dx = (sin_ang2 * z) * inv_width * 3.0f;
+        dy = (cos_ang2 * z) * inv_width * 3.0f;
 
-        for (int screenX = 0; screenX < width; screenX++) {
+        for (int screenX = 0; screenX < width; screenX += 3) {
             int srcX = (int)sx;
             int srcY = (int)sy;
 
             if (srcX >= 0 && srcX < width &&
                 srcY >= 0 && srcY < height) {
                 Color color = pixels[srcY * width + srcX];
-                DrawPixel(screenX, screenY, color);
+                DrawRectangle(screenX, screenY, 3, 3, color);
             }
 
             sx += dx;
