@@ -781,6 +781,7 @@ void Mode7(WhiskerRacer* env, RenderTexture2D mode7RenderTexture) {
         float row = (float)(screenY - horizon);
 
         // Adjust camera height and perspective (tweak constants if needed)
+        if (row < 0.0001) row = 0.0001;
         float z = height9 / row;
 
         float dx = -sin_ang * z;
