@@ -1,4 +1,4 @@
-# puffer [train | eval | sweep] [env_name] [optional args] -- See https://puffer.ai for full details
+## puffer [train | eval | sweep] [env_name] [optional args] -- See https://puffer.ai for full detail0
 # This is the same as python -m pufferlib.pufferl [train | eval | sweep] [env_name] [optional args]
 # Distributed example: torchrun --standalone --nnodes=1 --nproc-per-node=6 -m pufferlib.pufferl train puffer_nmmo3
 
@@ -913,7 +913,7 @@ def train(env_name, args=None, vecenv=None, policy=None, logger=None):
             torch.compiler.cudagraph_mark_step_begin()
         pufferl.evaluate()
         if train_config['device'] == 'cuda':
-            torch.compiler.cudagraph_mark_step_end()
+            torch.compiler.cudagraph_mark_step_begin()
         logs = pufferl.train()
 
         if logs is not None:
