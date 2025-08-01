@@ -138,6 +138,7 @@ class PuffeRL:
         if config['compile']:
             self.policy = torch.compile(policy, mode=config['compile_mode'])
             self.policy.forward_eval = torch.compile(policy, mode=config['compile_mode'])
+            pufferlib.pytorch.sample_logits = torch.compile(pufferlib.pytorch.sample_logits, mode=config['compile_mode'])
 
         # Optimizer
         if config['optimizer'] == 'adam':
