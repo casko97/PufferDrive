@@ -68,7 +68,7 @@ DriveNet* init_drivenet(Weights* weights, int num_agents) {
     net->gelu = make_gelu(num_agents, 3*input_size);
     net->shared_embedding = make_linear(weights, num_agents, input_size*3, hidden_size);
     net->relu = make_relu(num_agents, hidden_size);
-    net->actor = make_linear(weights, num_agents, hidden_size, 20); 
+    net->actor = make_linear(weights, num_agents, hidden_size, 20);
     net->value_fn = make_linear(weights, num_agents, hidden_size, 1);
     net->lstm = make_lstm(weights, num_agents, hidden_size, 256);
     memset(net->lstm->state_h, 0, num_agents*256*sizeof(float));
@@ -88,7 +88,7 @@ void free_drivenet(DriveNet* net) {
     free(net->road_linear_output_two);
     free(net->ego_encoder);
     free(net->road_encoder);
-    free(net->partner_encoder); 
+    free(net->partner_encoder);
     free(net->ego_layernorm);
     free(net->road_layernorm);
     free(net->partner_layernorm);
@@ -114,12 +114,12 @@ void forward(DriveNet* net, float* observations, int* actions) {
     memset(net->obs_self, 0, net->num_agents * 7 * sizeof(float));
     memset(net->obs_partner, 0, net->num_agents * 63 * 7 * sizeof(float));
     memset(net->obs_road, 0, net->num_agents * 200 * 13 * sizeof(float));
-    
+
     // Reshape observations into 2D boards and additional features
     float (*obs_self)[7] = (float (*)[7])net->obs_self;
     float (*obs_partner)[63][7] = (float (*)[63][7])net->obs_partner;
     float (*obs_road)[200][13] = (float (*)[200][13])net->obs_road;
-    
+
     for (int b = 0; b < net->num_agents; b++) {
         int b_offset = b * (7 + 63*7 + 200*7);  // offset for each batch
         int partner_offset = b_offset + 7;
@@ -179,11 +179,11 @@ void forward(DriveNet* net, float* observations, int* actions) {
             // Apply linear layer to this object
             _linear(obj_features, net->partner_encoder_two->weights, net->partner_encoder_two->bias,
                    &net->partner_linear_output_two[b*63*64 + obj*64], 1, 64, 64);
-            
+
         }
     }
-    
-    // Process road objects: apply linear to each object individually  
+
+    // Process road objects: apply linear to each object individually
     for (int b = 0; b < net->num_agents; b++) {
         for (int obj = 0; obj < 200; obj++) {
             // Get the 13 features for this object
@@ -193,7 +193,7 @@ void forward(DriveNet* net, float* observations, int* actions) {
                    &net->road_linear_output[b*200*64 + obj*64], 1, 13, 64);
         }
     }
-    
+
     // Apply layer norm and second linear to each road object
     for (int b = 0; b < net->num_agents; b++) {
         for (int obj = 0; obj < 200; obj++) {
@@ -209,7 +209,7 @@ void forward(DriveNet* net, float* observations, int* actions) {
                     &net->road_linear_output_two[b*200*64 + obj*64], 1, 64, 64);
         }
     }
-    
+
     max_dim1(net->partner_max, net->partner_linear_output_two);
     max_dim1(net->road_max, net->road_linear_output_two);
     cat_dim1(net->cat1, net->ego_encoder_two->output, net->road_max->output);
@@ -276,7 +276,7 @@ void demo() {
                 if(actions[env.human_agent_idx][1] > 12) {
                     actions[env.human_agent_idx][1] = 12;
                 }
-            }   
+            }
             if(IsKeyPressed(KEY_TAB)){
                 env.human_agent_idx = (env.human_agent_idx + 1) % env.active_agent_count;
             }
@@ -310,7 +310,7 @@ void performance_test() {
     long start = time(NULL);
     int i = 0;
     int (*actions)[2] = (int(*)[2])env.actions;
-    
+
     while (time(NULL) - start < test_time) {
         // Set random actions for all agents
         for(int j = 0; j < env.active_agent_count; j++) {
@@ -319,7 +319,7 @@ void performance_test() {
             actions[j][0] = accel;  // -1, 0, or 1
             actions[j][1] = steer;  // Random steering
         }
-        
+
         c_step(&env);
         i++;
     }
