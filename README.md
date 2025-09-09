@@ -45,8 +45,23 @@ puffer train puffer_drive
 
 ## Dataset
 
-To train with pufferdrive, we need to convert the `json` files to map binaries. To do this, run 
-```
+### Data preparation
+
+To train with PufferDrive, you need to convert JSON files to map binaries. Run the following command with the path to your data folder:
+
+```bash
 python pufferlib/ocean/drive/drive.py
 ```
-with the path to your data folder. One example has been added for reference. 
+
+### Downloading Waymo Data
+
+You can download the WOMD data from Hugging Face in two versions:
+
+- **Mini Dataset**: [GPUDrive_mini](https://huggingface.co/datasets/EMERGE-lab/GPUDrive_mini) contains 1,000 training files and 300 test/validation files
+- **Full Dataset**: [GPUDrive](https://huggingface.co/datasets/EMERGE-lab/GPUDrive) contains 100,000 unique scenes
+
+**Note**: Replace 'GPUDrive_mini' with 'GPUDrive' in your download commands if you want to use the full dataset.
+
+### Additional Data Sources
+
+For more training data compatible with PufferDrive, see [ScenarioMax](https://github.com/valeoai/ScenarioMax). The GPUDrive data format is fully compatible with PufferDrive.
