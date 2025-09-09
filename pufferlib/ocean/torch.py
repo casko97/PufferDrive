@@ -5,6 +5,9 @@ import torch.nn.functional as F
 import pufferlib
 import pufferlib.models
 
+from pufferlib.models import Default as Policy  # noqa: F401
+from pufferlib.models import Convolutional as Conv  # noqa: F401
+
 
 Recurrent = pufferlib.models.LSTMWrapper
 
