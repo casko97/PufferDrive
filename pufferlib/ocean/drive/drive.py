@@ -301,7 +301,7 @@ def process_all_maps():
     binary_dir.mkdir(parents=True, exist_ok=True)
 
     # Path to the training data
-    data_dir = Path("data/processed_big/training")
+    data_dir = Path("/home/emerge/PufferLib/data")
     
     # Get all JSON files in the training directory
     json_files = sorted(data_dir.glob("*.json"))

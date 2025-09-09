@@ -1,23 +1,52 @@
-![figure](https://pufferai.github.io/source/resource/header.png)
+# PufferDrive
 
-[![PyPI version](https://badge.fury.io/py/pufferlib.svg)](https://badge.fury.io/py/pufferlib)
-![PyPI - Python Version](https://img.shields.io/pypi/pyversions/pufferlib)
-![Github Actions](https://github.com/PufferAI/PufferLib/actions/workflows/install.yml/badge.svg)
-[![](https://dcbadge.vercel.app/api/server/spT4huaGYV?style=plastic)](https://discord.gg/spT4huaGYV)
-[![Twitter](https://img.shields.io/twitter/url/https/twitter.com/cloudposse.svg?style=social&label=Follow%20%40jsuarez5341)](https://twitter.com/jsuarez5341)
 
-PufferLib is the reinforcement learning library I wish existed during my PhD. It started as a compatibility layer to make working with complex environments a breeze. Now, it's a high-performance toolkit for research and industry with optimized parallel simulation, environments that run and train at 1M+ steps/second, and tons of quality of life improvements for practitioners. All our tools are free and open source. We also offer priority service for companies, startups, and labs!
+## Installation
 
-![Trailer](https://github.com/PufferAI/puffer.ai/blob/main/docs/assets/puffer_2.gif?raw=true)
+Clone the repo
+```bash
+https://github.com/Emerge-Lab/PufferDrive.git
+```
 
-All of our documentation is hosted at [puffer.ai](https://puffer.ai "PufferLib Documentation"). @jsuarez5341 on [Discord](https://discord.gg/puffer) for support -- post here before opening issues. We're always looking for new contributors, too!
+Make a venv
+```
+uv venv
+```
 
-## Star to puff up the project!
+Activate the venv
+```
+source .venv/bin/activate
+```
 
-<a href="https://star-history.com/#pufferai/pufferlib&Date">
- <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=pufferai/pufferlib&type=Date&theme=dark" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=pufferai/pufferlib&type=Date" />
-   <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=pufferai/pufferlib&type=Date" />
- </picture>
-</a>
+Inside the venv, install the dependencies
+```
+uv pip install -e .
+```
+
+Compile the C code
+```
+python setup.py build_ext --inplace --force
+```
+
+To test your setup, you can run
+```
+puffer train puffer_drive
+```
+
+Alternative options for working with pufferdrive are found at https://puffer.ai/docs.html
+
+
+## Quick start
+
+Start a training run
+```
+puffer train puffer_drive
+```
+
+## Dataset
+
+To train with pufferdrive, we need to convert the `json` files to map binaries. To do this, run 
+```
+python pufferlib/ocean/drive/drive.py
+```
+with the path to your data folder. One example has been added for reference. 
