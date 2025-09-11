@@ -332,7 +332,7 @@ void eval_gif(){
     };
     allocate(&env);
     // set which vehicle to focus on for obs mode
-    env.human_agent_idx = 1;
+    env.human_agent_idx = 0;
     c_reset(&env);
     if (env.client == NULL) {
         env.client = make_client(&env);
@@ -377,6 +377,7 @@ void eval_gif(){
     free(weights);
 
 }
+
 
 void performance_test() {
     long test_time = 10;
