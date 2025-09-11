@@ -511,8 +511,6 @@ class PuffeRL:
                             path=bin_path,
                         )
 
-                        print(f"Exported model weights from {latest_cpt} to {bin_path}")
-
                     except Exception as e:
                         print(f"Failed to export model weights: {e}")
                         return logs
@@ -528,11 +526,7 @@ class PuffeRL:
                         os.makedirs(os.path.dirname(expected_weights_path), exist_ok=True)
                         shutil.copy2(bin_path, expected_weights_path)
 
-                        # Set up environment for headless rendering
-                        env = os.environ.copy()
-                        env.update({"DISPLAY": ":99", "LIBGL_ALWAYS_INDIRECT": "1", "XVFB_WHD": "1280x720x24"})
-
-                        # Call C program which runs eval_gif()
+                        # Call C code that runs eval_gif() in subprocess
                         result = subprocess.run(
                             ["xvfb-run", "-s", "-screen 0 1280x720x24", "./drive"],
                             cwd=os.getcwd(),
