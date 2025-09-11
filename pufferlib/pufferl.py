@@ -121,6 +121,9 @@ class PuffeRL:
         self.render = config["checkpoint_interval"]
         self.render_interval = config["checkpoint_interval"]
 
+        if self.render:
+            ensure_drive_binary()
+
         # LSTM
         if config["use_rnn"]:
             n = vecenv.agents_per_batch
@@ -541,7 +544,7 @@ class PuffeRL:
                             if os.path.exists(source_gif):
                                 target_gif = os.path.join(gif_output_dir, f"epoch_{self.epoch:06d}.gif")
                                 shutil.move(source_gif, target_gif)
-                                print(f"Generated GIF: {target_gif}")
+                                self.msg(f"Rendered GIF saved to wandb.")
 
                                 # Log to wandb if available
                                 if hasattr(self.logger, "wandb") and self.logger.wandb:
@@ -551,7 +554,6 @@ class PuffeRL:
                                         {"render/gif": wandb.Video(target_gif, fps=30, format="gif")},
                                         step=self.global_step,
                                     )
-
                             else:
                                 print("GIF generation completed but file not found")
                         else:
@@ -1198,6 +1200,30 @@ def export(args=None, env_name=None, vecenv=None, policy=None, path=None):
     weights.tofile(path)
 
     print(f"Saved {len(weights)} weights to {path}")
+
+
+def ensure_drive_binary():
+    """Ensure the drive binary exists, build it once if necessary. This
+    is required for rendering with raylib.
+    """
+    if not os.path.exists("./drive"):
+        print("Drive binary not found, building...")
+        try:
+            result = subprocess.run(
+                ["bash", "scripts/build_ocean.sh", "drive", "local"], capture_output=True, text=True, timeout=300
+            )
+
+            if result.returncode == 0:
+                print("Successfully built drive binary")
+            else:
+                print(f"Build failed: {result.stderr}")
+                raise RuntimeError("Failed to build drive binary for rendering")
+        except subprocess.TimeoutExpired:
+            raise RuntimeError("Build timed out")
+        except Exception as e:
+            raise RuntimeError(f"Build error: {e}")
+    else:
+        print("Drive binary found, ready for rendering")
 
 
 def autotune(args=None, env_name=None, vecenv=None, policy=None):
