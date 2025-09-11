@@ -46,7 +46,7 @@ class Drive(pufferlib.PufferEnv):
         elif action_type == "continuous":
             self.single_action_space = gymnasium.spaces.Box(low=-1, high=1, shape=(2,), dtype=np.float32)
         else:
-            raise ValueError("action_space must be 'discrete' or 'continuous'")
+            raise ValueError(f"action_space must be 'discrete' or 'continuous'. Got: {action_type}")
 
         self._action_type_flag = 0 if action_type == "discrete" else 1
 
