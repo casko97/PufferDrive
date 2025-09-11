@@ -166,6 +166,7 @@ data/
 pufferlib/resources/drive/binaries/
 
 # Compiled binaries
+drive
 *.exe
 *.out
 *.app
