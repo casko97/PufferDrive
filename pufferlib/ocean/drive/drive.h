@@ -1397,16 +1397,18 @@ void draw_agent_obs(Drive* env, int agent_index, int mode, int obs_only, int las
     
     // Draw the diamond faces
     // Top pyramid
-    DrawTriangle3D(top_point, front_point, right_point, PUFF_CYAN);    // Front-right face
-    DrawTriangle3D(top_point, right_point, back_point, PUFF_CYAN);     // Back-right face
-    DrawTriangle3D(top_point, back_point, left_point, PUFF_CYAN);      // Back-left face
-    DrawTriangle3D(top_point, left_point, front_point, PUFF_CYAN);     // Front-left face
-    
-    // Bottom pyramid
-    DrawTriangle3D(bottom_point, right_point, front_point, PUFF_CYAN); // Front-right face
-    DrawTriangle3D(bottom_point, back_point, right_point, PUFF_CYAN);  // Back-right face
-    DrawTriangle3D(bottom_point, left_point, back_point, PUFF_CYAN);   // Back-left face
-    DrawTriangle3D(bottom_point, front_point, left_point, PUFF_CYAN);  // Front-left face
+    if(mode ==0){
+        DrawTriangle3D(top_point, front_point, right_point, PUFF_CYAN);    // Front-right face
+        DrawTriangle3D(top_point, right_point, back_point, PUFF_CYAN);     // Back-right face
+        DrawTriangle3D(top_point, back_point, left_point, PUFF_CYAN);      // Back-left face
+        DrawTriangle3D(top_point, left_point, front_point, PUFF_CYAN);     // Front-left face
+        
+        // Bottom pyramid
+        DrawTriangle3D(bottom_point, right_point, front_point, PUFF_CYAN); // Front-right face
+        DrawTriangle3D(bottom_point, back_point, right_point, PUFF_CYAN);  // Back-right face
+        DrawTriangle3D(bottom_point, left_point, back_point, PUFF_CYAN);   // Back-left face
+        DrawTriangle3D(bottom_point, front_point, left_point, PUFF_CYAN);  // Front-left face
+    }
     if(!IsKeyDown(KEY_LEFT_CONTROL) && obs_only==0){
         return;
     }
