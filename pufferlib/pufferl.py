@@ -544,7 +544,6 @@ class PuffeRL:
                             if os.path.exists(source_gif):
                                 target_gif = os.path.join(gif_output_dir, f"epoch_{self.epoch:06d}.gif")
                                 shutil.move(source_gif, target_gif)
-                                self.msg(f"Rendered GIF saved to wandb.")
 
                                 # Log to wandb if available
                                 if hasattr(self.logger, "wandb") and self.logger.wandb:
