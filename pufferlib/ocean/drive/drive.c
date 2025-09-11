@@ -343,7 +343,7 @@ void eval_gif(){
     InitWindow(1280, 704, "headless");
     float map_width = env.map_corners[2] - env.map_corners[0];
     float map_height = env.map_corners[3] - env.map_corners[1];
-    float scale = 4.0f;
+    float scale = 6.0f;
     float img_width = (int)(map_width * scale);
     float img_height = (int)(map_height * scale);
     RenderTexture2D target = LoadRenderTexture(img_width, img_height);

@@ -550,7 +550,7 @@ class PuffeRL:
                                     import wandb
 
                                     self.logger.wandb.log(
-                                        {"render/gif": wandb.Video(target_gif, fps=30, format="gif")},
+                                        {"render/gif": wandb.Video(target_gif, format="gif")},
                                         step=self.global_step,
                                     )
                             else:
