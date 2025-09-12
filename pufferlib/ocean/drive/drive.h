@@ -166,7 +166,7 @@ float relative_distance_2d(float x1, float y1, float x2, float y2){
 struct Drive {
     Client* client;
     float* observations;
-    void* actions; // int32 for discrete, float32 for continuous
+    float* actions;
     float* rewards;
     unsigned char* terminals;
     Log log;
@@ -933,7 +933,7 @@ void allocate(Drive* env){
     // printf("active agent count: %d\n", env->active_agent_count);
     // printf("num objects: %d\n", env->num_objects);
     env->observations = (float*)calloc(env->active_agent_count*max_obs, sizeof(float));
-    env->actions = calloc(env->active_agent_count*2, sizeof(int));
+    env->actions = (float*)calloc(env->active_agent_count*2, sizeof(float));
     env->rewards = (float*)calloc(env->active_agent_count, sizeof(float));
     env->terminals= (unsigned char*)calloc(env->active_agent_count, sizeof(unsigned char));
     // printf("allocated\n");
@@ -971,12 +971,12 @@ void move_dynamics(Drive* env, int action_idx, int agent_idx){
             acceleration = action_array_f[action_idx][0];
             steering = action_array_f[action_idx][1];
         } else { // discrete
-        int (*action_array)[2] = (int(*)[2])env->actions;
-        int acceleration_index = action_array[action_idx][0];
-        int steering_index = action_array[action_idx][1];
+            int (*action_array)[2] = (int(*)[2])env->actions;
+            int acceleration_index = action_array[action_idx][0];
+            int steering_index = action_array[action_idx][1];
 
-        acceleration = ACCELERATION_VALUES[acceleration_index];
-        steering = STEERING_VALUES[steering_index];
+            acceleration = ACCELERATION_VALUES[acceleration_index];
+            steering = STEERING_VALUES[steering_index];
         }
 
         // Current state
