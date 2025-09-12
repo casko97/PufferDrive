@@ -118,8 +118,8 @@ class PuffeRL:
         self.ep_lengths = torch.zeros(total_agents, device=device, dtype=torch.int32)
         self.ep_indices = torch.arange(total_agents, device=device, dtype=torch.int32)
         self.free_idx = total_agents
-        self.render = config["checkpoint_interval"]
-        self.render_interval = config["checkpoint_interval"]
+        self.render = config["render"]
+        self.render_interval = config["render_interval"]
 
         if self.render:
             ensure_drive_binary()
