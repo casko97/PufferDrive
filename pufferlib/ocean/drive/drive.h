@@ -166,7 +166,7 @@ float relative_distance_2d(float x1, float y1, float x2, float y2){
 struct Drive {
     Client* client;
     float* observations;
-    int* actions;
+    float* actions;
     float* rewards;
     unsigned char* terminals;
     Log log;
@@ -174,6 +174,7 @@ struct Drive {
     int num_agents;
     int active_agent_count;
     int* active_agent_indices;
+    int action_type;
     int human_agent_idx;
     Entity* entities;
     int num_entities;
@@ -932,7 +933,7 @@ void allocate(Drive* env){
     // printf("active agent count: %d\n", env->active_agent_count);
     // printf("num objects: %d\n", env->num_objects);
     env->observations = (float*)calloc(env->active_agent_count*max_obs, sizeof(float));
-    env->actions = (int*)calloc(env->active_agent_count*2, sizeof(int));
+    env->actions = (float*)calloc(env->active_agent_count*2, sizeof(float));
     env->rewards = (float*)calloc(env->active_agent_count, sizeof(float));
     env->terminals= (unsigned char*)calloc(env->active_agent_count, sizeof(unsigned char));
     // printf("allocated\n");
@@ -961,14 +962,22 @@ float normalize_heading(float heading){
 
 void move_dynamics(Drive* env, int action_idx, int agent_idx){
     if(env->dynamics_model == CLASSIC){
-        // clip acceleration & steering
         Entity* agent = &env->entities[agent_idx];
-        // Extract action components directly from the multi-discrete action array
-        int (*action_array)[2] = (int(*)[2])env->actions;
-        int acceleration_index = action_array[action_idx][0];
-        int steering_index = action_array[action_idx][1];
-        float acceleration = ACCELERATION_VALUES[acceleration_index];
-        float steering = STEERING_VALUES[steering_index];
+        float acceleration = 0.0f;
+        float steering = 0.0f;
+
+        if (env->action_type == 1) { // continuous
+            float (*action_array_f)[2] = (float(*)[2])env->actions;
+            acceleration = action_array_f[action_idx][0];
+            steering = action_array_f[action_idx][1];
+        } else { // discrete
+            int (*action_array)[2] = (int(*)[2])env->actions;
+            int acceleration_index = action_array[action_idx][0];
+            int steering_index = action_array[action_idx][1];
+
+            acceleration = ACCELERATION_VALUES[acceleration_index];
+            steering = STEERING_VALUES[steering_index];
+        }
 
         // Current state
         float x = agent->x;
@@ -2013,8 +2022,15 @@ void c_render(Drive* env) {
     DrawText("Controls: W/S - Accelerate/Brake, A/D - Steer, 1-4 - Switch Agent",
              10, client->height - 30, 20, PUFF_WHITE);
     // acceleration & steering
-    DrawText(TextFormat("Acceleration: %d", env->actions[env->human_agent_idx * 2]), 10, 110, 20, PUFF_WHITE);
-    DrawText(TextFormat("Steering: %d", env->actions[env->human_agent_idx * 2 + 1]), 10, 130, 20, PUFF_WHITE);
+    if (env->action_type == 1) { // continuous (float)
+        float (*action_array_f)[2] = (float(*)[2])env->actions;
+        DrawText(TextFormat("Acceleration: %.2f", action_array_f[env->human_agent_idx][0]), 10, 110, 20, PUFF_WHITE);
+        DrawText(TextFormat("Steering: %.2f", action_array_f[env->human_agent_idx][1]), 10, 130, 20, PUFF_WHITE);
+    } else { // discrete (int)
+        int (*action_array)[2] = (int(*)[2])env->actions;
+        DrawText(TextFormat("Acceleration: %d", action_array[env->human_agent_idx][0]), 10, 110, 20, PUFF_WHITE);
+        DrawText(TextFormat("Steering: %d", action_array[env->human_agent_idx][1]), 10, 130, 20, PUFF_WHITE);
+    }
     DrawText(TextFormat("Grid Rows: %d", env->grid_rows), 10, 150, 20, PUFF_WHITE);
     DrawText(TextFormat("Grid Cols: %d", env->grid_cols), 10, 170, 20, PUFF_WHITE);
     EndDrawing();
