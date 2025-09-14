@@ -1403,7 +1403,7 @@ void draw_agent_obs(Drive* env, int agent_index, int mode, int obs_only, int las
         DrawTriangle3D(top_point, right_point, back_point, PUFF_CYAN);     // Back-right face
         DrawTriangle3D(top_point, back_point, left_point, PUFF_CYAN);      // Back-left face
         DrawTriangle3D(top_point, left_point, front_point, PUFF_CYAN);     // Front-left face
-        
+
         // Bottom pyramid
         DrawTriangle3D(bottom_point, right_point, front_point, PUFF_CYAN); // Front-right face
         DrawTriangle3D(bottom_point, back_point, right_point, PUFF_CYAN);  // Back-right face
@@ -1413,11 +1413,11 @@ void draw_agent_obs(Drive* env, int agent_index, int mode, int obs_only, int las
     if(!IsKeyDown(KEY_LEFT_CONTROL) && obs_only==0){
         return;
     }
-     
+
     int max_obs = 7 + 7*(MAX_CARS - 1) + 7*MAX_ROAD_SEGMENT_OBSERVATIONS;
     float (*observations)[max_obs] = (float(*)[max_obs])env->observations;
     float* agent_obs = &observations[agent_index][0];
-    // self 
+    // self
     int active_idx = env->active_agent_indices[agent_index];
     float heading_self_x = env->entities[active_idx].heading_x;
     float heading_self_y = env->entities[active_idx].heading_y;
@@ -1429,7 +1429,7 @@ void draw_agent_obs(Drive* env, int agent_index, int mode, int obs_only, int las
     if(mode == 0 ){
         DrawSphere((Vector3){goal_x, goal_y, 1}, 0.5f, GREEN);
     }
-    
+
     if (mode == 1){
         float goal_x_world = px + (goal_x * heading_self_x - goal_y*heading_self_y);
         float goal_y_world = py + (goal_x * heading_self_y + goal_y*heading_self_x);
@@ -1448,8 +1448,8 @@ void draw_agent_obs(Drive* env, int agent_index, int mode, int obs_only, int las
         float y = agent_obs[obs_idx + 1] * 50;
         if(lasers && mode == 0){
             DrawLine3D(
-                (Vector3){0, 0, 0}, 
-                (Vector3){x, y, 1}, 
+                (Vector3){0, 0, 0},
+                (Vector3){x, y, 1},
                 ORANGE
             );
         }
@@ -1486,12 +1486,12 @@ void draw_agent_obs(Drive* env, int agent_index, int mode, int obs_only, int las
                 x + (-half_len * cos_heading + half_width * sin_heading),
                 y + (-half_len * sin_heading - half_width * cos_heading),
                 1
-            },  
+            },
            (Vector3){
                 x + (-half_len * cos_heading - half_width * sin_heading),
                 y + (-half_len * sin_heading + half_width * cos_heading),
                 1
-            }, 
+            },
         };
 
         if(mode ==0){
@@ -1509,12 +1509,12 @@ void draw_agent_obs(Drive* env, int agent_index, int mode, int obs_only, int las
                 world_corners[j].x = px + (lx * heading_self_x - ly * heading_self_y);
                 world_corners[j].y = py + (lx * heading_self_y + ly * heading_self_x);
                 world_corners[j].z = 1;
-            } 
+            }
             for (int j = 0; j < 4; j++) {
                 DrawLine3D(world_corners[j], world_corners[(j+1)%4], ORANGE);
             }
         }
-     
+
         // draw an arrow above the car pointing in the direction that the partner is going
         float arrow_length = 7.5f;
         float arrow_x = x + arrow_length*cosf(partner_angle);
@@ -1548,7 +1548,7 @@ void draw_agent_obs(Drive* env, int agent_index, int mode, int obs_only, int las
             float arrow_y_end1 = arrow_y - dy*arrow_size + perp_y;
             float arrow_x_end2 = arrow_x - dx*arrow_size - perp_x;
             float arrow_y_end2 = arrow_y - dy*arrow_size - perp_y;
-            
+
             // Draw the two lines forming the arrow head
             if(mode ==0){
                 DrawLine3D(
@@ -1578,10 +1578,10 @@ void draw_agent_obs(Drive* env, int agent_index, int mode, int obs_only, int las
                     (Vector3){arrow_x_end2_world, arrow_y_end2_world, 1},
                     PUFF_WHITE
                 );
- 
+
             }
         }
-        
+
         obs_idx += 7;  // Move to next agent observation (7 values per agent)
     }
     // Then draw map observations
@@ -1612,11 +1612,11 @@ void draw_agent_obs(Drive* env, int agent_index, int mode, int obs_only, int las
         float x_end = x_middle + segment_length*cosf(rel_angle);
         float y_end = y_middle + segment_length*sinf(rel_angle);
 
-        
+
         if(lasers && mode ==0){
-            DrawLine3D((Vector3){0,0,0}, (Vector3){x_middle, y_middle, 1}, lineColor); 
+            DrawLine3D((Vector3){0,0,0}, (Vector3){x_middle, y_middle, 1}, lineColor);
         }
-        
+
         if(mode ==1){
             float x_middle_world = px + (x_middle*heading_self_x - y_middle*heading_self_y);
             float y_middle_world = py + (x_middle*heading_self_y + y_middle*heading_self_x);
@@ -1758,16 +1758,16 @@ void draw_scene(Drive* env, Client* client, int mode, int obs_only, int lasers){
                 env->entities[i].width,
                 env->entities[i].height
             };
-            
+
             // Save current transform
             if(mode==1){
                 float cos_heading = env->entities[i].heading_x;
                 float sin_heading = env->entities[i].heading_y;
-                
+
                 // Calculate half dimensions
                 float half_len = env->entities[i].length * 0.5f;
                 float half_width = env->entities[i].width * 0.5f;
-                
+
                 // Calculate the four corners of the collision box
                 Vector3 corners[4] = {
                     (Vector3){
@@ -1775,8 +1775,8 @@ void draw_scene(Drive* env, Client* client, int mode, int obs_only, int lasers){
                         position.y + (half_len * sin_heading + half_width * cos_heading),
                         position.z
                     },
-                   
-                    
+
+
                     (Vector3){
                         position.x + (half_len * cos_heading + half_width * sin_heading),
                         position.y + (half_len * sin_heading - half_width * cos_heading),
@@ -1786,14 +1786,14 @@ void draw_scene(Drive* env, Client* client, int mode, int obs_only, int lasers){
                         position.x + (-half_len * cos_heading + half_width * sin_heading),
                         position.y + (-half_len * sin_heading - half_width * cos_heading),
                         position.z
-                    },  
+                    },
                    (Vector3){
                         position.x + (-half_len * cos_heading - half_width * sin_heading),
                         position.y + (-half_len * sin_heading + half_width * cos_heading),
                         position.z
-                    }, 
+                    },
 
-                    
+
                 };
 
                 if(agent_index == env->human_agent_idx && !env->entities[agent_index].reached_goal) {
@@ -1801,10 +1801,10 @@ void draw_scene(Drive* env, Client* client, int mode, int obs_only, int lasers){
                 }
                 if((obs_only ||  IsKeyDown(KEY_LEFT_CONTROL)) && agent_index != env->human_agent_idx){
                     continue;
-                } 
-  
+                }
+
                 // --- Draw the car  ---
-                
+
                 Vector3 carPos = { position.x, position.y, position.z };
                 Color car_color = GRAY;
                 if(is_active_agent){
@@ -1816,7 +1816,7 @@ void draw_scene(Drive* env, Client* client, int mode, int obs_only, int lasers){
                 rlSetLineWidth(3.0f);
                 for (int j = 0; j < 4; j++) {
                     DrawLine3D(corners[j], corners[(j+1)%4], car_color);
-                } 
+                }
                 // --- Draw a heading arrow pointing forward ---
                 Vector3 arrowStart = position;
                 Vector3 arrowEnd = {
@@ -1826,8 +1826,8 @@ void draw_scene(Drive* env, Client* client, int mode, int obs_only, int lasers){
                 };
 
                 DrawLine3D(arrowStart, arrowEnd, car_color);
-                DrawSphere(arrowEnd, 0.2f, car_color);  // arrow tip 
-                
+                DrawSphere(arrowEnd, 0.2f, car_color);  // arrow tip
+
             }
             else {
                 rlPushMatrix();
@@ -1854,7 +1854,7 @@ void draw_scene(Drive* env, Client* client, int mode, int obs_only, int lasers){
                 }
                 // Draw cube for cars static and active
                 // Calculate scale factors based on desired size and model dimensions
-                
+
                 BoundingBox bounds = GetModelBoundingBox(car_model);
                 Vector3 model_size = {
                     bounds.max.x - bounds.min.x,
@@ -1870,11 +1870,11 @@ void draw_scene(Drive* env, Client* client, int mode, int obs_only, int lasers){
                     rlPopMatrix();
                     continue;
                 }
-             
+
                 DrawModelEx(car_model, (Vector3){0, 0, 0}, (Vector3){1, 0, 0}, 90.0f, scale, WHITE);
                 rlPopMatrix();
-            }     
-            
+            }
+
             // FPV Camera Control
             if(IsKeyDown(KEY_SPACE) && env->human_agent_idx== agent_index){
                 if(env->entities[agent_index].reached_goal){
@@ -1955,21 +1955,19 @@ void draw_scene(Drive* env, Client* client, int mode, int obs_only, int lasers){
         }
     }
     EndMode3D();
- 
+
 }
 
-
-
-void saveTopDownImage(Drive* env, Client* client, const char *filename, RenderTexture2D target, int map_height, int obs, int lasers, int trajectories, int frame_count, float* path, int log_trajectories){ 
+void saveTopDownImage(Drive* env, Client* client, const char *filename, RenderTexture2D target, int map_height, int obs, int lasers, int trajectories, int frame_count, float* path, int log_trajectories){
     // Top-down orthographic camera
     Camera3D camera = {0};
     camera.position = (Vector3){ 0.0f, 0.0f, 500.0f };  // above the scene
     camera.target   = (Vector3){ 0.0f, 0.0f, 0.0f };  // look at origin
-    camera.up       = (Vector3){ 0.0f, -1.0f, 0.0f }; 
+    camera.up       = (Vector3){ 0.0f, -1.0f, 0.0f };
     camera.fovy     = map_height;
     camera.projection = CAMERA_ORTHOGRAPHIC;
     Color road = (Color){35, 35, 37, 255};
- 
+
     BeginTextureMode(target);
         ClearBackground(road);
         BeginMode3D(camera);
@@ -1978,7 +1976,7 @@ void saveTopDownImage(Drive* env, Client* client, const char *filename, RenderTe
                 for(int i=0; i<frame_count; i++){
                     DrawSphere((Vector3){path[i*2], path[i*2 +1], 1}, 0.5f, YELLOW);
                 }
-                
+
             }
             if(log_trajectories){
                 for(int i=0; i<env->active_agent_count;i++){
