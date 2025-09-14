@@ -336,16 +336,17 @@ void eval_gif(){
     // set which vehicle to focus on for obs mode
     env.human_agent_idx = 0;
     c_reset(&env);
+
     /*if (env.client == NULL) {
         env.client = make_client(&env);
     }*/
-    
+
     Client* client = (Client*)calloc(1,sizeof(Client));
     env.client = client;
-    
+
     SetConfigFlags(FLAG_WINDOW_HIDDEN);
     InitWindow(1280, 704, "headless");
-    
+
     float map_width = env.map_corners[2] - env.map_corners[0];
     float map_height = env.map_corners[3] - env.map_corners[1];
     float scale = 6.0f;
@@ -399,7 +400,7 @@ void eval_gif(){
             c_step(&env);
         }
         c_reset(&env);
-        saveTopDownImage(&env, client, filename, target, map_height, obs_only, lasers, rollout_trajectory_snapshot, goal_frame, path_taken, log_trajectory); 
+        saveTopDownImage(&env, client, filename, target, map_height, obs_only, lasers, rollout_trajectory_snapshot, goal_frame, path_taken, log_trajectory);
     }
     UnloadRenderTexture(target);
     CloseWindow();
