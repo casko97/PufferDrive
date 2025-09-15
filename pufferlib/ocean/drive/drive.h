@@ -703,6 +703,37 @@ int check_aabb_collision(Entity* car1, Entity* car2) {
     return 1;  // Collision
 }
 
+int collision_check(Drive* env, int agent_idx) {
+    Entity* agent = &env->entities[agent_idx];
+
+    if(agent->x == -10000.0f ) return -1;
+
+    int car_collided_with_index = -1;
+
+    for(int i = 0; i < MAX_CARS; i++){
+        int index = -1;
+        if(i < env->active_agent_count){
+            index = env->active_agent_indices[i];
+        } else if (i < env->num_cars){
+            index = env->static_car_indices[i - env->active_agent_count];
+        }
+        if(index == -1) continue;
+        if(index == agent_idx) continue;
+        Entity* entity = &env->entities[index];
+        float x1 = entity->x;
+        float y1 = entity->y;
+        float dist = ((x1 - agent->x)*(x1 - agent->x) + (y1 - agent->y)*(y1 - agent->y));
+        if(dist > 225.0f) continue;
+        if(check_aabb_collision(agent, entity)) {
+            car_collided_with_index = index;
+            break;
+        }
+    }
+
+    return car_collided_with_index;
+}
+
+
 int check_lane_aligned(Entity* car, Entity* lane) {
     float car_to_lane_x = lane->x - car->x;
     float car_to_lane_y = lane->y - car->y;
@@ -737,7 +768,6 @@ void compute_agent_metrics(Drive* env, int agent_idx) {
     if(agent->x == -10000.0f ) return; // invalid agent position
 
     int collided = 0;
-    int car_collided_with_index = -1;
     float half_length = agent->length/2.0f;
     float half_width = agent->width/2.0f;
     float cos_heading = cosf(agent->heading);
@@ -795,34 +825,17 @@ void compute_agent_metrics(Drive* env, int agent_idx) {
     int lane_aligned = check_lane_aligned(agent, &env->entities[closest_lane_idx]);
     agent->metrics_array[3] = lane_aligned ? 1.0f : 0.0f;
 
-    for(int i = 0; i < MAX_CARS; i++){
-        int index = -1;
-        if(i < env->active_agent_count){
-            index = env->active_agent_indices[i];
-        } else if (i < env->num_cars){
-            index = env->static_car_indices[i - env->active_agent_count];
-        }
+    // Check for vehicle collisions
+    int car_collided_with_index = collision_check(env, agent_idx);
+    if (car_collided_with_index != -1) collided = VEHICLE_COLLISION;
 
-        if(index == -1) continue;
-        if(index == agent_idx) continue;
-
-        Entity* entity = &env->entities[index];
-        float x1 = entity->x;
-        float y1 = entity->y;
-        float dist = ((x1 - agent->x)*(x1 - agent->x) + (y1 - agent->y)*(y1 - agent->y));
-        if(dist > 225.0f) continue;
-        if(check_aabb_collision(agent, entity)) {
-            collided = VEHICLE_COLLISION;
-            car_collided_with_index = index;
-            break;
-        }
-    }
     agent->collision_state = collided;
 
     // spawn immunity for collisions with other agent cars as agent_idx respawns
     int is_active_agent = env->entities[agent_idx].active_agent;
     int respawned = env->entities[agent_idx].respawn_timestep != -1;
     int exceeded_spawn_immunity_agent = (env->timestep - env->entities[agent_idx].respawn_timestep) >= env->spawn_immunity_timer;
+
     if(collided == VEHICLE_COLLISION && is_active_agent == 1 && respawned){
         agent->collision_state = 0;
     }
@@ -949,9 +962,8 @@ void remove_bad_trajectories(Drive* env){
         for(int i = 0; i < env->active_agent_count; i++){
             int agent_idx = env->active_agent_indices[i];
             env->entities[agent_idx].collision_state = 0;
-            compute_agent_metrics(env, agent_idx);
-            int collided_with_index = env->entities[agent_idx].collided_with_index;
-            if((env->entities[agent_idx].collision_state > 0 || env->entities[agent_idx].metrics_array[1] == 1.0f) && collided_agents[i] == 0){
+            int collided_with_index = collision_check(env, agent_idx);
+            if((collided_with_index >= 0) && collided_agents[i] == 0){
                 collided_agents[i] = 1;
                 collided_with_indices[i] = collided_with_index;
             }
