@@ -10,9 +10,10 @@
 #include "raymath.h"
 #include "rlgl.h"
 #include <time.h>
-#ifndef M_PI
-#define M_PI 3.1415926
-#endif
+
+// Global Constants
+#define M_PI 3.14159
+
 // Entity Types
 #define NONE 0
 #define VEHICLE 1
