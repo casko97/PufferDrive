@@ -1155,7 +1155,7 @@ void compute_observations(Drive* env) {
         obs[3] = ego_entity->width / MAX_VEH_WIDTH;
         obs[4] = ego_entity->length / MAX_VEH_LEN;
         // Collision/offroad indicator (1 if any status active)
-        obs[5] = (ego_entity->metrics_array[0] > 0.0f || ego_entity->metrics_array[1] > 0.0f) ? 1.0f : 0.0f;
+        obs[5] = (ego_entity->collision_state > 0) ? 1.0f : 0.0f;
 
         // Relative Pos of other cars
         int obs_idx = 7;  // Start after goal distances
