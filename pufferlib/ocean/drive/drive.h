@@ -125,7 +125,7 @@ struct Entity {
     float goal_position_z;
     int mark_as_expert;
     int collision_state;
-    float status_state[3]; // status_state: [collision, offroad, reached_goal]
+    float metrics_array[3]; // metrics_array: [collision, offroad, reached_goal]
     int collided_with_index;
     float x;
     float y;
@@ -328,9 +328,9 @@ void set_start_position(Drive* env){
         e->heading_y = sinf(e->heading);
         e->valid = e->traj_valid[0];
         e->collision_state = 0;
-        e->status_state[0] = 0.0f; // vehicle collision
-        e->status_state[1] = 0.0f; // offroad
-        e->status_state[2] = 0.0f; // reached goal
+        e->metrics_array[0] = 0.0f; // vehicle collision
+        e->metrics_array[1] = 0.0f; // offroad
+        e->metrics_array[2] = 0.0f; // reached goal
         e->collided_with_index = -1;
         e->respawn_timestep = -1;
     }
@@ -706,9 +706,9 @@ int check_aabb_collision(Entity* car1, Entity* car2) {
 float* update_agent_status(Drive* env, int agent_idx) {
     Entity* agent = &env->entities[agent_idx];
 
-    // Always mirror current reached_goal into status_state[2]
-    agent->status_state[2] = (agent->reached_goal || agent->reached_goal_this_episode) ? 1.0f : 0.0f;
-    if(agent->x == -10000.0f ) return agent->status_state;
+    // Always mirror current reached_goal into metrics_array[2]
+    agent->metrics_array[2] = (agent->reached_goal || agent->reached_goal_this_episode) ? 1.0f : 0.0f;
+    if(agent->x == -10000.0f ) return agent->metrics_array;
     float half_length = agent->length/2.0f;
     float half_width = agent->width/2.0f;
     float cos_heading = cosf(agent->heading);
@@ -771,18 +771,18 @@ float* update_agent_status(Drive* env, int agent_idx) {
 
     // spawn immunity for collisions with other cars who just respawned
     if(collided == OFFROAD) {
-        agent->status_state[0] = 0.0f;
-        agent->status_state[1] = 1.0f;
-        agent->status_state[2] = (agent->reached_goal || agent->reached_goal_this_episode) ? 1.0f : 0.0f;
+        agent->metrics_array[0] = 0.0f;
+        agent->metrics_array[1] = 1.0f;
+        agent->metrics_array[2] = (agent->reached_goal || agent->reached_goal_this_episode) ? 1.0f : 0.0f;
         agent->collided_with_index = -1;
-        return agent->status_state;
+        return agent->metrics_array;
     }
     if(car_collided_with_index == -1){
-        agent->status_state[0] = 0.0f;
-        agent->status_state[1] = 0.0f;
-        agent->status_state[2] = (agent->reached_goal || agent->reached_goal_this_episode) ? 1.0f : 0.0f;
+        agent->metrics_array[0] = 0.0f;
+        agent->metrics_array[1] = 0.0f;
+        agent->metrics_array[2] = (agent->reached_goal || agent->reached_goal_this_episode) ? 1.0f : 0.0f;
         agent->collided_with_index = -1;
-        return agent->status_state;
+        return agent->metrics_array;
     }
 
     int respawned_collided_with_car = env->entities[car_collided_with_index].respawn_timestep != -1;
@@ -791,13 +791,13 @@ float* update_agent_status(Drive* env, int agent_idx) {
     if (respawned_collided_with_car) {
         agent->collision_state = 0;
     }
-    // Populate status_state considering spawn immunity adjustments
-    agent->status_state[0] = (agent->collision_state == VEHICLE_COLLISION) ? 1.0f : 0.0f;
-    agent->status_state[1] = 0.0f; // not offroad (would have returned earlier)
-    agent->status_state[2] = (agent->reached_goal || agent->reached_goal_this_episode) ? 1.0f : 0.0f;
+    // Populate metrics_array considering spawn immunity adjustments
+    agent->metrics_array[0] = (agent->collision_state == VEHICLE_COLLISION) ? 1.0f : 0.0f;
+    agent->metrics_array[1] = 0.0f; // not offroad (would have returned earlier)
+    agent->metrics_array[2] = (agent->reached_goal || agent->reached_goal_this_episode) ? 1.0f : 0.0f;
     agent->collided_with_index = (agent->collision_state == VEHICLE_COLLISION) ? car_collided_with_index : -1;
 
-    return agent->status_state;
+    return agent->metrics_array;
 }
 
 int valid_active_agent(Drive* env, int agent_idx){
@@ -901,7 +901,7 @@ void remove_bad_trajectories(Drive* env){
             env->entities[agent_idx].collision_state = 0;
             update_agent_status(env, agent_idx);
             int collided_with_index = env->entities[agent_idx].collided_with_index;
-            if((env->entities[agent_idx].collision_state > 0 || env->entities[agent_idx].status_state[1] == 1.0f) && collided_agents[i] == 0){
+            if((env->entities[agent_idx].collision_state > 0 || env->entities[agent_idx].metrics_array[1] == 1.0f) && collided_agents[i] == 0){
                 collided_agents[i] = 1;
                 collided_with_indices[i] = collided_with_index;
             }
@@ -1088,7 +1088,7 @@ void compute_observations(Drive* env) {
         obs[3] = ego_entity->width / MAX_VEH_WIDTH;
         obs[4] = ego_entity->length / MAX_VEH_LEN;
         // Collision/offroad indicator (1 if any status active)
-        obs[5] = (ego_entity->status_state[0] > 0.0f || ego_entity->status_state[1] > 0.0f) ? 1.0f : 0.0f;
+        obs[5] = (ego_entity->metrics_array[0] > 0.0f || ego_entity->metrics_array[1] > 0.0f) ? 1.0f : 0.0f;
 
         // Relative Pos of other cars
         int obs_idx = 7;  // Start after goal distances
@@ -1210,9 +1210,9 @@ void respawn_agent(Drive* env, int agent_idx){
     env->entities[agent_idx].vx = env->entities[agent_idx].traj_vx[0];
     env->entities[agent_idx].vy = env->entities[agent_idx].traj_vy[0];
     env->entities[agent_idx].reached_goal = 0;
-    env->entities[agent_idx].status_state[0] = 0.0f;
-    env->entities[agent_idx].status_state[1] = 0.0f;
-    env->entities[agent_idx].status_state[2] = 0.0f;
+    env->entities[agent_idx].metrics_array[0] = 0.0f;
+    env->entities[agent_idx].metrics_array[1] = 0.0f;
+    env->entities[agent_idx].metrics_array[2] = 0.0f;
     env->entities[agent_idx].collided_with_index = -1;
     env->entities[agent_idx].respawn_timestep = env->timestep;
 }
@@ -1288,7 +1288,7 @@ void c_step(Drive* env){
             }
 	        env->entities[agent_idx].reached_goal = 1;
             env->entities[agent_idx].reached_goal_this_episode = 1;
-            env->entities[agent_idx].status_state[2] = 1.0f;
+            env->entities[agent_idx].metrics_array[2] = 1.0f;
 	    }
     }
 
