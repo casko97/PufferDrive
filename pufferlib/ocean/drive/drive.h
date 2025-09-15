@@ -567,7 +567,7 @@ void set_means(Drive* env) {
 
 }
 
-void move_expert(Drive* env, int* actions, int agent_idx){
+void move_expert(Drive* env, float* actions, int agent_idx){
     Entity* agent = &env->entities[agent_idx];
     agent->x = agent->traj_x[env->timestep];
     agent->y = agent->traj_y[env->timestep];
