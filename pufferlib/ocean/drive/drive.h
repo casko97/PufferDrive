@@ -1359,8 +1359,8 @@ void c_step(Drive* env){
 
         int lane_aligned = env->entities[agent_idx].metrics_array[LANE_ALIGNED_IDX];
         if(lane_aligned){
-            env->rewards[i] += 0.01f;
-            env->logs[i].episode_return += 0.01f;
+        //     env->rewards[i] += 0.01f;
+        //     env->logs[i].episode_return += 0.01f;
             env->logs[i].lane_alignment_rate = 1.0f;
         }
     }
