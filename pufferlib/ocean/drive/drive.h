@@ -1276,6 +1276,7 @@ const Color PUFF_CYAN = (Color){0, 187, 187, 255};
 const Color PUFF_WHITE = (Color){241, 241, 241, 241};
 const Color PUFF_BACKGROUND = (Color){6, 24, 24, 255};
 const Color PUFF_BACKGROUND2 = (Color){18, 72, 72, 255};
+const Color LIGHTGREEN = (Color){152, 255, 152, 255};
 
 typedef struct Client Client;
 struct Client {
@@ -1436,13 +1437,13 @@ void draw_agent_obs(Drive* env, int agent_index, int mode, int obs_only, int las
     float goal_x = agent_obs[0] * 200;
     float goal_y = agent_obs[1] * 200;
     if(mode == 0 ){
-        DrawSphere((Vector3){goal_x, goal_y, 1}, 0.5f, GREEN);
+        DrawSphere((Vector3){goal_x, goal_y, 1}, 0.5f, LIGHTGREEN);
     }
 
     if (mode == 1){
         float goal_x_world = px + (goal_x * heading_self_x - goal_y*heading_self_y);
         float goal_y_world = py + (goal_x * heading_self_y + goal_y*heading_self_x);
-        DrawSphere((Vector3){goal_x_world, goal_y_world, 1}, 0.5f, GREEN);
+        DrawSphere((Vector3){goal_x_world, goal_y_world, 1}, 0.5f, LIGHTGREEN);
 
     }
     // First draw other agent observations
@@ -1651,6 +1652,7 @@ void draw_road_edge(Drive* env, float start_x, float start_y, float end_x, float
                     // Calculate curb dimensions
     float curb_height = 0.5f;  // Height of the curb
     float curb_width = 0.3f;   // Width/thickness of the curb
+    float road_z = 0.2f;       // Ensure z-level for roads is below agents
 
     // Calculate direction vector between start and end
     Vector3 direction = {
@@ -1680,22 +1682,22 @@ void draw_road_edge(Drive* env, float start_x, float start_y, float end_x, float
     Vector3 b1 = {
         start_x - perpendicular.x * curb_width/2,
         start_y - perpendicular.y * curb_width/2,
-        1.0f
+        road_z
     };
     Vector3 b2 = {
         start_x + perpendicular.x * curb_width/2,
         start_y + perpendicular.y * curb_width/2,
-        1.0f
+        road_z
     };
     Vector3 b3 = {
         end_x + perpendicular.x * curb_width/2,
         end_y + perpendicular.y * curb_width/2,
-        1.0f
+        road_z
     };
     Vector3 b4 = {
         end_x - perpendicular.x * curb_width/2,
         end_y - perpendicular.y * curb_width/2,
-        1.0f
+        road_z
     };
 
     // Draw the curb faces
@@ -1722,7 +1724,7 @@ void draw_road_edge(Drive* env, float start_x, float start_y, float end_x, float
     DrawTriangle3D(t4, t1, b1, CURB_SIDE);
 }
 
-void draw_scene(Drive* env, Client* client, int mode, int obs_only, int lasers){
+void draw_scene(Drive* env, Client* client, int mode, int obs_only, int lasers, int show_grid){
    // Draw a grid to help with orientation
     // DrawGrid(20, 1.0f);
     DrawLine3D((Vector3){env->map_corners[0], env->map_corners[1], 0}, (Vector3){env->map_corners[2], env->map_corners[1], 0}, PUFF_CYAN);
@@ -1950,6 +1952,7 @@ void draw_scene(Drive* env, Client* client, int mode, int obs_only, int lasers){
             }
         }
     }
+    if(show_grid) {
     // Draw grid cells using the stored bounds
     float grid_start_x = env->map_corners[0];
     float grid_start_y = env->map_corners[1];
@@ -1957,17 +1960,18 @@ void draw_scene(Drive* env, Client* client, int mode, int obs_only, int lasers){
         for(int j = 0; j < env->grid_rows; j++) {
             float x = grid_start_x + i*GRID_CELL_SIZE;
             float y = grid_start_y + j*GRID_CELL_SIZE;
-            // int index = i * env->grid_rows + j;
             DrawCubeWires(
                 (Vector3){x + GRID_CELL_SIZE/2, y + GRID_CELL_SIZE/2, 1},
                 GRID_CELL_SIZE, GRID_CELL_SIZE, 0.1f, PUFF_BACKGROUND2);
         }
+        }
     }
+
     EndMode3D();
 
 }
 
-void saveTopDownImage(Drive* env, Client* client, const char *filename, RenderTexture2D target, int map_height, int obs, int lasers, int trajectories, int frame_count, float* path, int log_trajectories){
+void saveTopDownImage(Drive* env, Client* client, const char *filename, RenderTexture2D target, int map_height, int obs, int lasers, int trajectories, int frame_count, float* path, int log_trajectories, int show_grid){
     // Top-down orthographic camera
     Camera3D camera = {0};
     camera.position = (Vector3){ 0.0f, 0.0f, 500.0f };  // above the scene
@@ -1981,12 +1985,8 @@ void saveTopDownImage(Drive* env, Client* client, const char *filename, RenderTe
         ClearBackground(road);
         BeginMode3D(camera);
             rlEnableDepthTest();
-            if(trajectories){
-                for(int i=0; i<frame_count; i++){
-                    DrawSphere((Vector3){path[i*2], path[i*2 +1], 1}, 0.5f, YELLOW);
-                }
 
-            }
+            // Draw log trajectories FIRST (in background at lower Z-level)
             if(log_trajectories){
                 for(int i=0; i<env->active_agent_count;i++){
                     int idx = env->active_agent_indices[i];
@@ -1995,12 +1995,22 @@ void saveTopDownImage(Drive* env, Client* client, const char *filename, RenderTe
                         float y = env->entities[idx].traj_y[j];
                         float valid = env->entities[idx].traj_valid[j];
                         if(!valid) continue;
-                        DrawSphere((Vector3){x,y,1}, 0.3f, RED);
+                        DrawSphere((Vector3){x,y,0.5f}, 0.3f, Fade(LIGHTGREEN, 0.6f));
                     }
                 }
             }
-            draw_scene(env, client, 1, obs, lasers);
-            EndMode3D();
+
+            // Draw current path trajectories SECOND (slightly higher than log trajectories)
+            if(trajectories){
+                for(int i=0; i<frame_count; i++){
+                    DrawSphere((Vector3){path[i*2], path[i*2 +1], 0.8f}, 0.5f, YELLOW);
+                }
+            }
+
+            // Draw main scene LAST (on top)
+            draw_scene(env, client, 1, obs, lasers, show_grid);
+
+        EndMode3D();
     EndTextureMode();
 
     // save to file
@@ -2008,10 +2018,9 @@ void saveTopDownImage(Drive* env, Client* client, const char *filename, RenderTe
     ImageFlipVertical(&img);
     ExportImage(img, filename);
     UnloadImage(img);
-
 }
 
-void saveAgentViewImage(Drive* env, Client* client, const char *filename, RenderTexture2D target, int map_height, int obs_only, int lasers) {
+void saveAgentViewImage(Drive* env, Client* client, const char *filename, RenderTexture2D target, int map_height, int obs_only, int lasers, int show_grid) {
     // Agent perspective camera following the human agent
     int agent_idx = env->active_agent_indices[env->human_agent_idx];
     Entity* agent = &env->entities[agent_idx];
@@ -2038,7 +2047,7 @@ void saveAgentViewImage(Drive* env, Client* client, const char *filename, Render
         ClearBackground(road);
         BeginMode3D(camera);
             rlEnableDepthTest();
-            draw_scene(env, client, 0, obs_only, lasers); // mode=0 for agent view
+            draw_scene(env, client, 0, obs_only, lasers, show_grid); // mode=0 for agent view
         EndMode3D();
     EndTextureMode();
 
@@ -2059,7 +2068,7 @@ void c_render(Drive* env) {
     ClearBackground(road);
     BeginMode3D(client->camera);
     handle_camera_controls(env->client);
-    draw_scene(env, client, 0, 0, 0);
+    draw_scene(env, client, 0, 0, 0, 0);
     // Draw debug info
     DrawText(TextFormat("Camera Position: (%.2f, %.2f, %.2f)",
         client->camera.position.x,
