@@ -110,6 +110,7 @@ struct Log {
     float completion_rate;
     float dnf_rate;
     float n;
+    float lane_alignment_rate;
 };
 
 typedef struct Entity Entity;
@@ -234,6 +235,8 @@ void add_log(Drive* env) {
         if(!offroad && !collided && !e->reached_goal_this_episode){
             env->log.dnf_rate += 1.0f;
         }
+        int lane_aligned = env->logs[i].lane_alignment_rate;
+        env->log.lane_alignment_rate += lane_aligned;
         env->log.episode_length += env->logs[i].episode_length;
         env->log.episode_return += env->logs[i].episode_return;
         env->log.n += 1;
@@ -1360,6 +1363,7 @@ void c_step(Drive* env){
         if(lane_aligned){
             env->rewards[i] += 0.01f;
             env->logs[i].episode_return += 0.01f;
+            env->logs[i].lane_alignment_rate = 1.0f;
         }
     }
 
