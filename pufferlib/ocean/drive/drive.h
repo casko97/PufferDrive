@@ -127,7 +127,6 @@ struct Entity {
     int mark_as_expert;
     int collision_state;
     float metrics_array[4]; // metrics_array: [collision, offroad, reached_goal, lane_aligned]
-    int collided_with_index;
     float x;
     float y;
     float z;
@@ -331,7 +330,6 @@ void set_start_position(Drive* env){
         e->metrics_array[1] = 0.0f; // offroad
         e->metrics_array[2] = 0.0f; // reached goal
         e->metrics_array[3] = 0.0f; // lane aligned
-        e->collided_with_index = -1;
         e->respawn_timestep = -1;
     }
     //EndDrawing();
@@ -755,8 +753,7 @@ void reset_agent_metrics(Drive* env, int agent_idx){
     Entity* agent = &env->entities[agent_idx];
     agent->metrics_array[0] = 0.0f; // vehicle collision
     agent->metrics_array[1] = 0.0f; // offroad
-    agent->metrics_array[3] = 0.0f; // reached goal
-    agent->collided_with_index = -1;
+    agent->metrics_array[3] = 0.0f; // lane aligned
     agent->collision_state = 0;
 }
 
@@ -842,7 +839,6 @@ void compute_agent_metrics(Drive* env, int agent_idx) {
 
     if(collided == OFFROAD) {
         agent->metrics_array[1] = 1.0f;
-        agent->collided_with_index = -1;
         return;
     }
     if(car_collided_with_index == -1) return;
@@ -858,7 +854,6 @@ void compute_agent_metrics(Drive* env, int agent_idx) {
     // Populate metrics_array considering spawn immunity adjustments
     agent->metrics_array[0] = (agent->collision_state == VEHICLE_COLLISION) ? 1.0f : 0.0f;
     agent->metrics_array[1] = 0.0f; // not offroad (would have returned earlier)
-    agent->collided_with_index = (agent->collision_state == VEHICLE_COLLISION) ? car_collided_with_index : -1;
 
     return;
 }
@@ -1279,7 +1274,6 @@ void respawn_agent(Drive* env, int agent_idx){
     env->entities[agent_idx].metrics_array[1] = 0.0f;
     env->entities[agent_idx].metrics_array[2] = 0.0f;
     env->entities[agent_idx].metrics_array[3] = 0.0f;
-    env->entities[agent_idx].collided_with_index = -1;
     env->entities[agent_idx].respawn_timestep = env->timestep;
 }
 
