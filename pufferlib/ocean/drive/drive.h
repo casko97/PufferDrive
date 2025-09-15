@@ -2017,17 +2017,73 @@ void saveTopDownImage(Drive* env, Client* client, const char *filename, RenderTe
         ClearBackground(road);
         BeginMode3D(camera);
             rlEnableDepthTest();
+            if(trajectories){
+                for(int i=0; i<frame_count; i++){
+                    DrawSphere((Vector3){path[i*2], path[i*2 +1], 1}, 0.5f, YELLOW);
+                }
+
+            }
+            if(log_trajectories){
+                for(int i=0; i<env->active_agent_count;i++){
+                    int idx = env->active_agent_indices[i];
+                    for(int j=0; j<TRAJECTORY_LENGTH;j++){
+                        float x = env->entities[idx].traj_x[j];
+                        float y = env->entities[idx].traj_y[j];
+                        float valid = env->entities[idx].traj_valid[j];
+                        if(!valid) continue;
+                        DrawSphere((Vector3){x,y,1}, 0.3f, RED);
+                    }
+                }
+            }
             draw_scene(env, client, 1, obs, lasers);
-        EndMode3D();
+            EndMode3D();
     EndTextureMode();
 
     // save to file
     Image img = LoadImageFromTexture(target.texture);
     ImageFlipVertical(&img);
     ExportImage(img, filename);
+    UnloadImage(img);
 
 }
 
+void saveAgentViewImage(Drive* env, Client* client, const char *filename, RenderTexture2D target, int map_height, int obs_only, int lasers) {
+    // Agent perspective camera following the human agent
+    int agent_idx = env->active_agent_indices[env->human_agent_idx];
+    Entity* agent = &env->entities[agent_idx];
+
+    Camera3D camera = {0};
+    // Position camera behind and above the agent
+    camera.position = (Vector3){
+        agent->x - (25.0f * cosf(agent->heading)),
+        agent->y - (25.0f * sinf(agent->heading)),
+        15.0f
+    };
+    camera.target = (Vector3){
+        agent->x + 40.0f * cosf(agent->heading),
+        agent->y + 40.0f * sinf(agent->heading),
+        1.0f
+    };
+    camera.up = (Vector3){ 0.0f, 0.0f, 1.0f };
+    camera.fovy = 45.0f;
+    camera.projection = CAMERA_PERSPECTIVE;
+
+    Color road = (Color){35, 35, 37, 255};
+
+    BeginTextureMode(target);
+        ClearBackground(road);
+        BeginMode3D(camera);
+            rlEnableDepthTest();
+            draw_scene(env, client, 0, obs_only, lasers); // mode=0 for agent view
+        EndMode3D();
+    EndTextureMode();
+
+    // Save to file
+    Image img = LoadImageFromTexture(target.texture);
+    ImageFlipVertical(&img);
+    ExportImage(img, filename);
+    UnloadImage(img);
+}
 
 void c_render(Drive* env) {
     if (env->client == NULL) {
