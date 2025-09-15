@@ -853,7 +853,6 @@ void compute_agent_metrics(Drive* env, int agent_idx) {
 
     // Populate metrics_array considering spawn immunity adjustments
     agent->metrics_array[0] = (agent->collision_state == VEHICLE_COLLISION) ? 1.0f : 0.0f;
-    agent->metrics_array[1] = 0.0f; // not offroad (would have returned earlier)
 
     return;
 }
