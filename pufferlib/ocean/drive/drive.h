@@ -720,8 +720,6 @@ int check_lane_aligned(Entity* car, Entity* lane) {
     return angle < (M_PI / 4); // Consider aligned if within 45 degrees
 }
 
-
-
 void reset_agent_metrics(Drive* env, int agent_idx){
     Entity* agent = &env->entities[agent_idx];
     agent->metrics_array[0] = 0.0f; // vehicle collision
@@ -972,6 +970,7 @@ void remove_bad_trajectories(Drive* env){
     }
     env->timestep = 0;
 }
+
 void init(Drive* env){
     env->human_agent_idx = 0;
     env->timestep = 0;
