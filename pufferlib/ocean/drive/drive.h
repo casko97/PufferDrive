@@ -2063,7 +2063,7 @@ void draw_scene(Drive* env, Client* client, int mode, int obs_only, int lasers){
 
 }
 
-void saveTopDownImage(Drive* env, Client* client, const char *filename, RenderTexture2D target, int map_height, int obs, int lasers){
+void saveTopDownImage(Drive* env, Client* client, const char *filename, RenderTexture2D target, int map_height, int obs, int lasers, int trajectories, int frame_count, float* path, int log_trajectories){
     // Top-down orthographic camera
     Camera3D camera = {0};
     camera.position = (Vector3){ 0.0f, 0.0f, 500.0f };  // above the scene
