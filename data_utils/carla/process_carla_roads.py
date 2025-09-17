@@ -5,7 +5,7 @@ import json
 import numpy as np
 from lxml import etree
 from pyxodr.road_objects.road import Road
-from pyxodr.road_objects.lane import Lane,ConnectionPosition,LaneOrientation, TrafficOrientation
+from pyxodr.road_objects.lane import Lane, ConnectionPosition, LaneOrientation, TrafficOrientation
 from pyxodr.road_objects.junction import Junction
 from pyxodr.road_objects.lane_section import LaneSection
 from pyxodr.road_objects.network import RoadNetwork
@@ -13,6 +13,7 @@ from shapely.geometry import Polygon
 from enum import IntEnum
 import random
 import string
+
 
 class MapType(IntEnum):
     LANE_UNDEFINED = 0
@@ -39,7 +40,8 @@ class MapType(IntEnum):
     UNKNOWN = -1
     NUM_TYPES = 21
 
-def save_lane_section_to_json(xodr_json, id, road_edges, road_lines, lanes, sidewalks = []):
+
+def save_lane_section_to_json(xodr_json, id, road_edges, road_lines, lanes, sidewalks=[]):
     roads = xodr_json.get("roads", [])
     for road_edge in road_edges:
         # edge_polygon = Polygon(road_edge)
@@ -47,7 +49,7 @@ def save_lane_section_to_json(xodr_json, id, road_edges, road_lines, lanes, side
             "id": id,
             "map_element_id": int(MapType.ROAD_EDGE_BOUNDARY),
             "type": "road_edge",
-            "geometry": [{"x": float(pt[0]), "y": float(pt[1]), "z": 0.0} for pt in road_edge]
+            "geometry": [{"x": float(pt[0]), "y": float(pt[1]), "z": 0.0} for pt in road_edge],
         }
         roads.append(edge_data)
         id += 1
@@ -56,7 +58,7 @@ def save_lane_section_to_json(xodr_json, id, road_edges, road_lines, lanes, side
             "id": id,
             "map_element_id": int(MapType.ROAD_LINE_BROKEN_SINGLE_WHITE),
             "type": "road_line",
-            "geometry": [{"x": float(pt[0]), "y": float(pt[1]), "z": 0.0} for pt in road_line]
+            "geometry": [{"x": float(pt[0]), "y": float(pt[1]), "z": 0.0} for pt in road_line],
         }
         roads.append(line_data)
         id += 1
@@ -65,7 +67,7 @@ def save_lane_section_to_json(xodr_json, id, road_edges, road_lines, lanes, side
             "id": id,
             "map_element_id": int(MapType.LANE_SURFACE_STREET),
             "type": "lane",
-            "geometry": [{"x": float(pt[0]), "y": float(pt[1]), "z": 0.0} for pt in lane]
+            "geometry": [{"x": float(pt[0]), "y": float(pt[1]), "z": 0.0} for pt in lane],
         }
         roads.append(lane_data)
         id += 1
@@ -81,7 +83,8 @@ def save_lane_section_to_json(xodr_json, id, road_edges, road_lines, lanes, side
     xodr_json["roads"] = roads
     return id
 
-def get_lane_data(lane, type = "BOUNDARY", check_dir = True):
+
+def get_lane_data(lane, type="BOUNDARY", check_dir=True):
     if type == "BOUNDARY":
         points = lane.boundary_line
         # print(f'Number of boundary pts: {len(points)}')
@@ -90,29 +93,31 @@ def get_lane_data(lane, type = "BOUNDARY", check_dir = True):
         # print(f'Number of centerline pts: {len(points)}')
     else:
         raise ValueError(f"Unknown lane data type: {type}")
-    
+
     if not check_dir:
         return points
-    
+
     # Check traffic direction
     travel_dir = None
     vector_lane = lane.lane_xml.find(".//userData/vectorLane")
     if vector_lane is not None:
         travel_dir = vector_lane.get("travelDir")
-    
+
     if travel_dir == "backward":
         # Reverse points for backward travel
         points = points[::-1]
 
     return points
 
+
 def sum_pts(road_elts):
     road_geometries = [len(elt) for elt in road_elts]
     return sum(road_geometries)
 
+
 def create_empty_json(town_name):
     def random_string(length=8):
-        return ''.join(random.choices(string.ascii_letters + string.digits, k=length))
+        return "".join(random.choices(string.ascii_letters + string.digits, k=length))
 
     json_data = {
         "name": town_name,
@@ -120,15 +125,14 @@ def create_empty_json(town_name):
         "objects": [],
         "roads": [],
         "tl_states": {},
-        "metadata": {
-            "sdc_track_index": 0,
-            "tracks_to_predict": [],
-            "objects_of_interest": []
-        }
+        "metadata": {"sdc_track_index": 0, "tracks_to_predict": [], "objects_of_interest": []},
     }
     return json_data
 
-def generate_carla_road(town_name, source_dir, carla_map_dir, resolution, dest_dir, max_samples, print_number_of_sample_truncations):
+
+def generate_carla_road(
+    town_name, source_dir, carla_map_dir, resolution, dest_dir, max_samples, print_number_of_sample_truncations
+):
     src_file_path = os.path.join(source_dir, f"{town_name}.json")
     dst_file_path = os.path.join(dest_dir, f"{town_name}.json")
     if not os.path.isfile(src_file_path):
@@ -144,21 +148,23 @@ def generate_carla_road(town_name, source_dir, carla_map_dir, resolution, dest_d
     with open(dst_file_path, "w") as f:
         json.dump(xodr_json, f, indent=2)
 
-    odr_file = os.path.join(carla_map_dir, town_name + '.xodr')
+    odr_file = os.path.join(carla_map_dir, town_name + ".xodr")
 
     road_network = RoadNetwork(xodr_file_path=odr_file, resolution=resolution, max_samples=max_samples)
     roads = road_network.get_roads()
     print(f"Number of roads in the network: {len(roads)}")
     # print(f"Type: {type(roads[0])}\nRoads: {roads}")
     print(f"Number of lanes in the network: {sum([sum([len(ls.lanes) for ls in r.lane_sections]) for r in roads])}")
-    print(f"Road 0 lane 1 boundary_pts: {len(roads[0].lane_sections[0].lanes[1].boundary_line)}")   # Sanity check to see if resolution is working
+    print(
+        f"Road 0 lane 1 boundary_pts: {len(roads[0].lane_sections[0].lanes[1].boundary_line)}"
+    )  # Sanity check to see if resolution is working
 
     # Go only till last "driving" lane("parking" NTD)
     # "median" lane means a road edge(add after all of them appear)
     # Add "sidewalk" lane as well
 
     id = 0
-    roads_json_cnt = [[],[],[]]
+    roads_json_cnt = [[], [], []]
     print(f"Network has {len(roads)} roads.")
     for road_obj in roads:
         # print(f"Road ID: {road_obj.id}")
@@ -172,7 +178,7 @@ def generate_carla_road(town_name, source_dir, carla_map_dir, resolution, dest_d
             road_lines = []
             lanes = []
             # sidwalks = []
-            
+
             left_immediate_driveable = False
             right_immediate_driveable = False
 
@@ -181,7 +187,7 @@ def generate_carla_road(town_name, source_dir, carla_map_dir, resolution, dest_d
             add_edge_data = False
             previous_lane = None
             for i, left_lane in enumerate(lane_section.left_lanes):
-                if left_lane.type == 'driving' or left_lane.type == 'parking':
+                if left_lane.type == "driving" or left_lane.type == "parking":
                     if i == 0:
                         left_immediate_driveable = True
 
@@ -208,9 +214,9 @@ def generate_carla_road(town_name, source_dir, carla_map_dir, resolution, dest_d
                 lanes.append(get_lane_data(previous_lane, "CENTERLINE"))
                 road_edges.append(get_lane_data(previous_lane, "BOUNDARY"))
             # elif add_edge_data:
-                # if previous_lane.type == 'sidewalk':
-                #     sidwalks.append(get_lane_data(previous_lane, "BOUNDARY"))
-            
+            # if previous_lane.type == 'sidewalk':
+            #     sidwalks.append(get_lane_data(previous_lane, "BOUNDARY"))
+
             # print("LEFT STATS")
             # print(f"Number of Road edges: {len(road_edges)}")
             # print(f"Road lines: {len(road_lines)}")
@@ -222,7 +228,7 @@ def generate_carla_road(town_name, source_dir, carla_map_dir, resolution, dest_d
             add_edge_data = False
             previous_lane = None
             for i, right_lane in enumerate(lane_section.right_lanes):
-                if right_lane.type == 'driving' or right_lane.type == 'parking':
+                if right_lane.type == "driving" or right_lane.type == "parking":
                     if i == 0:
                         right_immediate_driveable = True
 
@@ -249,9 +255,9 @@ def generate_carla_road(town_name, source_dir, carla_map_dir, resolution, dest_d
                 lanes.append(get_lane_data(previous_lane, "CENTERLINE"))
                 road_edges.append(get_lane_data(previous_lane, "BOUNDARY"))
             # elif add_edge_data:
-                #     if previous_lane.type == 'sidewalk':
-                #         sidwalks.append(get_lane_data(previous_lane, "BOUNDARY"))
-            
+            #     if previous_lane.type == 'sidewalk':
+            #         sidwalks.append(get_lane_data(previous_lane, "BOUNDARY"))
+
             # print(f"Number of Road edges in {road_obj.id}: {len(road_edges)}")
             # print(f"Road lines in {road_obj.id}: {len(road_lines)}")
             # print(f"Lanes in {road_obj.id}: {len(lanes)}")
@@ -263,7 +269,7 @@ def generate_carla_road(town_name, source_dir, carla_map_dir, resolution, dest_d
             else:
                 road_line_data = get_lane_data(previous_lane, "BOUNDARY")
                 road_lines.append(road_line_data)
-                
+
             if len(road_lines) == 0 and len(lanes) == 0:
                 road_edges = []
             id = save_lane_section_to_json(xodr_json, id, road_edges, road_lines, lanes)
@@ -276,16 +282,19 @@ def generate_carla_road(town_name, source_dir, carla_map_dir, resolution, dest_d
         #     break
         # break
     print(f"Total roads JSON count: {sum(roads_json_cnt[0]) + sum(roads_json_cnt[1]) + sum(roads_json_cnt[2])}")
-    
+
     # Save to file
     with open(dst_file_path, "w") as f:
         json.dump(xodr_json, f, indent=2)
-    
+
     # Print logs
     if print_number_of_sample_truncations:
         road_network.print_logs_max_samples_hit()
 
-def generate_carla_roads(town_names, source_dir, carla_map_dir, resolution, dest_dir, max_samples, print_number_of_sample_truncations):
+
+def generate_carla_roads(
+    town_names, source_dir, carla_map_dir, resolution, dest_dir, max_samples, print_number_of_sample_truncations
+):
     if type(resolution) == float:
         resolution = [resolution] * len(town_names)
     elif type(resolution) != list:
@@ -295,31 +304,26 @@ def generate_carla_roads(town_names, source_dir, carla_map_dir, resolution, dest
     for i, town in enumerate(town_names):
         print(f"Processing town: {town}")
         generate_carla_road(
-            town, 
-            source_dir, 
-            carla_map_dir, 
-            resolution[i], 
-            dest_dir, 
+            town,
+            source_dir,
+            carla_map_dir,
+            resolution[i],
+            dest_dir,
             max_samples,
-            print_number_of_sample_truncations=print_number_of_sample_truncations
+            print_number_of_sample_truncations=print_number_of_sample_truncations,
         )
 
+
 if __name__ == "__main__":
-    town_names = ['Town01', 'Town02','Town03', 'Town04', 'Town05', 'Town06', 'Town07', 'Town10HD']
+    town_names = ["Town01", "Town02", "Town03", "Town04", "Town05", "Town06", "Town07", "Town10HD"]
     source_dir = "data_utils/carla"
     dest_dir = "data_utils/carla"
-    carla_map_dir = '/scratch/pm3881/Carla-0.10.0-Linux-Shipping/CarlaUnreal/Content/Carla/Maps/OpenDrive'
-    resolution = 1.0 # [0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5]  # Meters
+    carla_map_dir = "/scratch/pm3881/Carla-0.10.0-Linux-Shipping/CarlaUnreal/Content/Carla/Maps/OpenDrive"
+    resolution = 1.0  # [0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5]  # Meters
     max_samples = int(1e5)  # Max points to sample per reference line
-    print_number_of_sample_truncations = True   # Enable to see the number of data points lost
+    print_number_of_sample_truncations = True  # Enable to see the number of data points lost
     generate_carla_roads(
-        town_names, 
-        source_dir, 
-        carla_map_dir, 
-        resolution, 
-        dest_dir, 
-        max_samples,
-        print_number_of_sample_truncations
+        town_names, source_dir, carla_map_dir, resolution, dest_dir, max_samples, print_number_of_sample_truncations
     )
     # resolution = 1.0
     # town_name = 'town06'
