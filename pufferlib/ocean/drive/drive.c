@@ -504,6 +504,7 @@ int main(int argc, char* argv[]) {
     int lasers = 0;
     int log_trajectories = 1;
     int frame_skip = 1;
+    const char* map_name = NULL;
 
     // Parse command line arguments
     for (int i = 1; i < argc; i++) {
@@ -522,6 +523,15 @@ int main(int argc, char* argv[]) {
                 if (frame_skip <= 0) {
                     frame_skip = 1; // Ensure valid value
                 }
+            }
+        } else if (strcmp(argv[i], "--map-name") == 0) {
+            // Check if there's a next argument for the map path
+            if (i + 1 < argc) {
+                map_name = argv[i + 1];
+                i++; // Skip the next argument since we used it as map path
+            } else {
+                fprintf(stderr, "Error: --map-name option requires a map file path\n");
+                return 1;
             }
         }
     }
