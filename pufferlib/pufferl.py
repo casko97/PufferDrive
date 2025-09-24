@@ -120,6 +120,7 @@ class PuffeRL:
         self.free_idx = total_agents
         self.render = config["render"]
         self.render_interval = config["render_interval"]
+        self.driver_env = getattr(vecenv, "driver_env", None)
 
         if self.render:
             ensure_drive_binary()
@@ -546,9 +547,51 @@ class PuffeRL:
                             cmd.append("--lasers")
                         if config["show_human_logs"]:
                             cmd.append("--log-trajectories")
+                        # Pull render/runtime flags from env if available, else fall back to config
+                        env_cfg = getattr(self, "driver_env", None)
 
-                        if self.vecenv.driver_env.goal_radius is not None:
-                            cmd.extend(["--goal-radius", str(self.vecenv.driver_env.goal_radius)])
+                        # Goal radius support
+                        goal_radius = None
+                        if env_cfg is not None and hasattr(env_cfg, "goal_radius"):
+                            goal_radius = getattr(env_cfg, "goal_radius")
+                        elif "goal_radius" in config:
+                            goal_radius = config.get("goal_radius")
+                        if goal_radius is not None:
+                            try:
+                                goal_radius_val = float(goal_radius)
+                                if goal_radius_val > 0:
+                                    cmd.extend(["--goal-radius", str(goal_radius_val)])
+                            except (TypeError, ValueError):
+                                pass
+
+                        # Agent selection flags
+                        control_all_agents = (
+                            bool(getattr(env_cfg, "control_all_agents", False))
+                            if env_cfg is not None
+                            else bool(config.get("control_all_agents", False))
+                        )
+                        if control_all_agents:
+                            cmd.append("--pure-self-play")
+
+                        n_policy = None
+                        if env_cfg is not None and hasattr(env_cfg, "num_policy_controlled_agents"):
+                            n_policy = getattr(env_cfg, "num_policy_controlled_agents")
+                        elif "num_policy_controlled_agents" in config:
+                            n_policy = config.get("num_policy_controlled_agents")
+                        try:
+                            n_policy = int(n_policy)
+                        except (TypeError, ValueError):
+                            n_policy = -1
+                        if n_policy > 0:
+                            cmd += ["--num-policy-controlled-agents", str(n_policy)]
+
+                        deterministic = (
+                            bool(getattr(env_cfg, "deterministic_agent_selection", False))
+                            if env_cfg is not None
+                            else bool(config.get("deterministic_agent_selection", False))
+                        )
+                        if deterministic:
+                            cmd.append("--deterministic-selection")
                         if config["render_map"] is not None:
                             map_path = config["render_map"]
                             if os.path.exists(map_path):
