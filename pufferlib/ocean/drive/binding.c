@@ -76,6 +76,9 @@ static PyObject* my_shared(PyObject* self, PyObject* args, PyObject* kwargs) {
     (void)policy_agents_per_env;  // scratch env stays unconstrained; init applies flag later
     (void)control_all_agents;     // same logic—real envs see the actual value
     (void)deterministic_selection;
+    int policy_agents_per_env = unpack(kwargs, "num_policy_controlled_agents");
+    int control_all_agents = unpack(kwargs, "control_all_agents");
+    int deterministic_selection = unpack(kwargs, "deterministic_agent_selection");
     clock_gettime(CLOCK_REALTIME, &ts);
     srand(ts.tv_nsec);
     int total_agent_count = 0;
@@ -91,6 +94,14 @@ static PyObject* my_shared(PyObject* self, PyObject* args, PyObject* kwargs) {
         sprintf(map_file, "resources/drive/binaries/map_%03d.bin", map_id);
         env->entities = load_map_binary(map_file, env);
         // Leave selection flags at defaults so scratch envs use full rosters.
+        int remaining_capacity = num_agents - total_agent_count;
+        if (remaining_capacity < 0) {
+            remaining_capacity = 0;
+        }
+        env->num_agents = remaining_capacity;
+        env->policy_agents_per_env = policy_agents_per_env;
+        env->control_all_agents = control_all_agents;
+        env->deterministic_agent_selection = deterministic_selection;
         int remaining_capacity = num_agents - total_agent_count;
         if (remaining_capacity < 0) {
             remaining_capacity = 0;
@@ -117,6 +128,32 @@ static PyObject* my_shared(PyObject* self, PyObject* args, PyObject* kwargs) {
                          num_agents,
                          map_id,
                          last_active);
+            return NULL;
+        }
+        int next_total = total_agent_count + env->active_agent_count;
+        if (next_total > num_agents) {
+            int remaining = num_agents - total_agent_count;
+            fprintf(stderr,
+                    "[shared] ERROR oversubscribed agents: requested=%d remaining=%d map=%d\n",
+                    env->active_agent_count,
+                    remaining,
+                    map_id);
+            for(int j=0;j<env->num_entities;j++) {
+                free_entity(&env->entities[j]);
+            }
+            free(env->entities);
+            free(env->active_agent_indices);
+            free(env->static_car_indices);
+            free(env->expert_static_car_indices);
+            free(env);
+            Py_DECREF(agent_offsets);
+            Py_DECREF(map_ids);
+            PyErr_Format(PyExc_RuntimeError,
+                         "binding.shared oversubscribed agent buffers: total=%d target=%d last_map=%d last_active=%d",
+                         next_total,
+                         num_agents,
+                         map_id,
+                         env->active_agent_count);
             return NULL;
         }
         // Store map_id
