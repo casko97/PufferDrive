@@ -34,7 +34,7 @@ const char* error_type_to_string(ErrorType type) {
 // Enhanced error function with custom message support
 void raise_error_with_message(ErrorType type, const char* format, ...) {
     printf("Error occurred: %s", error_type_to_string(type));
-    
+
     if (format != NULL) {
         printf(" - ");
         va_list args;

@@ -9,7 +9,7 @@
 // Test helper to run functions that call exit() in child processes
 int test_exit_function(void (*test_func)(void)) {
     pid_t pid = fork();
-    
+
     if (pid == 0) {
         // Child process - run the test function that exits
         test_func();
@@ -83,15 +83,15 @@ void test_raise_error_direct(void) {
 
 void test_raise_error_with_message_direct(void) {
     printf("Testing raise_error_with_message directly...\n");
-    raise_error_with_message(ERROR_INITIALIZATION_FAILED, 
-                           "failed to initialize component '%s' with value %d", 
+    raise_error_with_message(ERROR_INITIALIZATION_FAILED,
+                           "failed to initialize component '%s' with value %d",
                            "neural_network", 42);
 }
 
 // Test the error_type_to_string function (doesn't exit)
 void test_error_type_to_string(void) {
     printf("\n=== Testing error_type_to_string function ===\n");
-    
+
     printf("ERROR_NONE: %s\n", error_type_to_string(ERROR_NONE));
     printf("ERROR_NULL_POINTER: %s\n", error_type_to_string(ERROR_NULL_POINTER));
     printf("ERROR_INVALID_ARGUMENT: %s\n", error_type_to_string(ERROR_INVALID_ARGUMENT));
@@ -105,12 +105,12 @@ void test_error_type_to_string(void) {
 
 int main(void) {
     printf("=== Error Handling Unit Tests ===\n\n");
-    
+
     // Test error_type_to_string (doesn't exit)
     test_error_type_to_string();
-    
+
     printf("\n=== Testing Error Macros (each runs in separate process) ===\n");
-    
+
     // Test each error macro in a separate process
     struct {
         const char* name;
@@ -128,29 +128,29 @@ int main(void) {
         {"raise_error (direct)", test_raise_error_direct},
         {"raise_error_with_message (direct)", test_raise_error_with_message_direct}
     };
-    
+
     int num_tests = sizeof(tests) / sizeof(tests[0]);
     int passed = 0;
-    
+
     for (int i = 0; i < num_tests; i++) {
         printf("\n--- Test %d: %s ---\n", i + 1, tests[i].name);
-        
+
         int exit_status = test_exit_function(tests[i].func);
-        
+
         if (exit_status == EXIT_FAILURE) {
             printf("PASS: Function exited with EXIT_FAILURE as expected\n");
             passed++;
         } else {
-            printf("FAIL: Function exited with status %d (expected %d)\n", 
+            printf("FAIL: Function exited with status %d (expected %d)\n",
                    exit_status, EXIT_FAILURE);
         }
     }
-    
+
     printf("\n=== Test Summary ===\n");
     printf("Total tests: %d\n", num_tests);
     printf("Passed: %d\n", passed);
     printf("Failed: %d\n", num_tests - passed);
-    
+
     if (passed == num_tests) {
         printf("All tests passed!\n");
         return 0;
