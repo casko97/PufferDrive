@@ -78,5 +78,4 @@ void raise_error(ErrorType type) {
 
 #define RAISE_INVALID_ARG_ERROR_WITH_ARG(arg_name, value) \
     raise_error_with_message(ERROR_INVALID_ARGUMENT, "invalid value for '%s': %d", arg_name, value)
-
 #endif
