@@ -257,7 +257,6 @@ struct Drive {
     int logs_capacity;
     float goal_radius;
     char* ini_file;
-    int set_active_agents_call_count;
 };
 
 typedef struct {
@@ -1269,8 +1268,7 @@ void remove_bad_trajectories(Drive* env){
                     "[remove_bad_trajectories] agent=%d removing static=%d map=%s call=%d\n",
                     env->active_agent_indices[i],
                     static_car_idx,
-                    env->map_name ? env->map_name : "(unset-map)",
-                    env->set_active_agents_call_count);
+                    env->map_name ? env->map_name : "(unset-map)");
             env->entities[static_car_idx].traj_x[0] = -10000;
             env->entities[static_car_idx].traj_y[0] = -10000;
         }
