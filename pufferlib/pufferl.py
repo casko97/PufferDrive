@@ -592,6 +592,9 @@ class PuffeRL:
                         )
                         if deterministic:
                             cmd.append("--deterministic-selection")
+
+                        if self.vecenv.driver_env.goal_radius is not None:
+                            cmd.extend(["--goal-radius", str(self.vecenv.driver_env.goal_radius)])
                         if config["render_map"] is not None:
                             map_path = config["render_map"]
                             if os.path.exists(map_path):
