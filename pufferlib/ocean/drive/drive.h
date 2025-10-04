@@ -256,10 +256,6 @@ struct Drive {
     int policy_agents_per_env;
     int logs_capacity;
     float goal_radius;
-    int control_all_agents;
-    int deterministic_agent_selection;
-    int policy_agents_per_env;
-    int logs_capacity;
     char* ini_file;
     int set_active_agents_call_count;
 };

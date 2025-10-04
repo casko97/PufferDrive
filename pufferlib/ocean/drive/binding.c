@@ -73,8 +73,8 @@ static PyObject* my_shared(PyObject* self, PyObject* args, PyObject* kwargs) {
     int policy_agents_per_env = unpack(kwargs, "num_policy_controlled_agents");
     int control_all_agents = unpack(kwargs, "control_all_agents");
     int deterministic_selection = unpack(kwargs, "deterministic_agent_selection");
-    (void)policy_agents_per_env;  // scratch env stays unconstrained; init applies flag later
-    (void)control_all_agents;     // same logic—real envs see the actual value
+    (void)policy_agents_per_env;
+    (void)control_all_agents;
     (void)deterministic_selection;
     int policy_agents_per_env = unpack(kwargs, "num_policy_controlled_agents");
     int control_all_agents = unpack(kwargs, "control_all_agents");
@@ -93,7 +93,6 @@ static PyObject* my_shared(PyObject* self, PyObject* args, PyObject* kwargs) {
         Drive* env = calloc(1, sizeof(Drive));
         sprintf(map_file, "resources/drive/binaries/map_%03d.bin", map_id);
         env->entities = load_map_binary(map_file, env);
-        // Leave selection flags at defaults so scratch envs use full rosters.
         int remaining_capacity = num_agents - total_agent_count;
         if (remaining_capacity < 0) {
             remaining_capacity = 0;
@@ -111,7 +110,7 @@ static PyObject* my_shared(PyObject* self, PyObject* args, PyObject* kwargs) {
         int next_total = total_agent_count + env->active_agent_count;
         if (next_total > num_agents) {
             int remaining = num_agents - total_agent_count;
-            int last_active = env->active_agent_count; // capture before free
+            int last_active = env->active_agent_count;
             for(int j=0;j<env->num_entities;j++) {
                 free_entity(&env->entities[j]);
             }
@@ -249,7 +248,6 @@ static int my_log(PyObject* dict, Log* log) {
     assign_to_dict(dict, "completion_rate", log->completion_rate);
     assign_to_dict(dict, "clean_collision_rate", log->clean_collision_rate);
     assign_to_dict(dict, "avg_displacement_error", log->avg_displacement_error);
-    // Composition metrics (averaged across agents -> per-env values)
     assign_to_dict(dict, "active_agent_count", log->active_agent_count);
     assign_to_dict(dict, "expert_static_car_count", log->expert_static_car_count);
     assign_to_dict(dict, "static_car_count", log->static_car_count);
