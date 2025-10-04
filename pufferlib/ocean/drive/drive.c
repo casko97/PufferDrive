@@ -700,15 +700,6 @@ int main(int argc, char* argv[]) {
                     goal_radius = 2.0f; // Ensure valid value
                 }
             }
-        } else if (strcmp(argv[i], "--pure-self-play") == 0) {
-            control_all_agents = 1;
-        } else if (strcmp(argv[i], "--deterministic-selection") == 0) {
-            deterministic_selection = 1;
-        } else if (strcmp(argv[i], "--num-policy-controlled-agents") == 0) {
-            if (i + 1 < argc) {
-                policy_agents_per_env = atoi(argv[i + 1]);
-                i++;
-            }
         } else if (strcmp(argv[i], "--map-name") == 0) {
             // Check if there's a next argument for the map path
             if (i + 1 < argc) {
