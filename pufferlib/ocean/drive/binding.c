@@ -73,11 +73,22 @@ static PyObject* my_shared(PyObject* self, PyObject* args, PyObject* kwargs) {
     int policy_agents_per_env = unpack(kwargs, "num_policy_controlled_agents");
     int control_all_agents = unpack(kwargs, "control_all_agents");
     int deterministic_selection = unpack(kwargs, "deterministic_agent_selection");
+    int max_scenes_per_process = 0;
+    PyObject* max_envs_obj = PyDict_GetItemString(kwargs, "max_scenes_per_process");
+    if (max_envs_obj && PyLong_Check(max_envs_obj)) {
+        long v = PyLong_AsLong(max_envs_obj);
+        if (v > 0 && v <= INT_MAX) {
+            max_scenes_per_process = (int)v;
+        }
+    }
     clock_gettime(CLOCK_REALTIME, &ts);
     srand(ts.tv_nsec);
     int total_agent_count = 0;
     int env_count = 0;
     int max_envs = num_agents;
+    if (max_scenes_per_process > 0 && max_scenes_per_process < max_envs) {
+        max_envs = max_scenes_per_process;
+    }
     PyObject* agent_offsets = PyList_New(max_envs+1);
     PyObject* map_ids = PyList_New(max_envs);
     // getting env count

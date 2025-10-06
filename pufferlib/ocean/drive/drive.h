@@ -1264,11 +1264,6 @@ void remove_bad_trajectories(Drive* env){
         for(int j = 0; j < env->static_car_count; j++){
             int static_car_idx = env->static_car_indices[j];
             if(static_car_idx != collided_with_indices[i]) continue;
-            fprintf(stderr,
-                    "[remove_bad_trajectories] agent=%d removing static=%d map=%s call=%d\n",
-                    env->active_agent_indices[i],
-                    static_car_idx,
-                    env->map_name ? env->map_name : "(unset-map)");
             env->entities[static_car_idx].traj_x[0] = -10000;
             env->entities[static_car_idx].traj_y[0] = -10000;
         }
