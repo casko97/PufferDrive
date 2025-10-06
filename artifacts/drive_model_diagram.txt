@@ -1,0 +1,71 @@
+Drive Policy + Value Network Diagram (Discrete setup)
+
+Config sources:
+- Policy: pufferlib/ocean/torch.py (class Drive)
+- RNN: pufferlib/models.py (class LSTMWrapper)
+- Config: pufferlib/config/ocean/drive.ini (input_size=64, hidden_size=256; rnn.hidden_size=256)
+
+High-level
+---------
+Obs (ego[7], partners[63×7], road[200×7])
+  |                                     |                                     |
+  | Ego MLP:          7 → 64 → 64       | Partner MLP: 7 → 64 → 64 (per obj)  | Road MLP: 13 → 64 → 64 (per elem)
+  |                     +LayerNorm       | +LayerNorm, max-pool over 63         | +LayerNorm, max-pool over 200
+  |__________________________|__________________________|__________________________
+                           Concatenate [64 + 64 + 64] = 192
+                           GELU → Linear(192 → 256) → ReLU    ← fusion (shared embedding)
+                                      |
+                             [optional] LSTM(256 → 256)
+                                      |
+                         ┌─────────────┴─────────────┐
+                         │                           │
+                  Actor head                    Value head
+              Linear(256 → 20)*                Linear(256 → 1)
+            split logits to [7,13]            (state-value V(s))
+
+* Continuous variant: Linear(256 → 2×act_dim) → split to loc/scale (softplus) → Normal
+
+
+Detailed Breakdown
+------------------
+Encoders (all linears orthogonally initialized):
+- Ego encoder: Linear(7 → 64) → LayerNorm(64) → Linear(64 → 64)
+- Partner encoder (applied per object): Linear(7 → 64) → LayerNorm(64) → Linear(64 → 64),
+  then max over 63 objects → 64
+- Road encoder (per element, with categorical one-hot):
+  - Per-element features: [6 continuous + 1 categorical] → one-hot(categorical, 7) → 13 dims
+  - Linear(13 → 64) → LayerNorm(64) → Linear(64 → 64), then max over 200 elements → 64
+
+Fusion (shared embedding for actor + critic):
+- Concat ego(64), road(64), partner(64) → 192
+- GELU → Linear(192 → 256) → ReLU
+- Output: 256-D feature used by both heads (or fed into LSTM first if enabled)
+
+Recurrent layer (optional):
+- Single-layer LSTM with input_size=256, hidden_size=256
+- Inference: LSTMCell(256,256), state carried step-to-step
+- Training: nn.LSTM(256,256) over time-batched [T, B, 256]
+
+Heads:
+- Policy (Discrete setup): Linear(256 → 20) → split to [7,13] MultiDiscrete logits
+- Policy (Continuous setup): Linear(256 → 2×act_dim) → split to loc/scale (softplus) → Normal
+- Value: Linear(256 → 1), no hidden layer
+
+Notes on Value Function:
+- The value head is a single linear readout from the shared 256-D feature (post-fusion, post-LSTM if enabled).
+- Training target uses bootstrapped returns from a GAE/V-trace style advantage kernel; true terminals break bootstrapping.
+
+Shape Flow Example (Discrete):
+1) Obs: [N, 7 + 63×7 + 200×7]
+2) Encoders + pooling: ego[64], partner[64], road[64]
+3) Concat: [N, 192]
+4) Fusion: [N, 256]
+5a) If RNN disabled → Heads
+5b) If RNN enabled: LSTM → [N, 256] → Heads
+6) Value: [N, 1], Policy logits: [N, 20] split to [7, 13]
+
+Parameter Highlights (approx., Discrete):
+- Value head: 256 weights + 1 bias = 257 params
+- LSTM(256): ~526k params
+- Encoders + fusion + actor: ~70k params
+

@@ -30,7 +30,7 @@ class Drive(pufferlib.PufferEnv):
         num_policy_controlled_agents=-1,
         deterministic_agent_selection=False,
         max_scenes_per_process=None,
-        align_agent_count_with_shared=False,
+        align_agent_count_with_shared=None,
         buf=None,
         seed=1,
     ):
@@ -78,7 +78,12 @@ class Drive(pufferlib.PufferEnv):
         self.max_scenes_per_process = (
             int(max_scenes_per_process) if max_scenes_per_process is not None else None
         )
-        self.align_agent_count_with_shared = bool(align_agent_count_with_shared)
+        if align_agent_count_with_shared is None:
+            self.align_agent_count_with_shared = bool(
+                self.num_policy_controlled_agents > 0 and not self.control_all_agents
+            )
+        else:
+            self.align_agent_count_with_shared = bool(align_agent_count_with_shared)
 
         # Safe default: if explicitly selecting a fixed number of policy agents per scene
         # and not controlling all agents, cap the number of spawned scenes unless overridden.
