@@ -70,25 +70,11 @@ static int my_put(Env* env, PyObject* args, PyObject* kwargs) {
 static PyObject* my_shared(PyObject* self, PyObject* args, PyObject* kwargs) {
     int num_agents = unpack(kwargs, "num_agents");
     int num_maps = unpack(kwargs, "num_maps");
-    int policy_agents_per_env = unpack(kwargs, "num_policy_controlled_agents");
-    int control_all_agents = unpack(kwargs, "control_all_agents");
-    int deterministic_selection = unpack(kwargs, "deterministic_agent_selection");
-    int max_scenes_per_process = 0;
-    PyObject* max_envs_obj = PyDict_GetItemString(kwargs, "max_scenes_per_process");
-    if (max_envs_obj && PyLong_Check(max_envs_obj)) {
-        long v = PyLong_AsLong(max_envs_obj);
-        if (v > 0 && v <= INT_MAX) {
-            max_scenes_per_process = (int)v;
-        }
-    }
     clock_gettime(CLOCK_REALTIME, &ts);
     srand(ts.tv_nsec);
     int total_agent_count = 0;
     int env_count = 0;
     int max_envs = num_agents;
-    if (max_scenes_per_process > 0 && max_scenes_per_process < max_envs) {
-        max_envs = max_scenes_per_process;
-    }
     PyObject* agent_offsets = PyList_New(max_envs+1);
     PyObject* map_ids = PyList_New(max_envs);
     // getting env count
@@ -98,51 +84,14 @@ static PyObject* my_shared(PyObject* self, PyObject* args, PyObject* kwargs) {
         Drive* env = calloc(1, sizeof(Drive));
         sprintf(map_file, "resources/drive/binaries/map_%03d.bin", map_id);
         env->entities = load_map_binary(map_file, env);
-        int remaining_capacity = num_agents - total_agent_count;
-        if (remaining_capacity < 0) {
-            remaining_capacity = 0;
-        }
-        env->num_agents = remaining_capacity;
-        // Scratch env used only to estimate agent offsets per map.
-        // Do NOT apply selection flags here; keep scratch lightweight.
-        // Final per-env flags are applied in env_init (my_init).
-        env->policy_agents_per_env = -1;  // disable policy-controlled selection in scratch
-        env->control_all_agents = 0;      // no pure self-play in scratch
-        env->deterministic_agent_selection = 0; // random selection if used internally
         set_active_agents(env);
-        int next_total = total_agent_count + env->active_agent_count;
-        if (next_total > num_agents) {
-            int remaining = num_agents - total_agent_count;
-            fprintf(stderr,
-                    "[shared] ERROR oversubscribed agents: requested=%d remaining=%d map=%d\n",
-                    env->active_agent_count,
-                    remaining,
-                    map_id);
-            for(int j=0;j<env->num_entities;j++) {
-                free_entity(&env->entities[j]);
-            }
-            free(env->entities);
-            free(env->active_agent_indices);
-            free(env->static_car_indices);
-            free(env->expert_static_car_indices);
-            free(env);
-            Py_DECREF(agent_offsets);
-            Py_DECREF(map_ids);
-            PyErr_Format(PyExc_RuntimeError,
-                         "binding.shared oversubscribed agent buffers: total=%d target=%d last_map=%d last_active=%d",
-                         next_total,
-                         num_agents,
-                         map_id,
-                         env->active_agent_count);
-            return NULL;
-        }
         // Store map_id
         PyObject* map_id_obj = PyLong_FromLong(map_id);
         PyList_SetItem(map_ids, env_count, map_id_obj);
         // Store agent offset
         PyObject* offset = PyLong_FromLong(total_agent_count);
         PyList_SetItem(agent_offsets, env_count, offset);
-        total_agent_count = next_total;
+        total_agent_count += env->active_agent_count;
         env_count++;
         for(int j=0;j<env->num_entities;j++) {
             free_entity(&env->entities[j]);
@@ -229,8 +178,5 @@ static int my_log(PyObject* dict, Log* log) {
     assign_to_dict(dict, "completion_rate", log->completion_rate);
     assign_to_dict(dict, "clean_collision_rate", log->clean_collision_rate);
     assign_to_dict(dict, "avg_displacement_error", log->avg_displacement_error);
-    assign_to_dict(dict, "active_agent_count", log->active_agent_count);
-    assign_to_dict(dict, "expert_static_car_count", log->expert_static_car_count);
-    assign_to_dict(dict, "static_car_count", log->static_car_count);
     return 0;
 }

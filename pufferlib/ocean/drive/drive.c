@@ -482,16 +482,8 @@ static int make_gif_from_frames(const char *pattern, int fps,
     return 0;
 }
 
-int eval_gif(const char* map_name,
-             int show_grid,
-             int obs_only,
-             int lasers,
-             int log_trajectories,
-             int frame_skip,
-             float goal_radius,
-             int control_all_agents,
-             int policy_agents_per_env,
-             int deterministic_selection) {
+int eval_gif(const char* map_name, int show_grid, int obs_only, int lasers, int log_trajectories, int frame_skip, float goal_radius) {
+
     // Use default if no map provided
     if (map_name == NULL) {
         map_name = "resources/drive/binaries/map_000.bin";
@@ -515,11 +507,8 @@ int eval_gif(const char* map_name,
         .reward_offroad_collision = -0.1f,
         .reward_ade = -0.0f,
         .goal_radius = goal_radius,
-        .map_name = map_name,
-        .spawn_immunity_timer = 50,
-        .control_all_agents = control_all_agents,
-        .policy_agents_per_env = policy_agents_per_env,
-        .deterministic_agent_selection = deterministic_selection
+	    .map_name = map_name,
+        .spawn_immunity_timer = 50
     };
     allocate(&env);
 
@@ -667,9 +656,6 @@ int main(int argc, char* argv[]) {
     int obs_only = 0;
     int lasers = 0;
     int log_trajectories = 1;
-    int control_all_agents = 0;
-    int deterministic_selection = 0;
-    int policy_agents_per_env = -1;
     int frame_skip = 1;
     float goal_radius = 2.0f;
     const char* map_name = NULL;
@@ -712,8 +698,7 @@ int main(int argc, char* argv[]) {
         }
     }
 
-    eval_gif(map_name, show_grid, obs_only, lasers, log_trajectories, frame_skip,
-             goal_radius, control_all_agents, policy_agents_per_env, deterministic_selection);
+    eval_gif(map_name, show_grid, obs_only, lasers, log_trajectories, frame_skip, goal_radius);
     //demo();
     //performance_test();
     return 0;

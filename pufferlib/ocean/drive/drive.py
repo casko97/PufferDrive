@@ -29,8 +29,6 @@ class Drive(pufferlib.PufferEnv):
         control_all_agents=False,
         num_policy_controlled_agents=-1,
         deterministic_agent_selection=False,
-        max_scenes_per_process=None,
-        align_agent_count_with_shared=None,
         buf=None,
         seed=1,
     ):
@@ -75,47 +73,12 @@ class Drive(pufferlib.PufferEnv):
         self.control_all_agents = bool(control_all_agents)
         self.num_policy_controlled_agents = int(num_policy_controlled_agents)
         self.deterministic_agent_selection = bool(deterministic_agent_selection)
-        self.max_scenes_per_process = (
-            int(max_scenes_per_process) if max_scenes_per_process is not None else None
-        )
-        if align_agent_count_with_shared is None:
-            self.align_agent_count_with_shared = bool(
-                self.num_policy_controlled_agents > 0 and not self.control_all_agents
-            )
-        else:
-            self.align_agent_count_with_shared = bool(align_agent_count_with_shared)
 
-        # Safe default: if explicitly selecting a fixed number of policy agents per scene
-        # and not controlling all agents, cap the number of spawned scenes unless overridden.
-        if (
-            self.num_policy_controlled_agents > 0
-            and not self.control_all_agents
-            and (self.max_scenes_per_process is None or self.max_scenes_per_process <= 0)
-        ):
-            self.max_scenes_per_process = 32
-
-        shared_kwargs = dict(
-            num_agents=num_agents,
-            num_maps=num_maps,
-            num_policy_controlled_agents=self.num_policy_controlled_agents,
-            control_all_agents=1 if self.control_all_agents else 0,
-            deterministic_agent_selection=1 if self.deterministic_agent_selection else 0,
-        )
-        if self.max_scenes_per_process is not None and self.max_scenes_per_process > 0:
-            shared_kwargs["max_scenes_per_process"] = self.max_scenes_per_process
-
-        agent_offsets, map_ids, num_envs = binding.shared(**shared_kwargs)
+        agent_offsets, map_ids, num_envs = binding.shared(num_agents=num_agents, num_maps=num_maps)
         self.num_agents = num_agents
         self.agent_offsets = agent_offsets
         self.map_ids = map_ids
         self.num_envs = num_envs
-        if self.align_agent_count_with_shared:
-            try:
-                final_total = int(agent_offsets[num_envs])
-                if final_total > 0:
-                    self.num_agents = final_total
-            except Exception:
-                pass
         super().__init__(buf=buf)
         env_ids = []
         for i in range(num_envs):
@@ -169,17 +132,7 @@ class Drive(pufferlib.PufferEnv):
             will_resample = 1
             if will_resample:
                 binding.vec_close(self.c_envs)
-                resample_kwargs = dict(
-                    num_agents=self.num_agents,
-                    num_maps=self.num_maps,
-                    num_policy_controlled_agents=self.num_policy_controlled_agents,
-                    control_all_agents=1 if self.control_all_agents else 0,
-                    deterministic_agent_selection=1 if self.deterministic_agent_selection else 0,
-                )
-                if self.max_scenes_per_process is not None and self.max_scenes_per_process > 0:
-                    resample_kwargs["max_scenes_per_process"] = self.max_scenes_per_process
-
-                agent_offsets, map_ids, num_envs = binding.shared(**resample_kwargs)
+                agent_offsets, map_ids, num_envs = binding.shared(num_agents=self.num_agents, num_maps=self.num_maps)
                 env_ids = []
                 seed = np.random.randint(0, 2**32 - 1)
                 for i in range(num_envs):
