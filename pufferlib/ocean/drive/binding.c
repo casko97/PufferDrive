@@ -84,9 +84,6 @@ static PyObject* my_shared(PyObject* self, PyObject* args, PyObject* kwargs) {
         Drive* env = calloc(1, sizeof(Drive));
         sprintf(map_file, "resources/drive/binaries/map_%03d.bin", map_id);
         env->entities = load_map_binary(map_file, env);
-        int remaining_capacity = num_agents - total_agent_count;
-        if (remaining_capacity < 0) remaining_capacity = 0;
-        env->num_agents = remaining_capacity;
         PyObject* obj = NULL;
         obj = kwargs ? PyDict_GetItemString(kwargs, "num_policy_controlled_agents") : NULL;
         if (obj && PyLong_Check(obj)) {
