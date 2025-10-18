@@ -84,6 +84,28 @@ static PyObject* my_shared(PyObject* self, PyObject* args, PyObject* kwargs) {
         Drive* env = calloc(1, sizeof(Drive));
         sprintf(map_file, "resources/drive/binaries/map_%03d.bin", map_id);
         env->entities = load_map_binary(map_file, env);
+        int remaining_capacity = num_agents - total_agent_count;
+        if (remaining_capacity < 0) remaining_capacity = 0;
+        env->num_agents = remaining_capacity;
+        PyObject* obj = NULL;
+        obj = kwargs ? PyDict_GetItemString(kwargs, "num_policy_controlled_agents") : NULL;
+        if (obj && PyLong_Check(obj)) {
+            env->policy_agents_per_env = (int)PyLong_AsLong(obj);
+        } else {
+            env->policy_agents_per_env = -1;
+        }
+        obj = kwargs ? PyDict_GetItemString(kwargs, "control_all_agents") : NULL;
+        if (obj && PyLong_Check(obj)) {
+            env->control_all_agents = (int)PyLong_AsLong(obj);
+        } else {
+            env->control_all_agents = 0;
+        }
+        obj = kwargs ? PyDict_GetItemString(kwargs, "deterministic_agent_selection") : NULL;
+        if (obj && PyLong_Check(obj)) {
+            env->deterministic_agent_selection = (int)PyLong_AsLong(obj);
+        } else {
+            env->deterministic_agent_selection = 0;
+        }
         set_active_agents(env);
         // Store map_id
         PyObject* map_id_obj = PyLong_FromLong(map_id);
@@ -178,5 +200,8 @@ static int my_log(PyObject* dict, Log* log) {
     assign_to_dict(dict, "completion_rate", log->completion_rate);
     assign_to_dict(dict, "clean_collision_rate", log->clean_collision_rate);
     assign_to_dict(dict, "avg_displacement_error", log->avg_displacement_error);
+    assign_to_dict(dict, "active_agent_count", log->active_agent_count);
+    assign_to_dict(dict, "expert_static_car_count", log->expert_static_car_count);
+    assign_to_dict(dict, "static_car_count", log->static_car_count);
     return 0;
 }

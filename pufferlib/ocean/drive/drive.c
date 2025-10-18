@@ -482,7 +482,16 @@ static int make_gif_from_frames(const char *pattern, int fps,
     return 0;
 }
 
-int eval_gif(const char* map_name, int show_grid, int obs_only, int lasers, int log_trajectories, int frame_skip, float goal_radius) {
+int eval_gif(const char* map_name,
+             int show_grid,
+             int obs_only,
+             int lasers,
+             int log_trajectories,
+             int frame_skip,
+             float goal_radius,
+             int control_all_agents,
+             int policy_agents_per_env,
+             int deterministic_selection) {
 
     // Use default if no map provided
     if (map_name == NULL) {
@@ -507,8 +516,11 @@ int eval_gif(const char* map_name, int show_grid, int obs_only, int lasers, int 
         .reward_offroad_collision = -0.1f,
         .reward_ade = -0.0f,
         .goal_radius = goal_radius,
-	    .map_name = map_name,
-        .spawn_immunity_timer = 50
+        .map_name = map_name,
+        .spawn_immunity_timer = 50,
+        .control_all_agents = control_all_agents,
+        .policy_agents_per_env = policy_agents_per_env,
+        .deterministic_agent_selection = deterministic_selection
     };
     allocate(&env);
 
@@ -659,6 +671,9 @@ int main(int argc, char* argv[]) {
     int frame_skip = 1;
     float goal_radius = 2.0f;
     const char* map_name = NULL;
+    int control_all_agents = 0;
+    int deterministic_selection = 0;
+    int policy_agents_per_env = -1;
 
     // Parse command line arguments
     for (int i = 1; i < argc; i++) {
@@ -695,10 +710,20 @@ int main(int argc, char* argv[]) {
                 fprintf(stderr, "Error: --map-name option requires a map file path\n");
                 return 1;
             }
+        } else if (strcmp(argv[i], "--pure-self-play") == 0) {
+            control_all_agents = 1;
+        } else if (strcmp(argv[i], "--num-policy-controlled-agents") == 0) {
+            if (i + 1 < argc) {
+                policy_agents_per_env = atoi(argv[i + 1]);
+                i++;
+            }
+        } else if (strcmp(argv[i], "--deterministic-selection") == 0) {
+            deterministic_selection = 1;
         }
     }
 
-    eval_gif(map_name, show_grid, obs_only, lasers, log_trajectories, frame_skip, goal_radius);
+    eval_gif(map_name, show_grid, obs_only, lasers, log_trajectories, frame_skip,
+             goal_radius, control_all_agents, policy_agents_per_env, deterministic_selection);
     //demo();
     //performance_test();
     return 0;

@@ -74,7 +74,13 @@ class Drive(pufferlib.PufferEnv):
         self.num_policy_controlled_agents = int(num_policy_controlled_agents)
         self.deterministic_agent_selection = bool(deterministic_agent_selection)
 
-        agent_offsets, map_ids, num_envs = binding.shared(num_agents=num_agents, num_maps=num_maps)
+        agent_offsets, map_ids, num_envs = binding.shared(
+            num_agents=num_agents,
+            num_maps=num_maps,
+            num_policy_controlled_agents=self.num_policy_controlled_agents,
+            control_all_agents=1 if self.control_all_agents else 0,
+            deterministic_agent_selection=1 if self.deterministic_agent_selection else 0,
+        )
         self.num_agents = num_agents
         self.agent_offsets = agent_offsets
         self.map_ids = map_ids
@@ -132,7 +138,13 @@ class Drive(pufferlib.PufferEnv):
             will_resample = 1
             if will_resample:
                 binding.vec_close(self.c_envs)
-                agent_offsets, map_ids, num_envs = binding.shared(num_agents=self.num_agents, num_maps=self.num_maps)
+                agent_offsets, map_ids, num_envs = binding.shared(
+                    num_agents=self.num_agents,
+                    num_maps=self.num_maps,
+                    num_policy_controlled_agents=self.num_policy_controlled_agents,
+                    control_all_agents=1 if self.control_all_agents else 0,
+                    deterministic_agent_selection=1 if self.deterministic_agent_selection else 0,
+                )
                 env_ids = []
                 seed = np.random.randint(0, 2**32 - 1)
                 for i in range(num_envs):

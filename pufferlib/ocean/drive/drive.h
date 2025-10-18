@@ -255,7 +255,6 @@ struct Drive {
     int deterministic_agent_selection;
     int policy_agents_per_env;
     int logs_capacity;
-    float goal_radius;
     char* ini_file;
 };
 
@@ -1212,7 +1211,6 @@ void set_active_agents(Drive* env){
     for(int i=0;i<env->expert_static_car_count;i++){
         env->expert_static_car_indices[i] = expert_static_car_indices[i];
     }
-
 finalize:
     if (env->logs_capacity > 0 && env->active_agent_count > env->logs_capacity) {
         fprintf(stderr,
