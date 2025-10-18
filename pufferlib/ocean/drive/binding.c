@@ -103,9 +103,12 @@ static PyObject* my_shared(PyObject* self, PyObject* args, PyObject* kwargs) {
             remaining_capacity = 0;
         }
         env->num_agents = remaining_capacity;
-        env->policy_agents_per_env = policy_agents_per_env;
-        env->control_all_agents = control_all_agents;
-        env->deterministic_agent_selection = deterministic_selection;
+        // Scratch env used only to estimate agent offsets per map.
+        // Do NOT apply selection flags here; keep scratch lightweight.
+        // Final per-env flags are applied in env_init (my_init).
+        env->policy_agents_per_env = -1;  // disable policy-controlled selection in scratch
+        env->control_all_agents = 0;      // no pure self-play in scratch
+        env->deterministic_agent_selection = 0; // random selection if used internally
         set_active_agents(env);
         int next_total = total_agent_count + env->active_agent_count;
         if (next_total > num_agents) {
