@@ -551,6 +551,8 @@ class PuffeRL:
                             cmd.append("--control-non-vehicles")
                         if self.vecenv.driver_env.goal_radius is not None:
                             cmd.extend(["--goal-radius", str(self.vecenv.driver_env.goal_radius)])
+                        if self.vecenv.driver_env.init_steps > 0:
+                            cmd.extend(["--init-steps", str(self.vecenv.driver_env.init_steps)])
                         if config["render_map"] is not None:
                             map_path = config["render_map"]
                             if os.path.exists(map_path):

@@ -265,6 +265,7 @@ struct Drive {
     int expert_static_car_count;
     int* expert_static_car_indices;
     int timestep;
+    int init_steps;
     int dynamics_model;
     GridMap* grid_map;
     int* neighbor_offsets;
@@ -446,9 +447,15 @@ void set_start_position(Drive* env){
             }
         }
         Entity* e = &env->entities[i];
-        e->x = e->traj_x[0];
-        e->y = e->traj_y[0];
-        e->z = e->traj_z[0];
+
+        // Clamp init_steps to ensure we don't go out of bounds
+        int step = env->init_steps;
+        if (step >= e->array_size) step = e->array_size - 1;
+        if (step < 0) step = 0;
+
+        e->x = e->traj_x[step];
+        e->y = e->traj_y[step];
+        e->z = e->traj_z[step];
 
         if(e->type > CYCLIST || e->type == 0){
             continue;
@@ -459,14 +466,14 @@ void set_start_position(Drive* env){
             e->vz = 0;
             e->collided_before_goal = 0;
         } else {
-            e->vx = e->traj_vx[0];
-            e->vy = e->traj_vy[0];
-            e->vz = e->traj_vz[0];
+            e->vx = e->traj_vx[env->init_steps];
+            e->vy = e->traj_vy[env->init_steps];
+            e->vz = e->traj_vz[env->init_steps];
         }
-        e->heading = e->traj_heading[0];
+        e->heading = e->traj_heading[env->init_steps];
         e->heading_x = cosf(e->heading);
         e->heading_y = sinf(e->heading);
-        e->valid = e->traj_valid[0];
+        e->valid = e->traj_valid[env->init_steps];
         e->collision_state = 0;
         e->metrics_array[COLLISION_IDX] = 0.0f; // vehicle collision
         e->metrics_array[OFFROAD_IDX] = 0.0f; // offroad
@@ -1240,8 +1247,9 @@ void set_active_agents(Drive* env){
 
         if(!is_type_controllable) continue;
 
-        // Check if the agent has a valid data point at the initial timestep
-        if(env->entities[i].traj_valid[0] != 1) continue;
+        // Check if agent has valid trajectory point at the initial timestep
+        if(env->entities[i].traj_valid[env->init_steps] != 1) continue;
+
         env->num_controllable_agents++;
 
         // Return current distance to goal if agent meets other conditions
@@ -1745,7 +1753,7 @@ void compute_new_goal(Drive* env, int agent_idx) {
 }
 
 void c_reset(Drive* env){
-    env->timestep = 0;
+    env->timestep = env->init_steps;
     set_start_position(env);
     for(int x = 0;x<env->active_agent_count; x++){
         env->logs[x] = (Log){0};
