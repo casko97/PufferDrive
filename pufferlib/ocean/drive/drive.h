@@ -283,7 +283,6 @@ struct Drive {
     float reward_goal_post_respawn;
     float reward_vehicle_collision_post_respawn;
     float goal_radius;
-    // merged config flags
     int control_all_agents;
     int deterministic_agent_selection;
     int policy_agents_per_env;
@@ -1350,7 +1349,6 @@ void set_active_agents(Drive* env){
         if (!env->deterministic_agent_selection) {
             fisher_yates_shuffle(b.candidates, b.candidates_count);
         }
-        // If we have eligible candidates, select exactly 'desired'
         if (desired > 0) {
             for (int k = 0; k < desired; k++) {
                 active_agent_indices[env->active_agent_count++] = b.candidates[k];
@@ -1389,7 +1387,6 @@ void set_active_agents(Drive* env){
 
             goto finalize;
         } else {
-            // No eligible candidates: honor request by picking a valid fallback vehicle
             int picked = -1;
             for (int i = 0; i < env->num_objects; i++) {
                 if (env->entities[i].type != VEHICLE) continue;
@@ -1402,7 +1399,6 @@ void set_active_agents(Drive* env){
                 active_agent_indices[env->active_agent_count++] = picked;
                 env->entities[picked].active_agent = 1;
 
-                // Mark remaining vehicles as expert replays (moving, gold) rather than frozen statics
                 for (int i = 0; i < env->num_objects; i++) {
                     if (i == picked) continue;
                     if (env->entities[i].type == VEHICLE) {
@@ -1425,7 +1421,6 @@ void set_active_agents(Drive* env){
                 for (int i = 0; i < env->expert_static_car_count; i++) env->expert_static_car_indices[i] = expert_static_car_indices[i];
                 goto finalize;
             }
-            // If we truly couldn't pick anything, fall through to default flow
         }
     }
 

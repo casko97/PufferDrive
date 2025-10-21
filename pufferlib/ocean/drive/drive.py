@@ -27,7 +27,6 @@ class Drive(pufferlib.PufferEnv):
         num_maps=100,
         num_agents=512,
         action_type="discrete",
-        # merged options from both branches
         control_all_agents=False,
         num_policy_controlled_agents=-1,
         deterministic_agent_selection=False,
