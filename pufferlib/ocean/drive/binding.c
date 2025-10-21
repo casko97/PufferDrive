@@ -84,6 +84,25 @@ static PyObject* my_shared(PyObject* self, PyObject* args, PyObject* kwargs) {
         Drive* env = calloc(1, sizeof(Drive));
         sprintf(map_file, "resources/drive/binaries/map_%03d.bin", map_id);
         env->entities = load_map_binary(map_file, env);
+        PyObject* obj = NULL;
+        obj = kwargs ? PyDict_GetItemString(kwargs, "num_policy_controlled_agents") : NULL;
+        if (obj && PyLong_Check(obj)) {
+            env->policy_agents_per_env = (int)PyLong_AsLong(obj);
+        } else {
+            env->policy_agents_per_env = -1;
+        }
+        obj = kwargs ? PyDict_GetItemString(kwargs, "control_all_agents") : NULL;
+        if (obj && PyLong_Check(obj)) {
+            env->control_all_agents = (int)PyLong_AsLong(obj);
+        } else {
+            env->control_all_agents = 0;
+        }
+        obj = kwargs ? PyDict_GetItemString(kwargs, "deterministic_agent_selection") : NULL;
+        if (obj && PyLong_Check(obj)) {
+            env->deterministic_agent_selection = (int)PyLong_AsLong(obj);
+        } else {
+            env->deterministic_agent_selection = 0;
+        }
         set_active_agents(env);
         // Store map_id
         PyObject* map_id_obj = PyLong_FromLong(map_id);
@@ -153,8 +172,10 @@ static int my_init(Env* env, PyObject* args, PyObject* kwargs) {
     env->goal_radius = conf.goal_radius;
     env->use_goal_generation = conf.use_goal_generation;
     env->spawn_immunity_timer = conf.spawn_immunity_timer;
+    env->policy_agents_per_env = unpack(kwargs, "num_policy_controlled_agents");
+    env->control_all_agents = unpack(kwargs, "control_all_agents");
+    env->deterministic_agent_selection = unpack(kwargs, "deterministic_agent_selection");
     env->control_non_vehicles = (int)unpack(kwargs, "control_non_vehicles");
-
     int map_id = unpack(kwargs, "map_id");
     int max_agents = unpack(kwargs, "max_agents");
     int init_steps = unpack(kwargs, "init_steps");
@@ -181,6 +202,8 @@ static int my_log(PyObject* dict, Log* log) {
     assign_to_dict(dict, "lane_alignment_rate", log->lane_alignment_rate);
     assign_to_dict(dict, "perf", log->perf);
     assign_to_dict(dict, "score", log->score);
-
+    assign_to_dict(dict, "active_agent_count", log->active_agent_count);
+    assign_to_dict(dict, "expert_static_car_count", log->expert_static_car_count);
+    assign_to_dict(dict, "static_car_count", log->static_car_count);
     return 0;
 }
