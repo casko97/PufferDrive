@@ -272,7 +272,7 @@ def test_puffernet_argmax_multidiscrete(batch_size=16, logit_sizes=[5, 7, 2]):
     assert_near(output_puffer, output_torch.numpy())
 
 
-def test_nmmo3(batch_size=1, input_size=512, hidden_size=512):
+def test_drive(batch_size=1, input_size=512, hidden_size=512):
     from pufferlib.ocean.torch import Drive, Recurrent
     from pufferlib.ocean import env_creator
 
@@ -291,8 +291,6 @@ def test_nmmo3(batch_size=1, input_size=512, hidden_size=512):
         "lstm_h": torch.zeros(batch_size, hidden_size),
         "lstm_c": torch.zeros(batch_size, hidden_size),
     }
-
-    breakpoint()
     output = model.forward_eval(input_torch, state)
     pass
 

@@ -10,7 +10,8 @@
 #include <string.h>
 #include <stdbool.h>
 #include "error.h"
-#include "drive.c"
+#include "drive.h"
+#include "drivenet.h"
 #include "libgen.h"
 #define TRAJECTORY_LENGTH_DEFAULT 91
 
