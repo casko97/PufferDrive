@@ -16,7 +16,25 @@ classifiers=[
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
 ]
-dynamic = ["dependencies"]
+dependencies = [
+    "setuptools",
+    "numpy<2.0",
+    "shimmy[gym-v21]",
+    "gym==0.23",
+    "gymnasium==0.29.1",
+    "pettingzoo==1.24.1",
+    "torch",
+    "psutil",
+    "nvidia-ml-py",
+    "rich",
+    "rich_argparse",
+    "imageio",
+    "pyro-ppl",
+    "heavyball<2.0.0",
+    "neptune",
+    "wandb",
+    "matplotlib",
+]
 
 # Default Gym/Gymnasium/PettingZoo versions
 # Gym:
@@ -238,8 +256,13 @@ puffer = "pufferlib.pufferl:main"
 Homepage = "https://puffer.ai"
 
 [build-system]
-requires = ["setuptools", "wheel", "Cython", "numpy<2.0", "torch"]
+requires = ["setuptools<70", "wheel", "Cython", "numpy<2.0", "torch>=2.2.0", "packaging"]
 build-backend = "setuptools.build_meta"
 
 [tool.uv]
 no-build-isolation-package = ["torch"]
+extra-index-url = ["https://download.pytorch.org/whl/cu121"]
+index-strategy = "unsafe-best-match"
+
+#uv pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+#uv pip install -e . --reinstall-package pufferlib
