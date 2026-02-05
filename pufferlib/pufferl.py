@@ -844,7 +844,7 @@ class Utilization(Thread):
 
     def run(self):
         while not self.stopped:
-            self.cpu_util.append(100 * psutil.cpu_percent() / psutil.cpu_count())
+            self.cpu_util.append(psutil.cpu_percent())
             mem = psutil.virtual_memory()
             self.cpu_mem.append(100 * mem.active / mem.total)
             if torch.cuda.is_available():
