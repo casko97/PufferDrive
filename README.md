@@ -216,3 +216,27 @@ If you use PufferDrive in your research, please cite:
   year = {2025},
 }
 ```
+
+## Personal Notes
+
+### Updates
+shhbdgs
+
+### Issues
+
+#### AcceleratorError
+```
+AcceleratorError: CUDA error: no kernel image is available for execution on the device
+Search for `cudaErrorNoKernelImageForDevice' in 
+https://docs.nvidia.com/cuda/cuda-runtime-api/group__CUDART__TYPES.html for more information.
+CUDA kernel errors might be asynchronously reported at some other API call, so the stacktrace 
+below might be incorrect.
+For debugging consider passing CUDA_LAUNCH_BLOCKING=1
+Compile with `TORCH_USE_CUDA_DSA` to enable device-side assertions.
+```
+
+Solution:
+1) 'pip uninstall pufferlib -y'
+2) 'pip install -e . --no-build-isolation' The --no-build-isolation flag ensures the C extension compiles against your current PyTorch installation
+3) 'rm -rf build/ pufferlib/_C*.so pufferlib/*.cpp'
+4) 'python setup.py build_ext --inplace --force'
