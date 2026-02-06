@@ -15,6 +15,8 @@ typedef struct DriveNet DriveNet;
 struct DriveNet {
     int num_agents;
     int ego_dim;
+    int action_type;  // 0 = discrete, 1 = continuous
+    int action_dim;   // Number of action dimensions
     float *obs_self;
     float *obs_partner;
     float *obs_road;
@@ -46,7 +48,7 @@ struct DriveNet {
     Multidiscrete *multidiscrete;
 };
 
-DriveNet *init_drivenet(Weights *weights, int num_agents, int dynamics_model) {
+DriveNet *init_drivenet(Weights *weights, int num_agents, int dynamics_model, int action_type) {
     DriveNet *net = calloc(1, sizeof(DriveNet));
     // Use constants directly from drive.h
     int ego_dim = (dynamics_model == JERK) ? EGO_FEATURES_JERK : EGO_FEATURES_CLASSIC;
@@ -58,18 +60,26 @@ DriveNet *init_drivenet(Weights *weights, int num_agents, int dynamics_model) {
     int hidden_size = NN_HIDDEN_SIZE;
     int road_feat_onehot = road_features + 6; // one-hot extra 6 features for road
 
-    // Determine action space size based on dynamics model
+    net->action_type = action_type;
+    
+    // Determine action space size based on dynamics model and action type
     int action_size, logit_sizes[2];
     int action_dim;
-    if (dynamics_model == CLASSIC) {
-        action_size = 7 * 13; // Joint action space
-        logit_sizes[0] = 7 * 13;
-        action_dim = 1;
-    } else {                 // JERK
-        action_size = 4 * 3; // Joint action space (4 longitudinal × 3 lateral = 12)
-        logit_sizes[0] = 4 * 3;
-        action_dim = 1;
+    if (action_type == 1) {  // Continuous
+        action_size = 2;  // accel/jerk_long + steer/jerk_lat
+        action_dim = 2;
+    } else {  // Discrete
+        if (dynamics_model == CLASSIC) {
+            action_size = 7 * 13; // Joint action space
+            logit_sizes[0] = 7 * 13;
+            action_dim = 1;
+        } else {                 // JERK
+            action_size = 4 * 3; // Joint action space (4 longitudinal × 3 lateral = 12)
+            logit_sizes[0] = 4 * 3;
+            action_dim = 1;
+        }
     }
+    net->action_dim = action_dim;
 
     net->num_agents = num_agents;
     net->ego_dim = ego_dim;
@@ -104,7 +114,17 @@ DriveNet *init_drivenet(Weights *weights, int num_agents, int dynamics_model) {
     net->lstm = make_lstm(weights, num_agents, hidden_size, NN_HIDDEN_SIZE);
     memset(net->lstm->state_h, 0, num_agents * NN_HIDDEN_SIZE * sizeof(float));
     memset(net->lstm->state_c, 0, num_agents * NN_HIDDEN_SIZE * sizeof(float));
-    net->multidiscrete = make_multidiscrete(num_agents, logit_sizes, action_dim);
+    
+    if (action_type == 0) {  // Discrete only
+        net->multidiscrete = make_multidiscrete(num_agents, logit_sizes, action_dim);
+    } else {
+        net->multidiscrete = NULL;
+    }
+    
+    printf("DriveNet initialized: action_type=%d (%s), action_dim=%d, dynamics_model=%d (%s)\n",
+           action_type, action_type == 0 ? "discrete" : "continuous", action_dim,
+           dynamics_model, dynamics_model == 0 ? "classic" : "jerk");
+    
     return net;
 }
 
@@ -141,7 +161,7 @@ void free_drivenet(DriveNet *net) {
     free(net);
 }
 
-void forward(DriveNet *net, float *observations, int *actions) {
+void forward(DriveNet *net, float *observations, void *actions) {
     int ego_dim = net->ego_dim;
     int max_partners = MAX_AGENTS - 1;
     int max_road_obs = MAX_ROAD_SEGMENT_OBSERVATIONS;
@@ -266,6 +286,15 @@ void forward(DriveNet *net, float *observations, int *actions) {
     linear(net->actor, net->lstm->state_h);
     linear(net->value_fn, net->lstm->state_h);
 
-    // Get action by taking argmax of actor output
-    softmax_multidiscrete(net->multidiscrete, net->actor->output, actions);
+    // Get actions based on action type
+    if (net->action_type == 0) {  // Discrete
+        int *discrete_actions = (int *)actions;
+        softmax_multidiscrete(net->multidiscrete, net->actor->output, discrete_actions);
+    } else {  // Continuous
+        float *continuous_actions = (float *)actions;
+        // Use tanh to bound actions to [-1, 1]
+        for (int i = 0; i < net->num_agents * net->action_dim; i++) {
+            continuous_actions[i] = tanhf(net->actor->output[i]);
+        }
+    }
 }
