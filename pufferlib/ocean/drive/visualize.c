@@ -11,6 +11,7 @@
 #include <stdbool.h>
 #include "error.h"
 #include "drivenet.h"
+#include "idm_policy.h"
 #include "libgen.h"
 #include "../env_config.h"
 #define TRAJECTORY_LENGTH_DEFAULT 91
@@ -192,7 +193,7 @@ static int make_gif_from_frames(const char *pattern, int fps, const char *palett
 
 int eval_gif(const char *map_name, const char *policy_name, int show_grid, int obs_only, int lasers,
              int show_human_logs, int frame_skip, const char *view_mode, const char *output_topdown,
-             const char *output_agent, int num_maps, int zoom_in) {
+             const char *output_agent, int num_maps, int zoom_in, int use_idm) {
 
     // Parse configuration from INI file
     env_init_config conf = {0};
@@ -221,11 +222,13 @@ int eval_gif(const char *map_name, const char *policy_name, int show_grid, int o
     }
     fclose(map_file);
 
-    FILE *policy_file = fopen(policy_name, "rb");
-    if (policy_file == NULL) {
-        RAISE_FILE_ERROR(policy_name);
+    if (!use_idm) {
+        FILE *policy_file = fopen(policy_name, "rb");
+        if (policy_file == NULL) {
+            RAISE_FILE_ERROR(policy_name);
+        }
+        fclose(policy_file);
     }
-    fclose(policy_file);
 
     // Initialize environment with all config values from INI [env] section
     Drive env = {
@@ -295,9 +298,20 @@ int eval_gif(const char *map_name, const char *policy_name, int show_grid, int o
     client->cyclist = LoadModel("resources/drive/cyclist.glb");
     client->pedestrian = LoadModel("resources/drive/pedestrian.glb");
 
-    Weights *weights = load_weights(policy_name);
-    printf("Active agents in map: %d\n", env.active_agent_count);
-    DriveNet *net = init_drivenet(weights, env.active_agent_count, env.dynamics_model, env.action_type);
+    Weights *weights = NULL;
+    DriveNet *net = NULL;
+    IDMParams idm_params;
+    
+    if (use_idm) {
+        printf("Using IDM baseline policy\n");
+        printf("Active agents in map: %d\n", env.active_agent_count);
+        idm_params = idm_default_params();
+        print_idm_params(&idm_params);
+    } else {
+        weights = load_weights(policy_name);
+        printf("Active agents in map: %d\n", env.active_agent_count);
+        net = init_drivenet(weights, env.active_agent_count, env.dynamics_model, env.action_type);
+    }
 
     int frame_count = env.episode_length > 0 ? env.episode_length : TRAJECTORY_LENGTH_DEFAULT;
     char filename_topdown[256];
@@ -360,7 +374,12 @@ int eval_gif(const char *map_name, const char *policy_name, int show_grid, int o
                 WriteFrame(&topdown_recorder, img_width, img_height);
                 rendered_frames++;
             }
-            forward(net, env.observations, (int *)env.actions);
+            if (use_idm) {
+                int ego_dim = (env.dynamics_model == JERK) ? EGO_FEATURES_JERK : EGO_FEATURES_CLASSIC;
+                idm_forward(env.observations, env.actions, env.active_agent_count, ego_dim, &idm_params);
+            } else {
+                forward(net, env.observations, (int *)env.actions);
+            }
             c_step(&env);
         }
     }
@@ -378,7 +397,12 @@ int eval_gif(const char *map_name, const char *policy_name, int show_grid, int o
                 WriteFrame(&agent_recorder, img_width, img_height);
                 rendered_frames++;
             }
-            forward(net, env.observations, (int *)env.actions);
+            if (use_idm) {
+                int ego_dim = (env.dynamics_model == JERK) ? EGO_FEATURES_JERK : EGO_FEATURES_CLASSIC;
+                idm_forward(env.observations, env.actions, env.active_agent_count, ego_dim, &idm_params);
+            } else {
+                forward(net, env.observations, (int *)env.actions);
+            }
             c_step(&env);
         }
     }
@@ -400,8 +424,10 @@ int eval_gif(const char *map_name, const char *policy_name, int show_grid, int o
 
     free(client);
     free_allocated(&env);
-    free_drivenet(net);
-    free(weights);
+    if (!use_idm) {
+        free_drivenet(net);
+        free(weights);
+    }
     return 0;
 }
 
@@ -419,6 +445,7 @@ int main(int argc, char *argv[]) {
     int show_human_logs = 0;
     int frame_skip = 1;
     int zoom_in = 0;
+    int use_idm = 0;
     const char *view_mode = "both";
 
     // File paths and num_maps (not in [env] section)
@@ -430,7 +457,9 @@ int main(int argc, char *argv[]) {
 
     // Parse command line arguments
     for (int i = 1; i < argc; i++) {
-        if (strcmp(argv[i], "--show-grid") == 0) {
+        if (strcmp(argv[i], "--use-idm") == 0) {
+            use_idm = 1;
+        } else if (strcmp(argv[i], "--show-grid") == 0) {
             show_grid = 1;
         } else if (strcmp(argv[i], "--obs-only") == 0) {
             obs_only = 1;
@@ -496,6 +525,6 @@ int main(int argc, char *argv[]) {
     }
 
     eval_gif(map_name, policy_name, show_grid, obs_only, lasers, show_human_logs, frame_skip, view_mode, output_topdown,
-             output_agent, num_maps, zoom_in);
+             output_agent, num_maps, zoom_in, use_idm);
     return 0;
 }

@@ -96,7 +96,9 @@ FLAGS=(
     -I./$BOX2D_NAME/src
     -I./pufferlib/extensions
     -I./inih-r62
-    "$SRC_DIR/$ENV.c" -o "$ENV"
+    "$SRC_DIR/$ENV.c"
+    "$SRC_DIR/idm_policy.c"
+    -o "$ENV"
     ./inih-r62/ini.c
     $LINK_ARCHIVES
     -lm
