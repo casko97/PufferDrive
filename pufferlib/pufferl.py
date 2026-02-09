@@ -1348,8 +1348,9 @@ def profile(args=None, env_name=None, vecenv=None, policy=None):
     prof.export_chrome_trace("trace.json")
 
 
-def export(args=None, env_name=None, vecenv=None, policy=None, path=None, silent=False):
+def export(args=None, env_name=None, vecenv=None, policy=None, path=None, dest_folder=None, silent=False):
     args = args or load_config(env_name)
+    vecenv_created = vecenv is None
     vecenv = vecenv or load_env(env_name, args)
     policy = policy or load_policy(args, vecenv)
 
@@ -1361,12 +1362,19 @@ def export(args=None, env_name=None, vecenv=None, policy=None, path=None, silent
 
     weights = np.concatenate(weights)
     if path is None:
-        path = f"pufferlib/resources/drive/{args['env_name']}_weights.bin"
+        if dest_folder is not None:
+            os.makedirs(dest_folder, exist_ok=True)
+            path = os.path.join(dest_folder, f"{args['env_name']}_weights.bin")
+        else:
+            path = f"pufferlib/resources/drive/{args['env_name']}_weights.bin"
 
     weights.tofile(path)
 
     if not silent:
         print(f"Saved {len(weights)} weights to {path}")
+    
+    if vecenv_created:
+        vecenv.close()
 
 
 def ensure_drive_binary():
@@ -1462,6 +1470,7 @@ def load_config(env_name, config_dir=None):
     parser.add_argument(
         "--load-id", type=str, default=None, help="Kickstart/eval from from a finished Wandb/Neptune run"
     )
+    parser.add_argument("--dest-folder", type=str, default=None, help="Destination folder for exported weights")
     parser.add_argument(
         "--render-mode", type=str, default="auto", choices=["auto", "human", "ansi", "rgb_array", "raylib", "None"]
     )
@@ -1552,7 +1561,8 @@ def main():
     elif mode == "profile":
         profile(env_name=env_name)
     elif mode == "export":
-        export(env_name=env_name)
+        args = load_config(env_name)
+        export(args=args, env_name=env_name, dest_folder=args.get("dest_folder"))
     elif mode == "sanity":
         sanity(env_name=env_name)
     else:
