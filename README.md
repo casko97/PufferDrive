@@ -222,6 +222,18 @@ If you use PufferDrive in your research, please cite:
 ### Updates
 shhbdgs
 
+### Know-how
+
+#### Viz
+
+xvfb-run -s "-screen 0 1280x720x24" ./visualize --policy-name pufferlib/resources/drive/models/validate_discrete_model_setup/puffer_drive_weights.bin --map-name pufferlib/resources/drive/binaries/validation/map_008.bin --log-traje
+ctories --zoom-in --view topdown --output-topdown pufferlib/resources/drive/models/validate_discrete_model_setup/topdown_008.mp4 --output-agent pufferlib/resources/drive/models/unyjnpvn/videos/sanity/agent.mp4
+
+#### Export
+
+puffer eval puffer_drive --eval.wosac-realism-eval True --load-model-path pufferlib/resources/drive/models/validate_discrete_model_setup/puffer_drive_177064776185.pt 2>&1 | tee pufferlib/resources/drive/models/validate_discrete_mo
+del_setup/metrics.txt
+
 ### Issues
 
 #### AcceleratorError
