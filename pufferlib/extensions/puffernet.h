@@ -82,7 +82,12 @@ Weights* load_weights(const char* filename) {
 float* get_weights(Weights* weights, int num_weights) {
     float* data = &weights->data[weights->idx];
     weights->idx += num_weights;
-    assert(weights->idx <= weights->size);
+    if (weights->idx > weights->size) {
+        fprintf(stderr, "Error: Attempting to read %d weights, but only %d available (already used %d)\n",
+                num_weights, weights->size - (weights->idx - num_weights), weights->idx - num_weights);
+        fprintf(stderr, "Total weights in file: %d, Total requested: %d\n", weights->size, weights->idx);
+        exit(1);
+    }
     return data;
 }
 
