@@ -62,6 +62,40 @@ def histogram_estimate(
     return log_probs
 
 
+def categorical_estimate(
+    log_samples: np.ndarray,
+    sim_samples: np.ndarray,
+    num_bins: int,
+    additive_smoothing: float,
+) -> np.ndarray:
+    """Computes log-likelihoods for categorical samples.
+
+    Args:
+        log_samples: Shape (n_agents, sample_size) - samples to evaluate (integer categories)
+        sim_samples: Shape (n_agents, sample_size) - samples to build distribution from
+        num_bins: Number of discrete categories
+        additive_smoothing: Pseudocount for Laplace smoothing
+
+    Returns:
+        Shape (n_agents, sample_size) - log-likelihood of each log sample
+        under the corresponding sim distribution
+    """
+    n_agents, sample_size = sim_samples.shape
+    log_samples = np.clip(log_samples.astype(np.int32), 0, num_bins - 1)
+    sim_samples = np.clip(sim_samples.astype(np.int32), 0, num_bins - 1)
+
+    counts = np.zeros((n_agents, num_bins), dtype=np.float32)
+    for i in range(n_agents):
+        counts[i] = np.bincount(sim_samples[i], minlength=num_bins)
+
+    counts = counts + additive_smoothing
+    probs = counts / counts.sum(axis=1, keepdims=True)
+
+    agent_indices = np.arange(n_agents)[:, None]
+    log_probs = np.log(probs[agent_indices, log_samples])
+    return log_probs
+
+
 def log_likelihood_estimate_timeseries(
     log_values: np.ndarray,
     sim_values: np.ndarray,
@@ -118,6 +152,76 @@ def log_likelihood_estimate_timeseries(
         _plot_histogram_sanity_check(log_flat, sim_flat, log_probs, plot_agent_idx)
 
     return log_probs
+
+
+def log_likelihood_estimate_categorical_timeseries(
+    log_values: np.ndarray,
+    sim_values: np.ndarray,
+    num_bins: int,
+    additive_smoothing: float,
+) -> np.ndarray:
+    """Computes log-likelihood estimates for categorical time-series features.
+
+    Args:
+        log_values: Shape (n_agents, n_steps) - integer categories to evaluate
+        sim_values: Shape (n_agents, n_rollouts, n_steps) - integer categories to build distribution
+        num_bins: Number of discrete categories
+        additive_smoothing: Pseudocount for Laplace smoothing
+
+    Returns:
+        Shape (n_agents, n_steps) - log-likelihood of each log sample
+    """
+    n_agents, n_rollouts, n_steps = sim_values.shape
+    log_flat = log_values.reshape(n_agents, n_steps)
+    sim_flat = sim_values.reshape(n_agents, n_rollouts * n_steps)
+    log_probs = categorical_estimate(log_flat, sim_flat, num_bins, additive_smoothing)
+    return log_probs.reshape(n_agents, n_steps)
+
+
+def log_likelihood_estimate_conditional_categorical_timeseries(
+    log_values: np.ndarray,
+    sim_values: np.ndarray,
+    num_bins: int,
+    additive_smoothing: float,
+) -> np.ndarray:
+    """Computes log-likelihood estimates for categorical time-series features conditioned on previous value.
+
+    Args:
+        log_values: Shape (n_agents, n_steps) - integer categories to evaluate
+        sim_values: Shape (n_agents, n_rollouts, n_steps) - integer categories to build distribution
+        num_bins: Number of discrete categories
+        additive_smoothing: Pseudocount for Laplace smoothing
+
+    Returns:
+        Shape (n_agents, n_steps) - log-likelihood of each log sample under
+        p(a_t | a_{t-1}). First timestep is set to NaN.
+    """
+    n_agents, n_rollouts, n_steps = sim_values.shape
+    if n_steps < 2:
+        return np.full((n_agents, n_steps), np.nan, dtype=np.float32)
+
+    log_prev = log_values[:, :-1]
+    log_curr = log_values[:, 1:]
+    sim_prev = sim_values[:, :, :-1]
+    sim_curr = sim_values[:, :, 1:]
+
+    log_probs = np.empty((n_agents, n_steps - 1), dtype=np.float32)
+    for i in range(n_agents):
+        prev_flat = np.clip(sim_prev[i].reshape(-1).astype(np.int32), 0, num_bins - 1)
+        curr_flat = np.clip(sim_curr[i].reshape(-1).astype(np.int32), 0, num_bins - 1)
+
+        counts = np.zeros((num_bins, num_bins), dtype=np.float32)
+        np.add.at(counts, (prev_flat, curr_flat), 1)
+        counts = counts + additive_smoothing
+        probs = counts / counts.sum(axis=1, keepdims=True)
+
+        log_prev_i = np.clip(log_prev[i].astype(np.int32), 0, num_bins - 1)
+        log_curr_i = np.clip(log_curr[i].astype(np.int32), 0, num_bins - 1)
+        log_probs[i] = np.log(probs[log_prev_i, log_curr_i])
+
+    out = np.full((n_agents, n_steps), np.nan, dtype=np.float32)
+    out[:, 1:] = log_probs
+    return out
 
 
 def bernoulli_estimate(

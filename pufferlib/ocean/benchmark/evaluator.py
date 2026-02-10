@@ -77,6 +77,8 @@ class WOSACEvaluator:
         driver = puffer_env.driver_env
         num_agents = puffer_env.observation_space.shape[0]
         device = args["train"]["device"]
+        action_type = args.get("env", {}).get("action_type", "discrete")
+        dynamics_model = args.get("env", {}).get("dynamics_model", "classic")
 
         trajectories = {
             "x": np.zeros((num_agents, self.num_rollouts, self.sim_steps), dtype=np.float32),
@@ -85,6 +87,13 @@ class WOSACEvaluator:
             "heading": np.zeros((num_agents, self.num_rollouts, self.sim_steps), dtype=np.float32),
             "id": np.zeros((num_agents, self.num_rollouts, self.sim_steps), dtype=np.int32),
         }
+        if action_type == "discrete":
+            trajectories["action_long"] = np.full(
+                (num_agents, self.num_rollouts, self.sim_steps), -1, dtype=np.int32
+            )
+            trajectories["action_lat"] = np.full(
+                (num_agents, self.num_rollouts, self.sim_steps), -1, dtype=np.int32
+            )
 
         for rollout_idx in range(self.num_rollouts):
             print(f"\rCollecting rollout {rollout_idx + 1}/{self.num_rollouts}...", end="", flush=True)
@@ -114,6 +123,15 @@ class WOSACEvaluator:
 
                 if isinstance(logits, torch.distributions.Normal):
                     action_np = np.clip(action_np, puffer_env.action_space.low, puffer_env.action_space.high)
+                elif action_type == "discrete":
+                    if action_np.ndim == 2 and action_np.shape[1] == 2:
+                        long_idx = action_np[:, 0]
+                        lat_idx = action_np[:, 1]
+                    else:
+                        action_vals = action_np.reshape(num_agents)
+                        long_idx, lat_idx = metrics.decode_joint_action_indices(action_vals, dynamics_model)
+                    trajectories["action_long"][:, rollout_idx, time_idx] = long_idx
+                    trajectories["action_lat"][:, rollout_idx, time_idx] = lat_idx
 
                 obs, _, _, _, _ = puffer_env.step(action_np)
 
@@ -341,6 +359,101 @@ class WOSACEvaluator:
             sanity_check=False,
         )
 
+        # Discrete action likelihood metrics (longitudinal + lateral, factorized)
+        num_eval_agents = eval_ref_x.shape[0]
+        action_metrics = {
+            "likelihood_action_long_marginal": np.full(num_eval_agents, np.nan, dtype=np.float32),
+            "likelihood_action_long_sequence": np.full(num_eval_agents, np.nan, dtype=np.float32),
+            "likelihood_action_long_ratio": np.full(num_eval_agents, np.nan, dtype=np.float32),
+            "likelihood_action_lat_marginal": np.full(num_eval_agents, np.nan, dtype=np.float32),
+            "likelihood_action_lat_sequence": np.full(num_eval_agents, np.nan, dtype=np.float32),
+            "likelihood_action_lat_ratio": np.full(num_eval_agents, np.nan, dtype=np.float32),
+        }
+
+        action_type = self.config.get("env", {}).get("action_type", "discrete")
+        dynamics_model = self.config.get("env", {}).get("dynamics_model", "classic")
+        # Additive smoothing prevents log(0) when a discrete action is never seen in rollouts.
+        # Higher values make the metric less brittle but less sensitive to rare-action mismatch.
+        action_smoothing = self.config.get("eval", {}).get("action_loglik_smoothing", 0.1)
+
+        if (
+            action_type == "discrete"
+            and "action_long" in simulated_trajectories
+            and "action_lat" in simulated_trajectories
+        ):
+            try:
+                long_vals, lat_vals = metrics.get_discrete_action_values(dynamics_model)
+                sim_action_long = simulated_trajectories["action_long"][eval_mask]
+                sim_action_lat = simulated_trajectories["action_lat"][eval_mask]
+
+                ref_action_long = metrics.discretize_longitudinal_actions(ref_linear_accel[:, 0, :], dynamics_model)
+                ref_action_lat = metrics.discretize_lateral_actions(
+                    ref_angular_speed[:, 0, :],
+                    ref_linear_speed[:, 0, :],
+                    eval_agent_length[:, None],
+                    dynamics_model,
+                )
+
+                long_valid = acceleration_validity[:, 0, :]
+                lat_valid = speed_validity[:, 0, :]
+
+                ref_action_long_safe = np.where(long_valid, ref_action_long, 0)
+                ref_action_lat_safe = np.where(lat_valid, ref_action_lat, 0)
+
+                long_marg_log = estimators.log_likelihood_estimate_categorical_timeseries(
+                    log_values=ref_action_long_safe,
+                    sim_values=sim_action_long,
+                    num_bins=long_vals.size,
+                    additive_smoothing=action_smoothing,
+                )
+                lat_marg_log = estimators.log_likelihood_estimate_categorical_timeseries(
+                    log_values=ref_action_lat_safe,
+                    sim_values=sim_action_lat,
+                    num_bins=lat_vals.size,
+                    additive_smoothing=action_smoothing,
+                )
+
+                long_seq_log = estimators.log_likelihood_estimate_conditional_categorical_timeseries(
+                    log_values=ref_action_long_safe,
+                    sim_values=sim_action_long,
+                    num_bins=long_vals.size,
+                    additive_smoothing=action_smoothing,
+                )
+                lat_seq_log = estimators.log_likelihood_estimate_conditional_categorical_timeseries(
+                    log_values=ref_action_lat_safe,
+                    sim_values=sim_action_lat,
+                    num_bins=lat_vals.size,
+                    additive_smoothing=action_smoothing,
+                )
+
+                long_seq_valid = long_valid.copy()
+                long_seq_valid[:, 1:] &= long_valid[:, :-1]
+                long_seq_valid[:, 0] = False
+                lat_seq_valid = lat_valid.copy()
+                lat_seq_valid[:, 1:] &= lat_valid[:, :-1]
+                lat_seq_valid[:, 0] = False
+
+                action_metrics["likelihood_action_long_marginal"] = metrics._reduce_average_with_validity(
+                    long_marg_log, long_valid, axis=1
+                )
+                action_metrics["likelihood_action_long_sequence"] = metrics._reduce_average_with_validity(
+                    long_seq_log, long_seq_valid, axis=1
+                )
+                action_metrics["likelihood_action_long_ratio"] = metrics._reduce_average_with_validity(
+                    long_seq_log - long_marg_log, long_seq_valid, axis=1
+                )
+                action_metrics["likelihood_action_lat_marginal"] = metrics._reduce_average_with_validity(
+                    lat_marg_log, lat_valid, axis=1
+                )
+                action_metrics["likelihood_action_lat_sequence"] = metrics._reduce_average_with_validity(
+                    lat_seq_log, lat_seq_valid, axis=1
+                )
+                action_metrics["likelihood_action_lat_ratio"] = metrics._reduce_average_with_validity(
+                    lat_seq_log - lat_marg_log, lat_seq_valid, axis=1
+                )
+            except Exception as exc:
+                print(f"Action metrics skipped: {exc}")
+
         min_val, max_val, num_bins, additive_smoothing, independent_timesteps = self._get_histogram_params(
             "distance_to_nearest_object"
         )
@@ -485,6 +598,12 @@ class WOSACEvaluator:
                 "likelihood_collision_indication": collision_log_likelihood,
                 "likelihood_distance_to_road_edge": distance_to_road_edge_log_likelihood,
                 "likelihood_offroad_indication": offroad_log_likelihood,
+                "likelihood_action_long_marginal": action_metrics["likelihood_action_long_marginal"],
+                "likelihood_action_long_sequence": action_metrics["likelihood_action_long_sequence"],
+                "likelihood_action_long_ratio": action_metrics["likelihood_action_long_ratio"],
+                "likelihood_action_lat_marginal": action_metrics["likelihood_action_lat_marginal"],
+                "likelihood_action_lat_sequence": action_metrics["likelihood_action_lat_sequence"],
+                "likelihood_action_lat_ratio": action_metrics["likelihood_action_lat_ratio"],
             }
         )
 
@@ -505,6 +624,12 @@ class WOSACEvaluator:
                 "likelihood_collision_indication",
                 "likelihood_distance_to_road_edge",
                 "likelihood_offroad_indication",
+                "likelihood_action_long_marginal",
+                "likelihood_action_long_sequence",
+                "likelihood_action_long_ratio",
+                "likelihood_action_lat_marginal",
+                "likelihood_action_lat_sequence",
+                "likelihood_action_lat_ratio",
             ]
         ].mean()
 

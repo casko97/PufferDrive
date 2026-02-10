@@ -8,6 +8,15 @@ from typing import Tuple
 
 from pufferlib.ocean.benchmark import kinematic_features, interaction_features, map_metric_features
 
+# Discrete action values (must match drive.h)
+ACCELERATION_VALUES = np.array([-4.0000, -2.6670, -1.3330, -0.0000, 1.3330, 2.6670, 4.0000], dtype=np.float32)
+STEERING_VALUES = np.array(
+    [-1.000, -0.833, -0.667, -0.500, -0.333, -0.167, 0.000, 0.167, 0.333, 0.500, 0.667, 0.833, 1.000],
+    dtype=np.float32,
+)
+JERK_LONG_VALUES = np.array([-15.0, -4.0, 0.0, 4.0], dtype=np.float32)
+JERK_LAT_VALUES = np.array([-4.0, 0.0, 4.0], dtype=np.float32)
+
 
 def _to_tensor(value, dtype, device=None):
     """Utility to convert numpy inputs to tensors on the requested device."""
@@ -396,3 +405,62 @@ def compute_map_features(
             )
 
     return result_distances, result_offroad
+
+
+def get_discrete_action_values(dynamics_model: str):
+    """Return discrete action values for longitudinal and lateral dimensions."""
+    if dynamics_model == "classic":
+        return ACCELERATION_VALUES, STEERING_VALUES
+    if dynamics_model == "jerk":
+        return JERK_LONG_VALUES, JERK_LAT_VALUES
+    raise ValueError(f"Unknown dynamics_model: {dynamics_model}")
+
+
+def decode_joint_action_indices(action_vals: np.ndarray, dynamics_model: str):
+    """Decode joint discrete action indices into (long_idx, lat_idx)."""
+    long_vals, lat_vals = get_discrete_action_values(dynamics_model)
+    num_lat = lat_vals.size
+    action_vals = action_vals.astype(np.int32)
+    long_idx = action_vals // num_lat
+    lat_idx = action_vals % num_lat
+    return long_idx, lat_idx
+
+
+def discretize_longitudinal_actions(linear_accel: np.ndarray, dynamics_model: str) -> np.ndarray:
+    """Discretize longitudinal action from linear acceleration."""
+    long_vals, _ = get_discrete_action_values(dynamics_model)
+    diffs = np.abs(linear_accel[..., None] - long_vals[None, None, :])
+    return np.argmin(diffs, axis=-1).astype(np.int32)
+
+
+def discretize_lateral_actions(
+    angular_speed: np.ndarray,
+    linear_speed: np.ndarray,
+    agent_length: np.ndarray,
+    dynamics_model: str,
+    eps: float = 1e-3,
+) -> np.ndarray:
+    """Discretize lateral action from angular speed and linear speed.
+
+    For CLASSIC dynamics, maps angular speed to the nearest steering value using the
+    same yaw-rate computation as the environment.
+    """
+    if dynamics_model != "classic":
+        # TODO: Add jerk dynamics support when we decide how to map jerk actions to angular speed.
+        raise ValueError("Lateral action discretization is only implemented for classic dynamics.")
+
+    _, lat_vals = get_discrete_action_values(dynamics_model)
+
+    steer = lat_vals[None, None, :]
+    speed = np.maximum(linear_speed, eps)[..., None]
+    length = agent_length[..., None]
+
+    beta = np.tanh(0.5 * np.tan(steer))
+    yaw_rate_pred = (speed * np.cos(beta) * np.tan(steer)) / length
+
+    diffs = np.abs(yaw_rate_pred - angular_speed[..., None])
+    lat_idx = np.argmin(diffs, axis=-1).astype(np.int32)
+
+    zero_idx = int(np.argmin(np.abs(lat_vals)))
+    lat_idx = np.where(linear_speed < eps, zero_idx, lat_idx)
+    return lat_idx
