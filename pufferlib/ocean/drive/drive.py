@@ -3,6 +3,7 @@ import gymnasium
 import json
 import struct
 import os
+import hashlib
 import pufferlib
 from pufferlib.ocean.drive import binding
 from multiprocessing import Pool, cpu_count
@@ -430,12 +431,43 @@ def simplify_polyline(geometry, polyline_reduction_threshold, max_segment_length
 
 def save_map_binary(map_data, output_file, unique_map_id):
     trajectory_length = 91
+    extension_magic = 0x54524C52  # "TRLR"
+    extension_version = 1
+
+    def stable_track_hash(value):
+        if value is None:
+            return 0
+        digest = hashlib.blake2b(str(value).encode("utf-8"), digest_size=8).digest()
+        return struct.unpack("<Q", digest)[0]
+
+    def normalize_int32_id(value):
+        """Convert arbitrary ids (str/int/large-int) into deterministic signed int32."""
+        int32_min = -(2**31)
+        int32_max = 2**31 - 1
+
+        if isinstance(value, bool):
+            value = int(value)
+
+        try:
+            intval = int(value)
+            if int32_min <= intval <= int32_max:
+                return intval
+            # Wrap oversized integer deterministically into signed int32 range.
+            return ((intval + 2**31) % 2**32) - 2**31
+        except (TypeError, ValueError):
+            # Stable hash for non-numeric ids.
+            digest = hashlib.blake2b(str(value).encode("utf-8"), digest_size=4).digest()
+            uint32 = struct.unpack("<I", digest)[0]
+            return uint32 - 2**32 if uint32 >= 2**31 else uint32
+
     """Saves map data in a binary format readable by C"""
     with open(output_file, "wb") as f:
         # Get metadata
         metadata = map_data.get("metadata", {})
         sdc_track_index = metadata.get("sdc_track_index", -1)  # -1 as default if not found
         tracks_to_predict = metadata.get("tracks_to_predict", [])
+        has_ego_trailer = int(bool(metadata.get("has_ego_trailer", False)))
+        ego_trailer_track_index = int(metadata.get("ego_trailer_track_index", -1))
 
         # Write sdc_track_index
         f.write(struct.pack("i", sdc_track_index))
@@ -467,7 +499,7 @@ def save_map_binary(map_data, output_file, unique_map_id):
             elif obj_type == "cyclist":
                 obj_type = 3
             f.write(struct.pack("i", obj_type))  # type
-            f.write(struct.pack("i", obj.get("id", 0)))  # id
+            f.write(struct.pack("i", normalize_int32_id(obj.get("id", 0))))  # id
             f.write(struct.pack("i", trajectory_length))  # array_size
             # Write position arrays
             positions = obj.get("position", [])
@@ -547,7 +579,7 @@ def save_map_binary(map_data, output_file, unique_map_id):
                 road_type = 10
             # Write base entity data
             f.write(struct.pack("i", road_type))  # type
-            f.write(struct.pack("i", road.get("id", 0)))  # id
+            f.write(struct.pack("i", normalize_int32_id(road.get("id", 0))))  # id
             f.write(struct.pack("i", size))  # array_size
 
             # Write position arrays
@@ -564,6 +596,21 @@ def save_map_binary(map_data, output_file, unique_map_id):
             f.write(struct.pack("f", float(goal_pos.get("y", 0.0))))  # Get y value
             f.write(struct.pack("f", float(goal_pos.get("z", 0.0))))  # Get z value
             f.write(struct.pack("i", road.get("mark_as_expert", 0)))
+
+        # Optional extension block for articulated ego metadata and stable source ids.
+        objects = map_data.get("objects", [])
+        f.write(struct.pack("i", extension_magic))
+        f.write(struct.pack("i", extension_version))
+        f.write(struct.pack("i", has_ego_trailer))
+        f.write(struct.pack("i", ego_trailer_track_index))
+        f.write(struct.pack("i", len(objects)))
+        for obj_idx, obj in enumerate(objects):
+            source_track_id_hash = stable_track_hash(obj.get("source_track_id"))
+            is_trailer = int(has_ego_trailer and obj_idx == ego_trailer_track_index)
+            parent_track_index = int(sdc_track_index if is_trailer else -1)
+            f.write(struct.pack("Q", source_track_id_hash))
+            f.write(struct.pack("i", is_trailer))
+            f.write(struct.pack("i", parent_track_index))
 
 
 def load_map(map_name, unique_map_id, binary_output=None):

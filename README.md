@@ -111,6 +111,19 @@ then launch:
 ```
 this will run `demo()` with an existing model checkpoint.
 
+### Trailer + road-edge debug plots
+
+For quick static inspection of tractor/trailer poses against map road edges:
+```bash
+python scripts/visualize_trailer_scene.py \
+  --bin /path/to/map_000.bin \
+  --output trailer_debug.png \
+  --frames 0,10,20
+```
+
+- `--frames`: comma-separated timesteps in the stored trajectory
+- `--no-other-objects`: optional flag to only show tractor/trailer plus roads
+
 ## Headless server setup
 
 Run the Raylib visualizer on a headless server and export as .mp4. This will rollout the pre-trained policy in the env.

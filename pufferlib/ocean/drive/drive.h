@@ -61,6 +61,10 @@
 #define REACHED_GOAL_IDX 2
 #define LANE_ALIGNED_IDX 3
 
+// Optional binary extension block marker/version (written by drive.py).
+#define DRIVE_BIN_EXT_MAGIC 0x54524C52
+#define DRIVE_BIN_EXT_VERSION 1
+
 // Grid cell size
 #define GRID_CELL_SIZE 5.0f
 #define MAX_ENTITIES_PER_CELL                                                                                          \
@@ -170,6 +174,9 @@ struct Entity {
     int scenario_id;
     int type;
     int id;
+    unsigned long long source_track_id_hash;
+    int is_trailer;
+    int parent_track_index;
     int array_size;
     float *traj_x;
     float *traj_y;
@@ -325,11 +332,84 @@ struct Drive {
     int collision_behavior;
     int offroad_behavior;
     int sdc_track_index;
+    int has_ego_trailer;
+    int ego_trailer_track_index;
     int num_tracks_to_predict;
     int *tracks_to_predict_indices;
     int init_mode;
     int control_mode;
 };
+
+static inline bool has_valid_ego_trailer_pair(Drive *env) {
+    if (!env->has_ego_trailer)
+        return false;
+    if (env->sdc_track_index < 0 || env->sdc_track_index >= env->num_objects)
+        return false;
+    if (env->ego_trailer_track_index < 0 || env->ego_trailer_track_index >= env->num_objects)
+        return false;
+    if (env->ego_trailer_track_index == env->sdc_track_index)
+        return false;
+    return true;
+}
+
+static inline bool is_ego_or_trailer_pair(Drive *env, int a, int b) {
+    if (!has_valid_ego_trailer_pair(env))
+        return false;
+    return ((a == env->sdc_track_index && b == env->ego_trailer_track_index) ||
+            (a == env->ego_trailer_track_index && b == env->sdc_track_index));
+}
+
+static inline void update_ego_trailer_pose(Drive *env) {
+    if (!has_valid_ego_trailer_pair(env))
+        return;
+
+    Entity *tractor = &env->entities[env->sdc_track_index];
+    Entity *trailer = &env->entities[env->ego_trailer_track_index];
+    if (tractor->removed || trailer->removed)
+        return;
+    if (tractor->x == INVALID_POSITION || trailer->x == INVALID_POSITION)
+        return;
+
+    // Approximate hitch geometry if dataset-specific values are not provided.
+    float tractor2hitch = 0.10f * tractor->length;
+    float trailer2hitch = 0.15f * trailer->length;
+    float effective_length = fmaxf(0.5f, trailer->length - trailer2hitch);
+    float theta_tractor = tractor->heading;
+    float theta_trailer = trailer->heading;
+
+    // Update trailer yaw using articulation kinematics.
+    float tractor_speed = sqrtf(tractor->vx * tractor->vx + tractor->vy * tractor->vy);
+    float tractor_signed_speed =
+        copysignf(tractor_speed, tractor->vx * tractor->heading_x + tractor->vy * tractor->heading_y);
+    float articulation = theta_tractor - theta_trailer;
+    if (articulation > M_PI)
+        articulation -= 2.0f * M_PI;
+    if (articulation < -M_PI)
+        articulation += 2.0f * M_PI;
+    theta_trailer = theta_trailer + (tractor_signed_speed / effective_length) * sinf(articulation) * env->dt;
+    if (theta_trailer > M_PI)
+        theta_trailer -= 2.0f * M_PI;
+    if (theta_trailer < -M_PI)
+        theta_trailer += 2.0f * M_PI;
+
+    // Compute trailer center from hitch point and updated trailer yaw.
+    float x_hitch = tractor->x + (-tractor->length * 0.5f + tractor2hitch) * cosf(theta_tractor);
+    float y_hitch = tractor->y + (-tractor->length * 0.5f + tractor2hitch) * sinf(theta_tractor);
+    float x_rear = x_hitch - effective_length * cosf(theta_trailer);
+    float y_rear = y_hitch - effective_length * sinf(theta_trailer);
+    float new_x = x_rear + 0.5f * trailer->length * cosf(theta_trailer);
+    float new_y = y_rear + 0.5f * trailer->length * sinf(theta_trailer);
+
+    float old_x = trailer->x;
+    float old_y = trailer->y;
+    trailer->x = new_x;
+    trailer->y = new_y;
+    trailer->heading = theta_trailer;
+    trailer->heading_x = cosf(theta_trailer);
+    trailer->heading_y = sinf(theta_trailer);
+    trailer->vx = (trailer->x - old_x) / fmaxf(env->dt, 1e-4f);
+    trailer->vy = (trailer->y - old_y) / fmaxf(env->dt, 1e-4f);
+}
 
 void add_log(Drive *env) {
     for (int i = 0; i < env->active_agent_count; i++) {
@@ -386,6 +466,9 @@ Entity *load_map_binary(const char *filename, Drive *env) {
     if (!file)
         return NULL;
 
+    env->has_ego_trailer = 0;
+    env->ego_trailer_track_index = -1;
+
     // Read sdc_track_index
     fread(&env->sdc_track_index, sizeof(int), 1, file);
 
@@ -410,6 +493,9 @@ Entity *load_map_binary(const char *filename, Drive *env) {
         fread(&entities[i].scenario_id, sizeof(int), 1, file);
         fread(&entities[i].type, sizeof(int), 1, file);
         fread(&entities[i].id, sizeof(int), 1, file);
+        entities[i].source_track_id_hash = 0ULL;
+        entities[i].is_trailer = 0;
+        entities[i].parent_track_index = -1;
         fread(&entities[i].array_size, sizeof(int), 1, file);
         // Allocate arrays based on type
         int size = entities[i].array_size;
@@ -452,6 +538,33 @@ Entity *load_map_binary(const char *filename, Drive *env) {
         fread(&entities[i].goal_position_y, sizeof(float), 1, file);
         fread(&entities[i].goal_position_z, sizeof(float), 1, file);
         fread(&entities[i].mark_as_expert, sizeof(int), 1, file);
+    }
+
+    // Optional extension block (safe no-op for legacy binaries).
+    int extension_magic = 0;
+    if (fread(&extension_magic, sizeof(int), 1, file) == 1 && extension_magic == DRIVE_BIN_EXT_MAGIC) {
+        int extension_version = 0;
+        fread(&extension_version, sizeof(int), 1, file);
+        if (extension_version >= DRIVE_BIN_EXT_VERSION) {
+            fread(&env->has_ego_trailer, sizeof(int), 1, file);
+            fread(&env->ego_trailer_track_index, sizeof(int), 1, file);
+
+            int object_meta_count = 0;
+            fread(&object_meta_count, sizeof(int), 1, file);
+            for (int i = 0; i < object_meta_count; i++) {
+                unsigned long long source_hash = 0ULL;
+                int is_trailer = 0;
+                int parent_track_index = -1;
+                fread(&source_hash, sizeof(unsigned long long), 1, file);
+                fread(&is_trailer, sizeof(int), 1, file);
+                fread(&parent_track_index, sizeof(int), 1, file);
+                if (i < env->num_objects) {
+                    entities[i].source_track_id_hash = source_hash;
+                    entities[i].is_trailer = is_trailer;
+                    entities[i].parent_track_index = parent_track_index;
+                }
+            }
+        }
     }
 
     fclose(file);
@@ -958,6 +1071,11 @@ int check_aabb_collision(Entity *car1, Entity *car2) {
 
 int collision_check(Drive *env, int agent_idx) {
     Entity *agent = &env->entities[agent_idx];
+    Entity *ego_trailer = NULL;
+    bool check_ego_trailer = has_valid_ego_trailer_pair(env) && agent_idx == env->sdc_track_index;
+    if (check_ego_trailer) {
+        ego_trailer = &env->entities[env->ego_trailer_track_index];
+    }
 
     if (agent->x == INVALID_POSITION)
         return -1;
@@ -978,15 +1096,25 @@ int collision_check(Drive *env, int agent_idx) {
             continue;
         if (index == agent_idx)
             continue;
+        if (is_ego_or_trailer_pair(env, agent_idx, index))
+            continue;
         Entity *entity = &env->entities[index];
         if (entity->respawn_timestep != -1)
             continue; // Skip respawning entities
         float x1 = entity->x;
         float y1 = entity->y;
-        float dist = ((x1 - agent->x) * (x1 - agent->x) + (y1 - agent->y) * (y1 - agent->y));
-        if (dist > 225.0f)
+        float dist_agent = ((x1 - agent->x) * (x1 - agent->x) + (y1 - agent->y) * (y1 - agent->y));
+        float dist_trailer = dist_agent;
+        if (check_ego_trailer && ego_trailer != NULL) {
+            dist_trailer = ((x1 - ego_trailer->x) * (x1 - ego_trailer->x) + (y1 - ego_trailer->y) * (y1 - ego_trailer->y));
+        }
+        if (dist_agent > 225.0f && dist_trailer > 225.0f)
             continue;
         if (check_aabb_collision(agent, entity)) {
+            car_collided_with_index = index;
+            break;
+        }
+        if (check_ego_trailer && ego_trailer != NULL && check_aabb_collision(ego_trailer, entity)) {
             car_collided_with_index = index;
             break;
         }
@@ -1077,6 +1205,8 @@ float point_to_segment_distance_2d(float px, float py, float x1, float y1, float
 
 void compute_agent_metrics(Drive *env, int agent_idx) {
     Entity *agent = &env->entities[agent_idx];
+    bool check_ego_trailer = has_valid_ego_trailer_pair(env) && agent_idx == env->sdc_track_index;
+    Entity *ego_trailer = check_ego_trailer ? &env->entities[env->ego_trailer_track_index] : NULL;
 
     reset_agent_metrics(env, agent_idx);
 
@@ -1101,9 +1231,32 @@ void compute_agent_metrics(Drive *env, int agent_idx) {
             agent->y + (offsets[i][0] * half_length * sin_heading + offsets[i][1] * half_width * cos_heading);
     }
 
-    GridMapEntity entity_list[MAX_ENTITIES_PER_CELL * 25]; // Array big enough for all neighboring cells
+    float trailer_corners[4][2];
+    if (check_ego_trailer && ego_trailer != NULL) {
+        float trailer_half_length = ego_trailer->length / 2.0f;
+        float trailer_half_width = ego_trailer->width / 2.0f;
+        float trailer_cos_heading = cosf(ego_trailer->heading);
+        float trailer_sin_heading = sinf(ego_trailer->heading);
+        for (int i = 0; i < 4; i++) {
+            trailer_corners[i][0] = ego_trailer->x +
+                                    (offsets[i][0] * trailer_half_length * trailer_cos_heading -
+                                     offsets[i][1] * trailer_half_width * trailer_sin_heading);
+            trailer_corners[i][1] = ego_trailer->y +
+                                    (offsets[i][0] * trailer_half_length * trailer_sin_heading +
+                                     offsets[i][1] * trailer_half_width * trailer_cos_heading);
+        }
+    }
+
+    GridMapEntity entity_list[MAX_ENTITIES_PER_CELL * 50]; // Tractor neighborhood + optional trailer neighborhood
     int list_size =
-        checkNeighbors(env, agent->x, agent->y, entity_list, MAX_ENTITIES_PER_CELL * 25, collision_offsets, 25);
+        checkNeighbors(env, agent->x, agent->y, entity_list, MAX_ENTITIES_PER_CELL * 50, collision_offsets, 25);
+    if (check_ego_trailer && ego_trailer != NULL) {
+        int remaining = (MAX_ENTITIES_PER_CELL * 50) - list_size;
+        if (remaining > 0) {
+            list_size += checkNeighbors(env, ego_trailer->x, ego_trailer->y, &entity_list[list_size], remaining,
+                                        collision_offsets, 25);
+        }
+    }
     for (int i = 0; i < list_size; i++) {
         if (entity_list[i].entity_idx == -1)
             continue;
@@ -1120,6 +1273,11 @@ void compute_agent_metrics(Drive *env, int agent_idx) {
             for (int k = 0; k < 4; k++) { // Check each edge of the bounding box
                 int next = (k + 1) % 4;
                 if (check_line_intersection(corners[k], corners[next], start, end)) {
+                    collided = OFFROAD;
+                    break;
+                }
+                if (check_ego_trailer && ego_trailer != NULL &&
+                    check_line_intersection(trailer_corners[k], trailer_corners[next], start, end)) {
                     collided = OFFROAD;
                     break;
                 }
@@ -1210,6 +1368,11 @@ bool should_control_agent(Drive *env, int agent_idx) {
 
     Entity *entity = &env->entities[agent_idx];
 
+    // Keep ego trailer as a dependent body, never directly policy-controlled.
+    if (has_valid_ego_trailer_pair(env) && agent_idx == env->ego_trailer_track_index) {
+        return false;
+    }
+
     // TODO: Move this elsewhere or remove
     entity->width *= 0.7f;
     entity->length *= 0.7f;
@@ -1289,6 +1452,10 @@ void set_active_agents(Drive *env) {
             should_create = (entity->type == VEHICLE);
         } else { // Control all agents
             should_create = (entity->type == VEHICLE || entity->type == PEDESTRIAN || entity->type == CYCLIST);
+        }
+        // Ensure ego trailer is spawned for collision/offroad checks even when not controlled.
+        if (has_valid_ego_trailer_pair(env) && i == env->ego_trailer_track_index) {
+            should_create = true;
         }
 
         if (!should_create)
@@ -1436,6 +1603,7 @@ void c_close(Drive *env) {
     free(env->grid_map);
     free(env->static_agent_indices);
     free(env->expert_static_agent_indices);
+    free(env->tracks_to_predict_indices);
     free(env->ini_file);
 }
 
@@ -1788,6 +1956,10 @@ void compute_observations(Drive *env) {
                 break;
             if (index == env->active_agent_indices[i])
                 continue; // Skip self, but don't increment obs_idx
+            if (has_valid_ego_trailer_pair(env) && env->active_agent_indices[i] == env->sdc_track_index &&
+                index == env->ego_trailer_track_index) {
+                continue; // Keep ego policy unaware of its own dependent trailer.
+            }
             Entity *other_entity = &env->entities[index];
             if (ego_entity->respawn_timestep != -1)
                 continue;
@@ -2000,6 +2172,10 @@ void respawn_agent(Drive *env, int agent_idx) {
     env->entities[agent_idx].jerk_long = 0.0f;
     env->entities[agent_idx].jerk_lat = 0.0f;
     env->entities[agent_idx].steering_angle = 0.0f;
+
+    if (has_valid_ego_trailer_pair(env) && agent_idx == env->sdc_track_index) {
+        update_ego_trailer_pose(env);
+    }
 }
 
 void c_step(Drive *env) {
@@ -2040,6 +2216,9 @@ void c_step(Drive *env) {
         float prev_vy = env->entities[agent_idx].vy;
 
         move_dynamics(env, i, agent_idx);
+        if (has_valid_ego_trailer_pair(env) && agent_idx == env->sdc_track_index) {
+            update_ego_trailer_pose(env);
+        }
 
         // Tiny jerk penalty for smoothness
         if (env->dynamics_model == CLASSIC) {
