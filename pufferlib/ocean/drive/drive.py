@@ -589,6 +589,7 @@ def _process_single_map(args):
 
 def process_all_maps(
     data_folder="data/processed/training",
+    output_folder=None,
     max_maps=50_000,
     num_workers=None,
 ):
@@ -596,6 +597,7 @@ def process_all_maps(
 
     Args:
         data_folder: Path to the folder containing JSON map files
+        output_folder: Path to save binary files (defaults to resources/drive/binaries/{dataset_name})
         max_maps: Maximum number of maps to process
         num_workers: Number of parallel workers (defaults to cpu_count())
     """
@@ -609,7 +611,10 @@ def process_all_maps(
     dataset_name = data_dir.name
 
     # Create the binaries directory if it doesn't exist
-    binary_dir = Path(f"resources/drive/binaries/{dataset_name}")
+    if output_folder is None:
+        binary_dir = Path(f"resources/drive/binaries/{dataset_name}")
+    else:
+        binary_dir = Path(output_folder)
     binary_dir.mkdir(parents=True, exist_ok=True)
 
     # Get all JSON files in the training directory
@@ -670,10 +675,23 @@ def test_performance(timeout=10, atn_cache=1024, num_agents=1024):
 
 
 if __name__ == "__main__":
-    # test_performance()
-    # Process the train dataset
-    process_all_maps(data_folder="data/processed/training")
-    # Process the validation/test dataset
-    # process_all_maps(data_folder="data/processed/validation")
-    # # Process the validation_interactive dataset
-    # process_all_maps(data_folder="data/processed/validation_interactive")
+    import argparse
+    
+    parser = argparse.ArgumentParser(description="Convert JSON map files to binary format")
+    parser.add_argument("--input-folder", type=str, default="data/processed/training",
+                        help="Path to folder containing JSON map files")
+    parser.add_argument("--output-folder", type=str, default=None,
+                        help="Path to save binary files (default: resources/drive/binaries/{dataset_name})")
+    parser.add_argument("--max-maps", type=int, default=50_000,
+                        help="Maximum number of maps to process")
+    parser.add_argument("--num-workers", type=int, default=None,
+                        help="Number of parallel workers (default: all CPU cores)")
+    
+    args = parser.parse_args()
+    
+    process_all_maps(
+        data_folder=args.input_folder,
+        output_folder=args.output_folder,
+        max_maps=args.max_maps,
+        num_workers=args.num_workers
+    )
