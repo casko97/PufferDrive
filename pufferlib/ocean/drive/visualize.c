@@ -191,7 +191,7 @@ static int make_gif_from_frames(const char *pattern, int fps, const char *palett
 
 int eval_gif(const char *map_name, const char *policy_name, int show_grid, int obs_only, int lasers,
              int show_human_logs, int frame_skip, const char *view_mode, const char *output_topdown,
-             const char *output_agent, int num_maps, int zoom_in, float zoom_scale) {
+             const char *output_agent, int num_maps, int zoom_in, float zoom_scale, int ground_truth) {
 
     // Parse configuration from INI file
     env_init_config conf = {0};
@@ -328,6 +328,7 @@ int eval_gif(const char *map_name, const char *policy_name, int show_grid, int o
     bool render_agent = (strcmp(view_mode, "both") == 0 || strcmp(view_mode, "agent") == 0);
 
     printf("Rendering: %s\n", view_mode);
+    printf("Control mode: %s\n", ground_truth ? "ground-truth trajectories" : "policy");
 
     int rendered_frames = 0;
     double startTime = GetTime();
@@ -359,8 +360,21 @@ int eval_gif(const char *map_name, const char *policy_name, int show_grid, int o
                 WriteFrame(&topdown_recorder, img_width, img_height);
                 rendered_frames++;
             }
-            forward(net, env.observations, (int *)env.actions);
-            c_step(&env);
+            if (ground_truth) {
+                // Replay trajectories for all dynamic entities so trailer and
+                // non-controlled actors still move even if they are not in
+                // active/static index lists.
+                for (int j = 0; j < env.num_entities; j++) {
+                    int type = env.entities[j].type;
+                    if (type == VEHICLE || type == PEDESTRIAN || type == CYCLIST) {
+                        move_expert(&env, env.actions, j);
+                    }
+                }
+                env.timestep++;
+            } else {
+                forward(net, env.observations, (int *)env.actions);
+                c_step(&env);
+            }
         }
     }
 
@@ -377,8 +391,21 @@ int eval_gif(const char *map_name, const char *policy_name, int show_grid, int o
                 WriteFrame(&agent_recorder, img_width, img_height);
                 rendered_frames++;
             }
-            forward(net, env.observations, (int *)env.actions);
-            c_step(&env);
+            if (ground_truth) {
+                // Replay trajectories for all dynamic entities so trailer and
+                // non-controlled actors still move even if they are not in
+                // active/static index lists.
+                for (int j = 0; j < env.num_entities; j++) {
+                    int type = env.entities[j].type;
+                    if (type == VEHICLE || type == PEDESTRIAN || type == CYCLIST) {
+                        move_expert(&env, env.actions, j);
+                    }
+                }
+                env.timestep++;
+            } else {
+                forward(net, env.observations, (int *)env.actions);
+                c_step(&env);
+            }
         }
     }
 
@@ -413,6 +440,7 @@ int main(int argc, char *argv[]) {
     int frame_skip = 1;
     int zoom_in = 0;
     float zoom_scale = 1.0f;
+    int ground_truth = 0;
     const char *view_mode = "both";
 
     // File paths and num_maps (not in [env] section)
@@ -454,6 +482,8 @@ int main(int argc, char *argv[]) {
                 fprintf(stderr, "Error: --zoom-scale option requires a float value\n");
                 return 1;
             }
+        } else if (strcmp(argv[i], "--ground-truth") == 0) {
+            ground_truth = 1;
         } else if (strcmp(argv[i], "--view") == 0) {
             if (i + 1 < argc) {
                 view_mode = argv[i + 1];
@@ -502,6 +532,6 @@ int main(int argc, char *argv[]) {
     }
 
     eval_gif(map_name, policy_name, show_grid, obs_only, lasers, show_human_logs, frame_skip, view_mode, output_topdown,
-             output_agent, num_maps, zoom_in, zoom_scale);
+             output_agent, num_maps, zoom_in, zoom_scale, ground_truth);
     return 0;
 }
