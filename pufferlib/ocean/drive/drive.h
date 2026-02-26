@@ -1848,6 +1848,31 @@ void c_get_global_agent_state(Drive *env, float *x_out, float *y_out, float *z_o
     }
 }
 
+void c_get_sdc_trailer_state(Drive *env, int *has_trailer_out, float *x_out, float *y_out, float *z_out,
+                             float *heading_out, int *id_out, float *length_out, float *width_out) {
+    if (!has_valid_ego_trailer_pair(env)) {
+        *has_trailer_out = 0;
+        *x_out = NAN;
+        *y_out = NAN;
+        *z_out = NAN;
+        *heading_out = NAN;
+        *id_out = -1;
+        *length_out = 0.0f;
+        *width_out = 0.0f;
+        return;
+    }
+
+    Entity *trailer = &env->entities[env->ego_trailer_track_index];
+    *has_trailer_out = 1;
+    *x_out = trailer->x + env->world_mean_x;
+    *y_out = trailer->y + env->world_mean_y;
+    *z_out = trailer->z;
+    *heading_out = trailer->heading;
+    *id_out = trailer->id;
+    *length_out = trailer->length;
+    *width_out = trailer->width;
+}
+
 void c_get_global_ground_truth_trajectories(Drive *env, float *x_out, float *y_out, float *z_out, float *heading_out,
                                             int *valid_out, int *id_out, int *scenario_id_out) {
     for (int i = 0; i < env->active_agent_count; i++) {

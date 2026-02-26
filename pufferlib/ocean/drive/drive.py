@@ -280,7 +280,7 @@ class Drive(pufferlib.PufferEnv):
             self.terminals[:] = 1
         return (self.observations, self.rewards, self.terminals, self.truncations, info)
 
-    def get_global_agent_state(self):
+    def get_global_agent_state(self, include_sdc_trailer=False):
         """Get current global state of all active agents.
 
         Returns:
@@ -310,7 +310,43 @@ class Drive(pufferlib.PufferEnv):
             states["width"],
         )
 
+        if include_sdc_trailer:
+            states["sdc_trailer"] = self.get_sdc_trailer_state()
+
         return states
+
+    def get_sdc_trailer_state(self):
+        """Get SDC-associated trailer state for each vectorized environment.
+
+        Policy inputs remain tractor-only; this is a separate query API.
+
+        Returns:
+            dict with keys 'has_trailer', 'x', 'y', 'z', 'heading', 'id', 'length', 'width'
+            of shape (num_envs,).
+        """
+        trailer = {
+            "has_trailer": np.zeros(self.num_envs, dtype=np.int32),
+            "x": np.zeros(self.num_envs, dtype=np.float32),
+            "y": np.zeros(self.num_envs, dtype=np.float32),
+            "z": np.zeros(self.num_envs, dtype=np.float32),
+            "heading": np.zeros(self.num_envs, dtype=np.float32),
+            "id": np.zeros(self.num_envs, dtype=np.int32),
+            "length": np.zeros(self.num_envs, dtype=np.float32),
+            "width": np.zeros(self.num_envs, dtype=np.float32),
+        }
+
+        binding.vec_get_sdc_trailer_state(
+            self.c_envs,
+            trailer["has_trailer"],
+            trailer["x"],
+            trailer["y"],
+            trailer["z"],
+            trailer["heading"],
+            trailer["id"],
+            trailer["length"],
+            trailer["width"],
+        )
+        return trailer
 
     def get_ground_truth_trajectories(self):
         """Get ground truth trajectories for all active agents.
