@@ -67,7 +67,7 @@ void CloseVideo(VideoRecorder *recorder) {
 
 void renderTopDownView(Drive *env, Client *client, int map_height, int obs, int lasers, int trajectories,
                        int frame_count, float *path, int show_human_logs, int show_grid, int img_width, int img_height,
-                       int zoom_in) {
+                       int zoom_in, float zoom_scale) {
     BeginDrawing();
 
     // Top-down orthographic camera
@@ -76,7 +76,7 @@ void renderTopDownView(Drive *env, Client *client, int map_height, int obs, int 
     if (zoom_in) {                                       // Zoom in on part of the map
         camera.position = (Vector3){0.0f, 0.0f, 500.0f}; // above the scene
         camera.target = (Vector3){0.0f, 0.0f, 0.0f};     // look at origin
-        camera.fovy = map_height;
+        camera.fovy = map_height * zoom_scale;
     } else { // Show full map
         camera.position = (Vector3){env->grid_map->top_left_x, env->grid_map->bottom_right_y, 500.0f};
         camera.target = (Vector3){env->grid_map->top_left_x, env->grid_map->bottom_right_y, 0.0f};
@@ -191,7 +191,7 @@ static int make_gif_from_frames(const char *pattern, int fps, const char *palett
 
 int eval_gif(const char *map_name, const char *policy_name, int show_grid, int obs_only, int lasers,
              int show_human_logs, int frame_skip, const char *view_mode, const char *output_topdown,
-             const char *output_agent, int num_maps, int zoom_in) {
+             const char *output_agent, int num_maps, int zoom_in, float zoom_scale) {
 
     // Parse configuration from INI file
     env_init_config conf = {0};
@@ -355,7 +355,7 @@ int eval_gif(const char *map_name, const char *policy_name, int show_grid, int o
         for (int i = 0; i < frame_count; i++) {
             if (i % frame_skip == 0) {
                 renderTopDownView(&env, client, map_height, 0, 0, 0, frame_count, NULL, show_human_logs, show_grid,
-                                  img_width, img_height, zoom_in);
+                                  img_width, img_height, zoom_in, zoom_scale);
                 WriteFrame(&topdown_recorder, img_width, img_height);
                 rendered_frames++;
             }
@@ -412,6 +412,7 @@ int main(int argc, char *argv[]) {
     int show_human_logs = 0;
     int frame_skip = 1;
     int zoom_in = 0;
+    float zoom_scale = 1.0f;
     const char *view_mode = "both";
 
     // File paths and num_maps (not in [env] section)
@@ -441,6 +442,18 @@ int main(int argc, char *argv[]) {
             }
         } else if (strcmp(argv[i], "--zoom-in") == 0) {
             zoom_in = 1;
+        } else if (strcmp(argv[i], "--zoom-scale") == 0) {
+            if (i + 1 < argc) {
+                zoom_scale = atof(argv[i + 1]);
+                i++;
+                if (zoom_scale <= 0.0f) {
+                    fprintf(stderr, "Error: --zoom-scale must be > 0\n");
+                    return 1;
+                }
+            } else {
+                fprintf(stderr, "Error: --zoom-scale option requires a float value\n");
+                return 1;
+            }
         } else if (strcmp(argv[i], "--view") == 0) {
             if (i + 1 < argc) {
                 view_mode = argv[i + 1];
@@ -489,6 +502,6 @@ int main(int argc, char *argv[]) {
     }
 
     eval_gif(map_name, policy_name, show_grid, obs_only, lasers, show_human_logs, frame_skip, view_mode, output_topdown,
-             output_agent, num_maps, zoom_in);
+             output_agent, num_maps, zoom_in, zoom_scale);
     return 0;
 }
