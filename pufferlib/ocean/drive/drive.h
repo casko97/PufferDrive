@@ -2725,6 +2725,41 @@ void draw_road_edge(Drive *env, float start_x, float start_y, float end_x, float
     DrawTriangle3D(t4, t1, b1, CURB_SIDE);
 }
 
+static inline void draw_ego_trailer_linkage(Drive *env) {
+    if (!has_valid_ego_trailer_pair(env))
+        return;
+
+    Entity *tractor = &env->entities[env->sdc_track_index];
+    Entity *trailer = &env->entities[env->ego_trailer_track_index];
+
+    // Match visibility rules used for entities in draw_scene.
+    if (tractor->respawn_timestep != -1 || trailer->respawn_timestep != -1)
+        return;
+    if (tractor->x == INVALID_POSITION || trailer->x == INVALID_POSITION)
+        return;
+
+    // Use the same hitch approximation used by update_ego_trailer_pose.
+    float tractor2hitch = 0.10f * tractor->length;
+    float trailer2hitch = 0.15f * trailer->length;
+
+    float theta_tractor = tractor->heading;
+    float theta_trailer = trailer->heading;
+
+    float tractor_hitch_x = tractor->x + (-tractor->length * 0.5f + tractor2hitch) * cosf(theta_tractor);
+    float tractor_hitch_y = tractor->y + (-tractor->length * 0.5f + tractor2hitch) * sinf(theta_tractor);
+
+    float trailer_hitch_x = trailer->x + (trailer->length * 0.5f - trailer2hitch) * cosf(theta_trailer);
+    float trailer_hitch_y = trailer->y + (trailer->length * 0.5f - trailer2hitch) * sinf(theta_trailer);
+
+    Vector3 tractor_hitch = {tractor_hitch_x, tractor_hitch_y, 1.2f};
+    Vector3 trailer_hitch = {trailer_hitch_x, trailer_hitch_y, 1.2f};
+
+    rlSetLineWidth(4.0f);
+    DrawLine3D(tractor_hitch, trailer_hitch, ORANGE);
+    DrawSphere(tractor_hitch, 0.18f, ORANGE);
+    DrawSphere(trailer_hitch, 0.18f, ORANGE);
+}
+
 void draw_scene(Drive *env, Client *client, int mode, int obs_only, int lasers, int show_grid) {
 
     if (show_grid) {
@@ -2748,6 +2783,7 @@ void draw_scene(Drive *env, Client *client, int mode, int obs_only, int lasers, 
             // Check if this vehicle is an active agent
             bool is_active_agent = false;
             bool is_static_agent = false;
+            bool is_ego_trailer_entity = has_valid_ego_trailer_pair(env) && i == env->ego_trailer_track_index;
             int agent_index = -1;
             for (int j = 0; j < env->active_agent_count; j++) {
                 if (env->active_agent_indices[j] == i) {
@@ -2763,7 +2799,8 @@ void draw_scene(Drive *env, Client *client, int mode, int obs_only, int lasers, 
                 }
             }
             // HIDE CARS ON RESPAWN - IMPORTANT TO KNOW VISUAL SETTING
-            if ((!is_active_agent && !is_static_agent) || env->entities[i].respawn_timestep != -1) {
+            if ((!is_active_agent && !is_static_agent && !is_ego_trailer_entity) ||
+                env->entities[i].respawn_timestep != -1) {
                 continue;
             }
             Vector3 position;
@@ -2952,6 +2989,7 @@ void draw_scene(Drive *env, Client *client, int mode, int obs_only, int lasers, 
         }
     }
 
+    draw_ego_trailer_linkage(env);
     EndMode3D();
 
     // Draw track indices for the tracks to predict
