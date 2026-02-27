@@ -12,9 +12,9 @@ module load ${BUILDENV_MODULE}
 if mamba env list | awk '{print \$1}' | grep -Fxq \"${ENV_NAME}\"; then
   mamba activate ${ENV_NAME}
 else
-  mamba create --name ${ENV_NAME} python=3.11
+  mamba create -y --name ${ENV_NAME} python=3.11
   mamba activate ${ENV_NAME}
-  CONDA_OVERRIDE_CUDA=12.1 mamba install 'pytorch==2.10.0=cuda*'
+  CONDA_OVERRIDE_CUDA=12.1 mamba install -y 'pytorch==2.10.0=cuda*'
 fi
 
 exec bash -l
