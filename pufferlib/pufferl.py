@@ -558,12 +558,8 @@ class PuffeRL:
             # **{f'performance/{k}': dist_sum(v['elapsed'], device) for k, v in self.profile},
         }
 
-        if torch.distributed.is_initialized():
-            if torch.distributed.get_rank() != 0:
-                self.logger.log(logs, agent_steps)
-                return logs
-            else:
-                return None
+        if torch.distributed.is_initialized() and torch.distributed.get_rank() != 0:
+            return None
 
         self.logger.log(logs, agent_steps)
         return logs
@@ -571,6 +567,9 @@ class PuffeRL:
     def close(self):
         self.vecenv.close()
         self.utilization.stop()
+        if torch.distributed.is_initialized():
+            if torch.distributed.get_rank() != 0:
+                return None
         model_path = self.save_checkpoint()
         run_id = self.logger.run_id
         path = os.path.join(self.config["data_dir"], f"{self.config['env']}_{run_id}.pt")
@@ -1028,6 +1027,9 @@ def train(env_name, args=None, vecenv=None, policy=None, logger=None):
 
     pufferl.print_dashboard()
     model_path = pufferl.close()
+    if torch.distributed.is_initialized():
+        if torch.distributed.get_rank() != 0:
+            return all_logs
     pufferl.logger.close(model_path)
     return all_logs
 
@@ -1348,8 +1350,9 @@ def profile(args=None, env_name=None, vecenv=None, policy=None):
     prof.export_chrome_trace("trace.json")
 
 
-def export(args=None, env_name=None, vecenv=None, policy=None, path=None, silent=False):
+def export(args=None, env_name=None, vecenv=None, policy=None, path=None, dest_folder=None, silent=False):
     args = args or load_config(env_name)
+    vecenv_created = vecenv is None
     vecenv = vecenv or load_env(env_name, args)
     policy = policy or load_policy(args, vecenv)
 
@@ -1361,12 +1364,19 @@ def export(args=None, env_name=None, vecenv=None, policy=None, path=None, silent
 
     weights = np.concatenate(weights)
     if path is None:
-        path = f"pufferlib/resources/drive/{args['env_name']}_weights.bin"
+        if dest_folder is not None:
+            os.makedirs(dest_folder, exist_ok=True)
+            path = os.path.join(dest_folder, f"{args['env_name']}_weights.bin")
+        else:
+            path = f"pufferlib/resources/drive/{args['env_name']}_weights.bin"
 
     weights.tofile(path)
 
     if not silent:
         print(f"Saved {len(weights)} weights to {path}")
+
+    if vecenv_created:
+        vecenv.close()
 
 
 def ensure_drive_binary():
@@ -1462,6 +1472,7 @@ def load_config(env_name, config_dir=None):
     parser.add_argument(
         "--load-id", type=str, default=None, help="Kickstart/eval from from a finished Wandb/Neptune run"
     )
+    parser.add_argument("--dest-folder", type=str, default=None, help="Destination folder for exported weights")
     parser.add_argument(
         "--render-mode", type=str, default="auto", choices=["auto", "human", "ansi", "rgb_array", "raylib", "None"]
     )
@@ -1552,7 +1563,8 @@ def main():
     elif mode == "profile":
         profile(env_name=env_name)
     elif mode == "export":
-        export(env_name=env_name)
+        args = load_config(env_name)
+        export(args=args, env_name=env_name, dest_folder=args.get("dest_folder"))
     elif mode == "sanity":
         sanity(env_name=env_name)
     else:
