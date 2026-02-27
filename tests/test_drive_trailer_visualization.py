@@ -5,8 +5,10 @@ def test_parse_and_plot_trailer_scene(generated_conversion_bin, tmp_path):
     parsed = parse_map_binary(str(generated_conversion_bin))
 
     assert parsed["sdc_track_index"] == 0
+    assert parsed["extension"]["version"] == 2
     assert parsed["extension"]["has_ego_trailer"] == 1
     assert parsed["extension"]["ego_trailer_track_index"] == 1
+    assert "tractor2hitch" in parsed["extension"]["non_kinematic_vehicle_params"]
     assert len(parsed["objects"]) == 2
     assert parsed["objects"][1].is_trailer == 1
 

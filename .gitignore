@@ -190,3 +190,6 @@ pufferlib/resources/drive/output*.gif
 emsdk/
 docs/book/*
 !docs/book/assets/
+!tests/artifacts/
+!tests/artifacts/drive/
+!tests/artifacts/drive/traversing_traffic_light_intersection__97be27351e915863__97be27351e915863.bin

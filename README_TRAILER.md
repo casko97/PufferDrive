@@ -18,7 +18,7 @@ This document summarizes the tractor+trailer adaptations in PufferDrive: what ch
 `pufferlib/ocean/drive/drive.py` now writes an extension block at the end of each `.bin`:
 
 - magic: `TRLR` (`0x54524C52`)
-- extension version: `1`
+- extension version: `2`
 - scenario trailer metadata:
   - `has_ego_trailer`
   - `ego_trailer_track_index`
@@ -26,14 +26,16 @@ This document summarizes the tractor+trailer adaptations in PufferDrive: what ch
   - `source_track_id` hashed to stable `uint64`
   - `is_trailer`
   - `parent_track_index`
+- trailer geometry metadata:
+  - `non_kinematic_vehicle_params` (13 float fields; includes `tractor2hitch` and `trailer2hitch`)
 
 Notes:
-- Converter remains backward-compatible with non-extended JSON.
+- Converter expects extension v2 metadata and writes non-kinematic trailer geometry every time.
 - Object/road IDs are normalized to deterministic signed int32 so large/string IDs do not fail conversion.
 
 ### BIN loading
 
-`pufferlib/ocean/drive/drive.h` loader reads the extension block when present; legacy bins without extension still load.
+`pufferlib/ocean/drive/drive.h` loader requires extension v2 (magic + version + 13 non-kinematic params).
 
 ## Simulator Behavior
 

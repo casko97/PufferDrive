@@ -367,7 +367,7 @@ int eval_gif(const char *map_name, const char *policy_name, int show_grid, int o
                 for (int j = 0; j < env.num_entities; j++) {
                     int type = env.entities[j].type;
                     if (type == VEHICLE || type == PEDESTRIAN || type == CYCLIST) {
-                        move_expert(&env, env.actions, j);
+                        move_expert_trajectory_only(&env, j);
                     }
                 }
                 env.timestep++;
@@ -398,7 +398,7 @@ int eval_gif(const char *map_name, const char *policy_name, int show_grid, int o
                 for (int j = 0; j < env.num_entities; j++) {
                     int type = env.entities[j].type;
                     if (type == VEHICLE || type == PEDESTRIAN || type == CYCLIST) {
-                        move_expert(&env, env.actions, j);
+                        move_expert_trajectory_only(&env, j);
                     }
                 }
                 env.timestep++;

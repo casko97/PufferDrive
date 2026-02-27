@@ -468,7 +468,22 @@ def simplify_polyline(geometry, polyline_reduction_threshold, max_segment_length
 def save_map_binary(map_data, output_file, unique_map_id):
     trajectory_length = 91
     extension_magic = 0x54524C52  # "TRLR"
-    extension_version = 1
+    extension_version = 2
+    non_kinematic_param_order = [
+        "tractor_length",
+        "trailer_length",
+        "width",
+        "trailer_width",
+        "vehicle_height",
+        "trailer_height",
+        "tractor2hitch",
+        "trailer2hitch",
+        "tractor_d_rear_axle2rear_bumper",
+        "tractor_d_rear_axle2front_axle",
+        "tractor_d_front_axle2front_bumper",
+        "trailer_d_rear_axel2_rear_bumper",
+        "trailer_d_real_axel2_front_bumper",
+    ]
 
     def stable_track_hash(value):
         if value is None:
@@ -504,6 +519,22 @@ def save_map_binary(map_data, output_file, unique_map_id):
         tracks_to_predict = metadata.get("tracks_to_predict", [])
         has_ego_trailer = int(bool(metadata.get("has_ego_trailer", False)))
         ego_trailer_track_index = int(metadata.get("ego_trailer_track_index", -1))
+        non_kinematic_vehicle_params = metadata.get("non_kinematic_vehicle_params", {})
+        if not isinstance(non_kinematic_vehicle_params, dict):
+            non_kinematic_vehicle_params = {}
+
+        # Handle common spelling variants while writing a stable packed order.
+        non_kinematic_aliases = {
+            "trailer_d_rear_axel2_rear_bumper": [
+                "trailer_d_rear_axel2_rear_bumper",
+                "trailer_d_rear_axle2_rear_bumper",
+            ],
+            "trailer_d_real_axel2_front_bumper": [
+                "trailer_d_real_axel2_front_bumper",
+                "trailer_d_rear_axel2_front_bumper",
+                "trailer_d_rear_axle2_front_bumper",
+            ],
+        }
 
         # Write sdc_track_index
         f.write(struct.pack("i", sdc_track_index))
@@ -647,6 +678,15 @@ def save_map_binary(map_data, output_file, unique_map_id):
             f.write(struct.pack("Q", source_track_id_hash))
             f.write(struct.pack("i", is_trailer))
             f.write(struct.pack("i", parent_track_index))
+
+        f.write(struct.pack("i", len(non_kinematic_param_order)))
+        for param_key in non_kinematic_param_order:
+            value = None
+            for alias in non_kinematic_aliases.get(param_key, [param_key]):
+                if alias in non_kinematic_vehicle_params:
+                    value = non_kinematic_vehicle_params.get(alias)
+                    break
+            f.write(struct.pack("f", float(value if value is not None else 0.0)))
 
 
 def load_map(map_name, unique_map_id, binary_output=None):

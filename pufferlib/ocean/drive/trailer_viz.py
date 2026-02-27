@@ -9,6 +9,22 @@ from matplotlib.patches import Polygon
 
 
 EXTENSION_MAGIC = 0x54524C52  # "TRLR"
+EXTENSION_VERSION = 2
+NON_KINEMATIC_PARAM_KEYS = [
+    "tractor_length",
+    "trailer_length",
+    "width",
+    "trailer_width",
+    "vehicle_height",
+    "trailer_height",
+    "tractor2hitch",
+    "trailer2hitch",
+    "tractor_d_rear_axle2rear_bumper",
+    "tractor_d_rear_axle2front_axle",
+    "tractor_d_front_axle2front_bumper",
+    "trailer_d_rear_axel2_rear_bumper",
+    "trailer_d_real_axel2_front_bumper",
+]
 
 
 @dataclass
@@ -147,34 +163,50 @@ def parse_map_binary(binary_path):
             "version": None,
             "has_ego_trailer": 0,
             "ego_trailer_track_index": -1,
+            "non_kinematic_vehicle_params": {},
         }
 
         remaining = file_obj.read()
-        if len(remaining) >= 20:
-            cursor = 0
-            magic = struct.unpack_from("<i", remaining, cursor)[0]
-            cursor += 4
-            if magic == EXTENSION_MAGIC:
-                extension["present"] = True
-                extension["version"] = struct.unpack_from("<i", remaining, cursor)[0]
-                cursor += 4
-                extension["has_ego_trailer"] = struct.unpack_from("<i", remaining, cursor)[0]
-                cursor += 4
-                extension["ego_trailer_track_index"] = struct.unpack_from("<i", remaining, cursor)[0]
-                cursor += 4
-                object_meta_count = struct.unpack_from("<i", remaining, cursor)[0]
-                cursor += 4
+        if len(remaining) < 20:
+            raise ValueError("Missing required extension block")
+        cursor = 0
+        magic = struct.unpack_from("<i", remaining, cursor)[0]
+        cursor += 4
+        if magic != EXTENSION_MAGIC:
+            raise ValueError("Extension magic mismatch")
 
-                for idx in range(min(object_meta_count, len(objects))):
-                    source_hash = struct.unpack_from("<Q", remaining, cursor)[0]
-                    cursor += 8
-                    is_trailer = struct.unpack_from("<i", remaining, cursor)[0]
-                    cursor += 4
-                    parent_track_index = struct.unpack_from("<i", remaining, cursor)[0]
-                    cursor += 4
-                    objects[idx].source_track_id_hash = source_hash
-                    objects[idx].is_trailer = is_trailer
-                    objects[idx].parent_track_index = parent_track_index
+        extension["present"] = True
+        extension["version"] = struct.unpack_from("<i", remaining, cursor)[0]
+        cursor += 4
+        if extension["version"] != EXTENSION_VERSION:
+            raise ValueError(f"Unsupported extension version: {extension['version']}")
+
+        extension["has_ego_trailer"] = struct.unpack_from("<i", remaining, cursor)[0]
+        cursor += 4
+        extension["ego_trailer_track_index"] = struct.unpack_from("<i", remaining, cursor)[0]
+        cursor += 4
+        object_meta_count = struct.unpack_from("<i", remaining, cursor)[0]
+        cursor += 4
+
+        for idx in range(min(object_meta_count, len(objects))):
+            source_hash = struct.unpack_from("<Q", remaining, cursor)[0]
+            cursor += 8
+            is_trailer = struct.unpack_from("<i", remaining, cursor)[0]
+            cursor += 4
+            parent_track_index = struct.unpack_from("<i", remaining, cursor)[0]
+            cursor += 4
+            objects[idx].source_track_id_hash = source_hash
+            objects[idx].is_trailer = is_trailer
+            objects[idx].parent_track_index = parent_track_index
+
+        vehicle_param_count = struct.unpack_from("<i", remaining, cursor)[0]
+        cursor += 4
+        if vehicle_param_count != len(NON_KINEMATIC_PARAM_KEYS):
+            raise ValueError(f"Expected {len(NON_KINEMATIC_PARAM_KEYS)} non-kinematic params, got {vehicle_param_count}")
+        values = struct.unpack_from(f"<{vehicle_param_count}f", remaining, cursor)
+        extension["non_kinematic_vehicle_params"] = {
+            key: float(values[i]) for i, key in enumerate(NON_KINEMATIC_PARAM_KEYS)
+        }
 
     return {
         "sdc_track_index": sdc_track_index,

@@ -8,6 +8,21 @@ def build_conversion_scenario():
             "tracks_to_predict": [{"track_index": 0}, {"track_index": 1}],
             "has_ego_trailer": True,
             "ego_trailer_track_index": 1,
+            "non_kinematic_vehicle_params": {
+                "tractor_length": 5.3,
+                "trailer_length": 13.7,
+                "width": 2.55,
+                "trailer_width": 2.55,
+                "vehicle_height": 3.5,
+                "trailer_height": 3.5,
+                "tractor2hitch": 0.6,
+                "trailer2hitch": 2.2,
+                "tractor_d_rear_axle2rear_bumper": 1.5,
+                "tractor_d_rear_axle2front_axle": 3.6,
+                "tractor_d_front_axle2front_bumper": 1.2,
+                "trailer_d_rear_axel2_rear_bumper": 2.0,
+                "trailer_d_real_axel2_front_bumper": 10.5,
+            },
         },
         "objects": [
             {

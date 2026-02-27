@@ -63,7 +63,7 @@
 
 // Optional binary extension block marker/version (written by drive.py).
 #define DRIVE_BIN_EXT_MAGIC 0x54524C52
-#define DRIVE_BIN_EXT_VERSION 1
+#define DRIVE_BIN_EXT_VERSION 2
 
 // Grid cell size
 #define GRID_CELL_SIZE 5.0f
@@ -334,6 +334,7 @@ struct Drive {
     int sdc_track_index;
     int has_ego_trailer;
     int ego_trailer_track_index;
+    float non_kinematic_vehicle_params[13];
     int num_tracks_to_predict;
     int *tracks_to_predict_indices;
     int init_mode;
@@ -359,6 +360,14 @@ static inline bool is_ego_or_trailer_pair(Drive *env, int a, int b) {
             (a == env->ego_trailer_track_index && b == env->sdc_track_index));
 }
 
+static inline float trailer_param(Drive *env, int idx, float fallback) {
+    if (idx < 0 || idx >= 13)
+        return fallback;
+    if (env->non_kinematic_vehicle_params[idx] <= 0.0f)
+        return fallback;
+    return env->non_kinematic_vehicle_params[idx];
+}
+
 static inline void update_ego_trailer_pose(Drive *env) {
     if (!has_valid_ego_trailer_pair(env))
         return;
@@ -370,9 +379,9 @@ static inline void update_ego_trailer_pose(Drive *env) {
     if (tractor->x == INVALID_POSITION || trailer->x == INVALID_POSITION)
         return;
 
-    // Approximate hitch geometry if dataset-specific values are not provided.
-    float tractor2hitch = 0.10f * tractor->length;
-    float trailer2hitch = 0.15f * trailer->length;
+    // Use dataset non-kinematic geometry parameters from extension v2.
+    float tractor2hitch = trailer_param(env, 6, 0.10f * tractor->length);
+    float trailer2hitch = trailer_param(env, 7, 0.15f * trailer->length);
     float effective_length = fmaxf(0.5f, trailer->length - trailer2hitch);
     float theta_tractor = tractor->heading;
     float theta_trailer = trailer->heading;
@@ -468,6 +477,9 @@ Entity *load_map_binary(const char *filename, Drive *env) {
 
     env->has_ego_trailer = 0;
     env->ego_trailer_track_index = -1;
+    for (int i = 0; i < 13; i++) {
+        env->non_kinematic_vehicle_params[i] = 0.0f;
+    }
 
     // Read sdc_track_index
     fread(&env->sdc_track_index, sizeof(int), 1, file);
@@ -540,31 +552,54 @@ Entity *load_map_binary(const char *filename, Drive *env) {
         fread(&entities[i].mark_as_expert, sizeof(int), 1, file);
     }
 
-    // Optional extension block (safe no-op for legacy binaries).
+    // Extension block is mandatory (v2 only).
     int extension_magic = 0;
-    if (fread(&extension_magic, sizeof(int), 1, file) == 1 && extension_magic == DRIVE_BIN_EXT_MAGIC) {
-        int extension_version = 0;
-        fread(&extension_version, sizeof(int), 1, file);
-        if (extension_version >= DRIVE_BIN_EXT_VERSION) {
-            fread(&env->has_ego_trailer, sizeof(int), 1, file);
-            fread(&env->ego_trailer_track_index, sizeof(int), 1, file);
+    if (fread(&extension_magic, sizeof(int), 1, file) != 1 || extension_magic != DRIVE_BIN_EXT_MAGIC) {
+        fclose(file);
+        free(entities);
+        raise_error_with_message(ERROR_INITIALIZATION_FAILED,
+                                 "Map binary missing extension magic (expected DRIVE_BIN_EXT_MAGIC)");
+    }
 
-            int object_meta_count = 0;
-            fread(&object_meta_count, sizeof(int), 1, file);
-            for (int i = 0; i < object_meta_count; i++) {
-                unsigned long long source_hash = 0ULL;
-                int is_trailer = 0;
-                int parent_track_index = -1;
-                fread(&source_hash, sizeof(unsigned long long), 1, file);
-                fread(&is_trailer, sizeof(int), 1, file);
-                fread(&parent_track_index, sizeof(int), 1, file);
-                if (i < env->num_objects) {
-                    entities[i].source_track_id_hash = source_hash;
-                    entities[i].is_trailer = is_trailer;
-                    entities[i].parent_track_index = parent_track_index;
-                }
-            }
+    int extension_version = 0;
+    if (fread(&extension_version, sizeof(int), 1, file) != 1 || extension_version != DRIVE_BIN_EXT_VERSION) {
+        fclose(file);
+        free(entities);
+        raise_error_with_message(ERROR_INITIALIZATION_FAILED,
+                                 "Map binary extension version mismatch: expected %d got %d", DRIVE_BIN_EXT_VERSION,
+                                 extension_version);
+    }
+
+    fread(&env->has_ego_trailer, sizeof(int), 1, file);
+    fread(&env->ego_trailer_track_index, sizeof(int), 1, file);
+
+    int object_meta_count = 0;
+    fread(&object_meta_count, sizeof(int), 1, file);
+    for (int i = 0; i < object_meta_count; i++) {
+        unsigned long long source_hash = 0ULL;
+        int is_trailer = 0;
+        int parent_track_index = -1;
+        fread(&source_hash, sizeof(unsigned long long), 1, file);
+        fread(&is_trailer, sizeof(int), 1, file);
+        fread(&parent_track_index, sizeof(int), 1, file);
+        if (i < env->num_objects) {
+            entities[i].source_track_id_hash = source_hash;
+            entities[i].is_trailer = is_trailer;
+            entities[i].parent_track_index = parent_track_index;
         }
+    }
+
+    int vehicle_param_count = 0;
+    fread(&vehicle_param_count, sizeof(int), 1, file);
+    if (vehicle_param_count != 13) {
+        fclose(file);
+        free(entities);
+        raise_error_with_message(ERROR_INITIALIZATION_FAILED,
+                                 "Map binary non_kinematic_vehicle_params count mismatch: expected 13 got %d",
+                                 vehicle_param_count);
+    }
+    for (int i = 0; i < 13; i++) {
+        fread(&env->non_kinematic_vehicle_params[i], sizeof(float), 1, file);
     }
 
     fclose(file);
@@ -914,7 +949,7 @@ void set_means(Drive *env) {
     }
 }
 
-void move_expert(Drive *env, float *actions, int agent_idx) {
+static inline void move_expert_trajectory_only(Drive *env, int agent_idx) {
     Entity *agent = &env->entities[agent_idx];
     int t = env->timestep;
     if (t < 0 || t >= agent->array_size) {
@@ -941,6 +976,15 @@ void move_expert(Drive *env, float *actions, int agent_idx) {
     agent->heading = agent->traj_heading[t];
     agent->heading_x = cosf(agent->heading);
     agent->heading_y = sinf(agent->heading);
+}
+
+void move_expert(Drive *env, float *actions, int agent_idx) {
+    move_expert_trajectory_only(env, agent_idx);
+
+    // Keep replayed trailer pose consistent with articulated geometry in extension v2.
+    if (has_valid_ego_trailer_pair(env) && agent_idx == env->sdc_track_index) {
+        update_ego_trailer_pose(env);
+    }
 }
 
 bool check_line_intersection(float p1[2], float p2[2], float q1[2], float q2[2]) {
@@ -2738,9 +2782,9 @@ static inline void draw_ego_trailer_linkage(Drive *env) {
     if (tractor->x == INVALID_POSITION || trailer->x == INVALID_POSITION)
         return;
 
-    // Use the same hitch approximation used by update_ego_trailer_pose.
-    float tractor2hitch = 0.10f * tractor->length;
-    float trailer2hitch = 0.15f * trailer->length;
+    // Use the same extension geometry used by update_ego_trailer_pose.
+    float tractor2hitch = trailer_param(env, 6, 0.10f * tractor->length);
+    float trailer2hitch = trailer_param(env, 7, 0.15f * trailer->length);
 
     float theta_tractor = tractor->heading;
     float theta_trailer = trailer->heading;

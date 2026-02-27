@@ -7,6 +7,10 @@ def _read_int(f):
     return struct.unpack("i", f.read(4))[0]
 
 
+def _read_float(f):
+    return struct.unpack("f", f.read(4))[0]
+
+
 def _skip_object_payload(f, trajectory_length):
     # x, y, z
     f.seek(trajectory_length * 3 * 4, 1)
@@ -70,7 +74,7 @@ def test_drive_json_to_bin_writes_core_and_trailer_extension(generated_conversio
 
         # Extension block
         assert _read_int(f) == 0x54524C52  # "TRLR"
-        assert _read_int(f) == 1  # extension version
+        assert _read_int(f) == 2  # extension version
         assert _read_int(f) == 1  # has_ego_trailer
         assert _read_int(f) == 1  # ego_trailer_track_index
         assert _read_int(f) == 2  # object meta count
@@ -92,6 +96,14 @@ def test_drive_json_to_bin_writes_core_and_trailer_extension(generated_conversio
         assert is_trailer1 == 1
         assert parent1 == 0
 
+        # Non-kinematic vehicle params extension payload
+        assert _read_int(f) == 13
+        params = [_read_float(f) for _ in range(13)]
+        assert abs(params[0] - 5.3) < 1e-5  # tractor_length
+        assert abs(params[1] - 13.7) < 1e-5  # trailer_length
+        assert abs(params[6] - 0.6) < 1e-5  # tractor2hitch
+        assert abs(params[7] - 2.2) < 1e-5  # trailer2hitch
+
         # Ensure we consumed full file.
         assert f.read() == b""
 
@@ -103,6 +115,21 @@ def test_drive_json_to_bin_handles_large_and_string_ids(tmp_path):
             "tracks_to_predict": [{"track_index": 0}],
             "has_ego_trailer": False,
             "ego_trailer_track_index": -1,
+            "non_kinematic_vehicle_params": {
+                "tractor_length": 5.3,
+                "trailer_length": 13.7,
+                "width": 2.55,
+                "trailer_width": 2.55,
+                "vehicle_height": 3.5,
+                "trailer_height": 3.5,
+                "tractor2hitch": 0.6,
+                "trailer2hitch": 2.2,
+                "tractor_d_rear_axle2rear_bumper": 1.5,
+                "tractor_d_rear_axle2front_axle": 3.6,
+                "tractor_d_front_axle2front_bumper": 1.2,
+                "trailer_d_rear_axel2_rear_bumper": 2.0,
+                "trailer_d_real_axel2_front_bumper": 10.5,
+            },
         },
         "objects": [
             {
