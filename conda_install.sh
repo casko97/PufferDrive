@@ -5,7 +5,7 @@ ENV_NAME="${1:-${CONDA_DEFAULT_ENV:-pufferdrive}}"
 PYTHON_VERSION="${PYTHON_VERSION:-3.11}"
 CUDA_VERSION="${CUDA_VERSION:-12.1}"
 USE_CUDA="${USE_CUDA:-1}"
-USE_EXISTING="${USE_EXISTING:-0}"
+USE_EXISTING="${USE_EXISTING:-1}"
 
 log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"
@@ -69,30 +69,17 @@ fi
 log "Target env: ${ENV_NAME}"
 log "Options: USE_EXISTING=${USE_EXISTING} USE_CUDA=${USE_CUDA} CUDA_VERSION=${CUDA_VERSION} PYTHON_VERSION=${PYTHON_VERSION}"
 
-if [[ "${USE_EXISTING}" == "1" ]]; then
-    log "Using existing env '${ENV_NAME}'..."
-    if ! run_conda env list | awk 'NR>2 {print $1}' | grep -qx "${ENV_NAME}"; then
-        echo "Error: conda env '${ENV_NAME}' not found." >&2
-        exit 1
-    fi
-    probe_torch
-else
-    log "Creating env '${ENV_NAME}' with Python ${PYTHON_VERSION}..."
-    run_conda create -y -n "${ENV_NAME}" "python=${PYTHON_VERSION}" pip
-
-    log "Installing build tools..."
-    run_conda install -y -n "${ENV_NAME}" -c conda-forge cmake ninja pkg-config
-
-    if [[ "${USE_CUDA}" == "1" ]]; then
-        log "Installing PyTorch with CUDA ${CUDA_VERSION}..."
-        run_conda install -y -n "${ENV_NAME}" -c pytorch -c nvidia \
-            pytorch torchvision torchaudio "pytorch-cuda=${CUDA_VERSION}"
-    else
-        log "Installing CPU-only PyTorch..."
-        run_conda install -y -n "${ENV_NAME}" -c pytorch pytorch torchvision torchaudio cpuonly
-    fi
-    probe_torch
+if ! run_conda env list | awk 'NR>2 {print $1}' | grep -qx "${ENV_NAME}"; then
+    log "Conda env '${ENV_NAME}' not found. Please create it first."
+    exit 1
 fi
+
+if [[ "${USE_EXISTING}" != "1" ]]; then
+    log "USE_EXISTING=${USE_EXISTING} ignored; this script requires a pre-existing env."
+fi
+
+log "Using existing env '${ENV_NAME}'..."
+probe_torch
 
 log "Installing repo (editable, no build isolation)..."
 run_in_env python -m pip install -e . --no-build-isolation
