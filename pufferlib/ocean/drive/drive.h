@@ -196,6 +196,9 @@ struct Entity {
     float init_goal_y;
     int mark_as_expert;
     int collision_state;
+    int combo_collision_any;
+    int combo_collision_tractor_body;
+    int combo_collision_trailer_body;
     float metrics_array[5]; // metrics_array: [collision, offroad, reached_goal, lane_aligned
     float x;
     float y;
@@ -645,6 +648,9 @@ void set_start_position(Drive *env) {
         e->heading_y = sinf(e->heading);
         e->valid = e->traj_valid[env->init_steps];
         e->collision_state = 0;
+        e->combo_collision_any = 0;
+        e->combo_collision_tractor_body = 0;
+        e->combo_collision_trailer_body = 0;
         e->metrics_array[COLLISION_IDX] = 0.0f;    // vehicle collision
         e->metrics_array[OFFROAD_IDX] = 0.0f;      // offroad
         e->metrics_array[REACHED_GOAL_IDX] = 0.0f; // reached goal
@@ -1113,7 +1119,7 @@ int check_aabb_collision(Entity *car1, Entity *car2) {
     return 1; // Collision
 }
 
-int collision_check(Drive *env, int agent_idx) {
+int collision_check_with_sources(Drive *env, int agent_idx, int *agent_body_collided, int *trailer_body_collided) {
     Entity *agent = &env->entities[agent_idx];
     Entity *ego_trailer = NULL;
     bool check_ego_trailer = has_valid_ego_trailer_pair(env) && agent_idx == env->sdc_track_index;
@@ -1123,6 +1129,11 @@ int collision_check(Drive *env, int agent_idx) {
 
     if (agent->x == INVALID_POSITION)
         return -1;
+
+    if (agent_body_collided != NULL)
+        *agent_body_collided = 0;
+    if (trailer_body_collided != NULL)
+        *trailer_body_collided = 0;
 
     int car_collided_with_index = -1;
 
@@ -1154,17 +1165,26 @@ int collision_check(Drive *env, int agent_idx) {
         }
         if (dist_agent > 225.0f && dist_trailer > 225.0f)
             continue;
-        if (check_aabb_collision(agent, entity)) {
-            car_collided_with_index = index;
-            break;
+        int agent_hit = check_aabb_collision(agent, entity);
+        int trailer_hit = 0;
+        if (check_ego_trailer && ego_trailer != NULL) {
+            trailer_hit = check_aabb_collision(ego_trailer, entity);
         }
-        if (check_ego_trailer && ego_trailer != NULL && check_aabb_collision(ego_trailer, entity)) {
+        if (agent_hit || trailer_hit) {
+            if (agent_body_collided != NULL && agent_hit)
+                *agent_body_collided = 1;
+            if (trailer_body_collided != NULL && trailer_hit)
+                *trailer_body_collided = 1;
             car_collided_with_index = index;
             break;
         }
     }
 
     return car_collided_with_index;
+}
+
+int collision_check(Drive *env, int agent_idx) {
+    return collision_check_with_sources(env, agent_idx, NULL, NULL);
 }
 
 int check_lane_aligned(Entity *car, Entity *lane, int geometry_idx) {
@@ -1219,6 +1239,9 @@ void reset_agent_metrics(Drive *env, int agent_idx) {
     agent->metrics_array[OFFROAD_IDX] = 0.0f;      // offroad
     agent->metrics_array[LANE_ALIGNED_IDX] = 0.0f; // lane aligned
     agent->collision_state = 0;
+    agent->combo_collision_any = 0;
+    agent->combo_collision_tractor_body = 0;
+    agent->combo_collision_trailer_body = 0;
 }
 
 float point_to_segment_distance_2d(float px, float py, float x1, float y1, float x2, float y2) {
@@ -1258,6 +1281,12 @@ void compute_agent_metrics(Drive *env, int agent_idx) {
         return; // invalid agent position
 
     int collided = 0;
+    int offroad_agent_body_collided = 0;
+    int offroad_trailer_body_collided = 0;
+    int vehicle_agent_body_collided = 0;
+    int vehicle_trailer_body_collided = 0;
+    int final_agent_body_collided = 0;
+    int final_trailer_body_collided = 0;
     float half_length = agent->length / 2.0f;
     float half_width = agent->width / 2.0f;
     float cos_heading = cosf(agent->heading);
@@ -1318,11 +1347,13 @@ void compute_agent_metrics(Drive *env, int agent_idx) {
                 int next = (k + 1) % 4;
                 if (check_line_intersection(corners[k], corners[next], start, end)) {
                     collided = OFFROAD;
+                    offroad_agent_body_collided = 1;
                     break;
                 }
                 if (check_ego_trailer && ego_trailer != NULL &&
                     check_line_intersection(trailer_corners[k], trailer_corners[next], start, end)) {
                     collided = OFFROAD;
+                    offroad_trailer_body_collided = 1;
                     break;
                 }
             }
@@ -1371,11 +1402,28 @@ void compute_agent_metrics(Drive *env, int agent_idx) {
     }
 
     // Check for vehicle collisions
-    int car_collided_with_index = collision_check(env, agent_idx);
+    int car_collided_with_index =
+        collision_check_with_sources(env, agent_idx, &vehicle_agent_body_collided, &vehicle_trailer_body_collided);
     if (car_collided_with_index != -1)
         collided = VEHICLE_COLLISION;
 
     agent->collision_state = collided;
+    if (collided == VEHICLE_COLLISION) {
+        final_agent_body_collided = vehicle_agent_body_collided;
+        final_trailer_body_collided = vehicle_trailer_body_collided;
+    } else if (collided == OFFROAD) {
+        final_agent_body_collided = offroad_agent_body_collided;
+        final_trailer_body_collided = offroad_trailer_body_collided;
+    }
+    if (check_ego_trailer) {
+        agent->combo_collision_any = (collided > 0) ? 1 : 0;
+        agent->combo_collision_tractor_body = final_agent_body_collided;
+        agent->combo_collision_trailer_body = final_trailer_body_collided;
+    } else {
+        agent->combo_collision_any = (collided > 0) ? 1 : 0;
+        agent->combo_collision_tractor_body = (collided > 0) ? 1 : 0;
+        agent->combo_collision_trailer_body = 0;
+    }
 
     if (collided == VEHICLE_COLLISION) {
         if (env->collision_behavior == STOP_AGENT && !agent->stopped) {
@@ -2206,6 +2254,9 @@ void c_reset(Drive *env) {
         env->entities[agent_idx].metrics_array[OFFROAD_IDX] = 0.0f;
         env->entities[agent_idx].metrics_array[REACHED_GOAL_IDX] = 0.0f;
         env->entities[agent_idx].metrics_array[LANE_ALIGNED_IDX] = 0.0f;
+        env->entities[agent_idx].combo_collision_any = 0;
+        env->entities[agent_idx].combo_collision_tractor_body = 0;
+        env->entities[agent_idx].combo_collision_trailer_body = 0;
         env->entities[agent_idx].stopped = 0;
         env->entities[agent_idx].removed = 0;
 
@@ -2231,6 +2282,9 @@ void respawn_agent(Drive *env, int agent_idx) {
     env->entities[agent_idx].metrics_array[OFFROAD_IDX] = 0.0f;
     env->entities[agent_idx].metrics_array[REACHED_GOAL_IDX] = 0.0f;
     env->entities[agent_idx].metrics_array[LANE_ALIGNED_IDX] = 0.0f;
+    env->entities[agent_idx].combo_collision_any = 0;
+    env->entities[agent_idx].combo_collision_tractor_body = 0;
+    env->entities[agent_idx].combo_collision_trailer_body = 0;
 
     env->entities[agent_idx].respawn_timestep = env->timestep;
     env->entities[agent_idx].collided_before_goal = 0;
@@ -2828,6 +2882,8 @@ void draw_scene(Drive *env, Client *client, int mode, int obs_only, int lasers, 
             bool is_active_agent = false;
             bool is_static_agent = false;
             bool is_ego_trailer_entity = has_valid_ego_trailer_pair(env) && i == env->ego_trailer_track_index;
+            bool is_ego_tractor_entity = has_valid_ego_trailer_pair(env) && i == env->sdc_track_index;
+            bool is_ego_combo_entity = is_ego_trailer_entity || is_ego_tractor_entity;
             int agent_index = -1;
             for (int j = 0; j < env->active_agent_count; j++) {
                 if (env->active_agent_indices[j] == i) {
@@ -2855,6 +2911,18 @@ void draw_scene(Drive *env, Client *client, int mode, int obs_only, int lasers, 
             Vector3 size = {env->entities[i].length, env->entities[i].width, env->entities[i].height};
 
             bool is_expert = (!is_active_agent) && (env->entities[i].mark_as_expert == 1);
+            bool combo_collision_any = false;
+            bool combo_body_triggered = false;
+            if (is_ego_combo_entity && has_valid_ego_trailer_pair(env)) {
+                Entity *tractor_entity = &env->entities[env->sdc_track_index];
+                combo_collision_any = (tractor_entity->combo_collision_any > 0);
+                combo_body_triggered =
+                    is_ego_trailer_entity ? (tractor_entity->combo_collision_trailer_body > 0)
+                                          : (tractor_entity->combo_collision_tractor_body > 0);
+            } else {
+                combo_collision_any = (env->entities[i].collision_state > 0);
+                combo_body_triggered = combo_collision_any;
+            }
 
             // Save current transform
             if (mode == 1) {
@@ -2893,9 +2961,18 @@ void draw_scene(Drive *env, Client *client, int mode, int obs_only, int lasers, 
                     car_color = GOLD; // expert replay
                 if (is_active_agent)
                     car_color = BLUE; // policy-controlled
-                if (is_active_agent && env->entities[i].collision_state > 0)
+                if ((is_active_agent && env->entities[i].collision_state > 0) || combo_collision_any)
                     car_color = RED;
-                rlSetLineWidth(3.0f);
+                if (combo_body_triggered) {
+                    // Draw a bright halo first so the triggering body is unambiguous.
+                    rlSetLineWidth(10.0f);
+                    for (int j = 0; j < 4; j++) {
+                        DrawLine3D(corners[j], corners[(j + 1) % 4], YELLOW);
+                    }
+                    DrawLine3D(corners[0], corners[2], RED);
+                    DrawLine3D(corners[1], corners[3], RED);
+                }
+                rlSetLineWidth(combo_body_triggered ? 6.0f : 3.0f);
                 for (int j = 0; j < 4; j++) {
                     DrawLine3D(corners[j], corners[(j + 1) % 4], car_color);
                 }
@@ -2922,7 +2999,7 @@ void draw_scene(Drive *env, Client *client, int mode, int obs_only, int lasers, 
 
                     car_model = client->cars[(i % 5) + 1];
 
-                    if (env->entities[i].collision_state > 0) {
+                    if ((env->entities[i].collision_state > 0) || combo_collision_any) {
                         car_model = client->cars[0]; // Collided agents use red
                     }
                 }
@@ -2966,9 +3043,17 @@ void draw_scene(Drive *env, Client *client, int mode, int obs_only, int lasers, 
                         wire_color = GOLD; // expert replay
                     if (is_active_agent)
                         wire_color = BLUE; // policy
-                    if (is_active_agent && env->entities[i].collision_state > 0)
+                    if ((is_active_agent && env->entities[i].collision_state > 0) || combo_collision_any)
                         wire_color = RED;
-                    rlSetLineWidth(2.0f);
+                    if (combo_body_triggered) {
+                        rlSetLineWidth(7.0f);
+                        for (int j = 0; j < 4; j++) {
+                            DrawLine3D(corners[j], corners[(j + 1) % 4], YELLOW);
+                        }
+                        DrawLine3D(corners[0], corners[2], RED);
+                        DrawLine3D(corners[1], corners[3], RED);
+                    }
+                    rlSetLineWidth(combo_body_triggered ? 5.0f : 2.0f);
                     for (int j = 0; j < 4; j++) {
                         DrawLine3D(corners[j], corners[(j + 1) % 4], wire_color);
                     }
