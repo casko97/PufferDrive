@@ -20,6 +20,9 @@ if ! command -v mamba >/dev/null 2>&1; then
   exit 1
 fi
 
+# Avoid set -u failures in the mamba wrapper when CONDA_DEFAULT_ENV is unset.
+export CONDA_DEFAULT_ENV="${CONDA_DEFAULT_ENV:-}"
+
 eval "$(mamba shell hook --shell bash)"
 
 if mamba env list | awk "NR>2 {print \$1}" | grep -qx "$ENV_NAME"; then
