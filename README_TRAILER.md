@@ -1,127 +1,117 @@
-# Tractor + Trailer Integration Notes
+# Trailer Implementation
 
-This document summarizes the tractor+trailer adaptations in PufferDrive: what changed, how it works, and what is currently tested.
+## 1) JSON Scenario Format
 
-## Scope
+In scenario `metadata`:
+- `has_ego_trailer` (`bool`): enables tractor+trailer coupling.
+- `ego_trailer_track_index` (`int`): object index of ego trailer.
+- `sdc_track_index` (`int`): ego tractor index.
+- `non_kinematic_vehicle_params` (`dict[str,float]`): geometry package (13 floats, order fixed below).
 
-- Added support for extended scenario JSON metadata:
-  - `has_ego_trailer`
-  - `ego_trailer_track_index`
-  - stable origin identity via `source_track_id`
-- Added simulator behavior so trailer follows ego tractor.
-- Kept policy interface unchanged (policy remains trailer-unaware).
+### Binary Format Version
 
-## Data Format Changes
+Per object:
+- `source_track_id`: persisted as stable hash in the binary extension.
+- Trailer identity is inferred by index equality: `obj_idx == ego_trailer_track_index`.
 
-### JSON -> BIN conversion
+Binary extension written by `drive.py` and required by loader:
+- `magic = 0x54524C52` (`"TRLR"`), `version = 2` ("magic" signature to confirm “this block is trailer data" + schema version)
+- `has_ego_trailer`, `ego_trailer_track_index`
+- per-object tuple: `(source_track_id_hash, is_trailer, parent_track_index)`
+- `non_kinematic_vehicle_params` count must be `13`
 
-`pufferlib/ocean/drive/drive.py` now writes an extension block at the end of each `.bin`:
+## 2) Trailer Geometry + Parameters
 
-- magic: `TRLR` (`0x54524C52`)
-- extension version: `2`
-- scenario trailer metadata:
-  - `has_ego_trailer`
-  - `ego_trailer_track_index`
-- per-object metadata:
-  - `source_track_id` hashed to stable `uint64`
-  - `is_trailer`
-  - `parent_track_index`
-- trailer geometry metadata:
-  - `non_kinematic_vehicle_params` (13 float fields; includes `tractor2hitch` and `trailer2hitch`)
+Packed parameter order (`non_kinematic_vehicle_params`):
+1. `tractor_length`
+2. `trailer_length`
+3. `width`
+4. `trailer_width`
+5. `vehicle_height`
+6. `trailer_height`
+7. `tractor2hitch`
+8. `trailer2hitch`
+9. `tractor_d_rear_axle2rear_bumper`
+10. `tractor_d_rear_axle2front_axle`
+11. `tractor_d_front_axle2front_bumper`
+12. `trailer_d_rear_axel2_rear_bumper`
+13. `trailer_d_real_axel2_front_bumper`
 
-Notes:
-- Converter expects extension v2 metadata and writes non-kinematic trailer geometry every time.
-- Object/road IDs are normalized to deterministic signed int32 so large/string IDs do not fail conversion.
+Note that depending on the vehicle parameters the distance between the tractor and trailer hitch points can vary (it can be 0, i.e. hitch points overlap).
 
-### BIN loading
+Currently used directly by dynamics/render linkage:
+- `tractor2hitch` = `non_kinematic_vehicle_params[6]`
+- `trailer2hitch` = `non_kinematic_vehicle_params[7]`
+- `effective_length = max(0.5, trailer.length - trailer2hitch)`
 
-`pufferlib/ocean/drive/drive.h` loader requires extension v2 (magic + version + 13 non-kinematic params).
+Quick parameter schematic (bounding-box view):
+![Trailer parameter schematic](outputs/trailer_parameter_schematic.png)
 
-## Simulator Behavior
+## 3) Trailer Update Equations
 
-### Trailer coupling
+Trailer is dependent on SDC tractor (never independently controlled).
 
-- Trailer is treated as a dependent body attached to ego tractor.
-- Trailer pose is updated each step with articulation kinematics (hitch-based approximation).
-- Trailer is also updated on ego respawn/reset paths.
+Given tractor heading `theta_tractor`, trailer heading `theta_trailer`, signed tractor speed `v`, dt `dt`, and articulation `a = wrap(theta_tractor - theta_trailer)`:
 
-### Control and observations
+Notation: `_tractor` = tractor center, `_trailer` = trailer center, `_rear` = trailer rear proxy.
 
-- Trailer is never directly policy-controlled.
-- Trailer is spawned in scene for interaction checks even if not controlled.
-- Ego partner observation excludes its own trailer (to avoid self-partner leakage).
-- Policy action/observation layout is unchanged from pre-trailer setup.
+Here, `L_effective` denotes the effective distance (`L_effective = max(0.5, trailer.length - trailer2hitch)`).
 
-### Collision and off-road checks
+- `theta_trailer <- wrap(theta_trailer + (v / L_effective) * sin(a) * dt)`
+- Tractor hitch:
+  - `x_h = x_tractor + (-0.5*L_tractor + tractor2hitch) * cos(theta_tractor)`
+  - `y_h = y_tractor + (-0.5*L_tractor + tractor2hitch) * sin(theta_tractor)`
+- Trailer rear axle proxy:
+  - `x_rear = x_h - L_effective * cos(theta_trailer)`
+  - `y_rear = y_h - L_effective * sin(theta_trailer)`
+- Trailer center:
+  - `x_trailer = x_rear + 0.5*L_trailer*cos(theta_trailer)`
+  - `y_trailer = y_rear + 0.5*L_trailer*sin(theta_trailer)`
+- Velocity update:
+  - `vx_trailer = (x_trailer - x_trailer_prev)/max(dt,1e-4)`
+  - `vy_trailer = (y_trailer - y_trailer_prev)/max(dt,1e-4)`
 
-- For ego metrics, collision checks include both tractor box and trailer box.
-- Ego<->its-own-trailer self-collision pair is excluded.
-- Off-road checks include trailer footprint for ego metrics.
-- Reward application is still one collision/off-road state per controlled agent per step (no double penalty stacking in one step).
+![Trailer update equations schematic](outputs/trailer_update_equations_schematic.png)
 
-## What Is Tested
+## 4) Collision / Offroad Logic
 
-## 1) Conversion extension correctness
+- Vehicle collisions use oriented box SAT (`check_aabb_collision`) for ego tractor and, when valid pair exists, also ego trailer.
+- Ego-tractor vs ego-trailer self-pair is explicitly skipped.
+- Offroad checks test road-edge segment intersection against 4 tractor edges and 4 trailer edges.
+- A single collision state is emitted per controlled agent (`NO_COLLISION`, `VEHICLE_COLLISION`, `OFFROAD`).
+- For debugging/render, combo flags are kept:
+  - `combo_collision_any`
+  - `combo_collision_tractor_body`
+  - `combo_collision_trailer_body`
 
-- `tests/test_drive_json_to_bin.py`
-- Verifies:
-  - base binary fields
-  - trailer extension block fields
-  - per-object trailer metadata
-  - deterministic handling of large/string IDs
+## 5) Raylib Visualization
 
-## 2) Converted bin is simulator-usable
+- Scene render includes trailer body as a normal entity.
+- `draw_ego_trailer_linkage` draws hitch-to-hitch orange link + spheres using same `tractor2hitch/trailer2hitch` geometry as dynamics update.
+- Collision highlighting for ego combo uses tractor combo flags so tractor/trailer bodies can be visualized consistently.
+- `visualize --ground-truth` replays stored trajectories for all dynamic entities; `visualize` without GT runs policy + simulator step.
 
-- `tests/test_drive_bin_simulator_load.py::test_generated_bin_loads_and_steps_in_drive`
-- Verifies reset+step works with generated `.bin`.
+## 6) When Trailer State Is Updated (By Config)
 
-## 3) Trailer contributes to collision behavior
+Policy stepping (`c_step`):
+- Active policy agent uses `move_dynamics`.
+- If active agent is SDC and trailer pair is valid: `update_ego_trailer_pose` runs immediately after SDC dynamics each step.
+- On SDC respawn (`respawn_agent`), trailer pose is recomputed once via `update_ego_trailer_pose`.
 
-- `tests/test_drive_bin_simulator_load.py::test_trailer_pose_follow_triggers_collision_after_step`
-- A/B test with trailer metadata enabled vs disabled.
-- Confirms trailer coupling can change collision outcome.
+Replay helpers (`move_expert`):
+- `move_expert` sets trajectory state from logs, then if `agent_idx == sdc_track_index`, also runs `update_ego_trailer_pose` (keeps articulated consistency during expert replay flows).
 
-## 4) Trailer off-road A/B behavior
+Ground-truth visualization mode (`visualize --ground-truth`):
+- Uses `move_expert_trajectory_only` for all dynamic entities each frame.
+- Trailer follows logged GT trajectory directly in this mode (no coupling update call in that loop).
 
-- `tests/test_drive_bin_simulator_load.py::test_trailer_only_offroad_penalty`
-- A/B setup where trailer-enabled case is worse than baseline.
-- Baseline disables the secondary trailer object in the no-trailer variant to avoid confounding with regular vehicle collision.
+Control mode implications:
+- `control_sdc_only`: policy controls only SDC; trailer is spawned but never policy-controlled; trailer motion comes from SDC coupling update (see equations above).
+- `control_vehicles` / `control_agents` / `control_wosac`: trailer is still excluded from direct policy control; it is created for interaction checks and updated through SDC-dependent coupling when SDC is stepped.
 
-## 5) Baseline off-road pipeline sanity
-
-- `tests/test_drive_bin_simulator_load.py::test_offroad_penalty_baseline_for_tractor`
-- Confirms off-road penalty is active for tractor-road-edge intersections.
-
-## 6) Visualization tooling works
-
-- `tests/test_drive_trailer_visualization.py`
-- Verifies `.bin` parsing and PNG generation for trailer/road-edge visualization.
-
-## Visualization Utilities
-
-### Static frames
-
-```bash
-python scripts/visualize_trailer_scene.py \
-  --bin /path/to/map_000.bin \
-  --output trailer_debug.png \
-  --frames 0,10,20
-```
-
-Optional:
-- `--no-other-objects` to only show tractor+trailer and roads.
-
-### MP4 video generation
-
-```bash
-scripts/make_trailer_video.sh \
-  --bin /path/to/map_000.bin \
-  --output /tmp/trailer_debug.mp4 \
-  --start 0 --end 90 --fps 10
-```
-
-## Current Constraints / Notes
-
-- Ego collision/off-road is exposed as a single aggregated signal (`obs[..., 5]`), not separate tractor-vs-trailer flags.
-- Trailer geometry uses a practical hitch/length approximation (dataset-specific exact articulation params are not yet wired).
-- Policy remains intentionally trailer-unaware for now.
+Observation note:
+- Policy observations are tractor-centric: ego trailer is excluded from the partner list, and collision is a single aggregated flag (`obs[5]`).
+- Trailer state is incorporated via explicit query APIs, not the policy tensor:
+  - `env.get_sdc_trailer_state()` (direct trailer pose/size per env)
+  - `env.get_global_agent_state(include_sdc_trailer=True)` (active agents + trailer payload)
+- Use these APIs for trailer-aware logging/evaluation/visualization.
