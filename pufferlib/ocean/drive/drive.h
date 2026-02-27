@@ -363,14 +363,6 @@ static inline bool is_ego_or_trailer_pair(Drive *env, int a, int b) {
             (a == env->ego_trailer_track_index && b == env->sdc_track_index));
 }
 
-static inline float trailer_param(Drive *env, int idx, float fallback) {
-    if (idx < 0 || idx >= 13)
-        return fallback;
-    if (env->non_kinematic_vehicle_params[idx] <= 0.0f)
-        return fallback;
-    return env->non_kinematic_vehicle_params[idx];
-}
-
 static inline void update_ego_trailer_pose(Drive *env) {
     if (!has_valid_ego_trailer_pair(env))
         return;
@@ -383,8 +375,8 @@ static inline void update_ego_trailer_pose(Drive *env) {
         return;
 
     // Use dataset non-kinematic geometry parameters from extension v2.
-    float tractor2hitch = trailer_param(env, 6, 0.10f * tractor->length);
-    float trailer2hitch = trailer_param(env, 7, 0.15f * trailer->length);
+    float tractor2hitch = env->non_kinematic_vehicle_params[6];
+    float trailer2hitch = env->non_kinematic_vehicle_params[7];
     float effective_length = fmaxf(0.5f, trailer->length - trailer2hitch);
     float theta_tractor = tractor->heading;
     float theta_trailer = trailer->heading;
@@ -2837,8 +2829,8 @@ static inline void draw_ego_trailer_linkage(Drive *env) {
         return;
 
     // Use the same extension geometry used by update_ego_trailer_pose.
-    float tractor2hitch = trailer_param(env, 6, 0.10f * tractor->length);
-    float trailer2hitch = trailer_param(env, 7, 0.15f * trailer->length);
+    float tractor2hitch = env->non_kinematic_vehicle_params[6];
+    float trailer2hitch = env->non_kinematic_vehicle_params[7];
 
     float theta_tractor = tractor->heading;
     float theta_trailer = trailer->heading;
