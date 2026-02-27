@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ENV_NAME="${1:-${CONDA_DEFAULT_ENV:-pufferdrive}}"
+ENV_NAME="${1:-${CONDA_DEFAULT_ENV:-pufferdrive_py311_cu121_torch210}}"
 PYTHON_VERSION="${PYTHON_VERSION:-3.11}"
 CUDA_VERSION="${CUDA_VERSION:-12.1}"
 USE_CUDA="${USE_CUDA:-1}"

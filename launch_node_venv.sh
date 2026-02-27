@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ENV_NAME="py311_cu121_torch210"
+ENV_NAME="pufferdrive_py311_cu121_torch210"
 MINIFORGE_MODULE="Miniforge3/24.7.1-2-hpc1-bdist"
 BUILDENV_MODULE="buildenv-gcccuda/12.1.1-gcc12.3.0"
 export ENV_NAME MINIFORGE_MODULE BUILDENV_MODULE
