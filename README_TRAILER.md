@@ -91,7 +91,7 @@ Here, `L_effective` denotes the effective distance (`L_effective = max(0.5, trai
 - Collision highlighting for ego combo uses tractor combo flags so tractor/trailer bodies can be visualized consistently.
 - `visualize --ground-truth` replays stored trajectories for all dynamic entities; `visualize` without GT runs policy + simulator step.
 
-## 6) When Trailer State Is Updated (By Config)
+## 6) When Trailer State Is Updated
 
 Policy stepping (`c_step`):
 - Active policy agent uses `move_dynamics`.
@@ -115,3 +115,24 @@ Observation note:
   - `env.get_sdc_trailer_state()` (direct trailer pose/size per env)
   - `env.get_global_agent_state(include_sdc_trailer=True)` (active agents + trailer payload)
 - Use these APIs for trailer-aware logging/evaluation/visualization.
+
+## 7) Evaluation Coverage and Agent Marking 
+
+- `mark_as_expert` and `tracks_to_predict` have different roles:
+  - `mark_as_expert`: control/replay role (expert/static vs policy-controlled).
+  - `tracks_to_predict`: evaluation role (which exported active tracks get valid eval IDs, `id >= 0`).
+- WOSAC-style scoring is applied to the intersection:
+  - `active_agent_indices` (actually active/controlled in the run),
+  - and `tracks_to_predict` (eval-enabled tracks).
+
+With the current JSON marking strategy (from my scenarioMax conversion: `tracks_to_predict` is built from controllable non-expert tracks and excludes trailer source IDs.)
+
+Given the specific configurations for what vehicles to control:
+- `control_sdc_only`:
+  - only SDC is active,
+  - SDC is scored only if SDC is present in `tracks_to_predict`,
+  - trailer is never directly scored (but can affect SDC outcomes indirectly via coupled collision/offroad logic).
+- `control_vehicles` / `control_agents` with non-expert selection:
+  - many policy-controlled agents can be scored,
+  - effective scored set is still `active ∩ tracks_to_predict`,
+  - trailer remains excluded from direct scoring as a policy track.
