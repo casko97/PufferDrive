@@ -13,7 +13,8 @@ def _make_minimal_drive_instance():
     return env
 
 
-def test_reset_resamples_once_when_initial_trailer_state_is_invalid(monkeypatch):
+@pytest.mark.parametrize("invalid_reason", ["actor_collision", "offroad"])
+def test_reset_resamples_once_when_initial_trailer_state_is_invalid(monkeypatch, invalid_reason):
     env = _make_minimal_drive_instance()
     calls = {"vec_reset": 0, "resample": 0}
     invalid_flags = iter([True, False])
@@ -44,7 +45,8 @@ def test_reset_resamples_once_when_initial_trailer_state_is_invalid(monkeypatch)
     assert info == []
 
 
-def test_reset_raises_after_max_invalid_initial_trailer_state_resamples(monkeypatch):
+@pytest.mark.parametrize("invalid_reason", ["actor_collision", "offroad"])
+def test_reset_raises_after_max_invalid_initial_trailer_state_resamples(monkeypatch, invalid_reason):
     env = _make_minimal_drive_instance()
     calls = {"vec_reset": 0, "resample": 0}
 

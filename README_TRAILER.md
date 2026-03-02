@@ -131,7 +131,7 @@ Respawn / reset implications (override mode):
 - Episode reset (`c_reset`) always calls `set_start_position`; with override enabled, trailer starts aligned with tractor (zero articulation).
 - Mid-episode respawn (typically with `goal_behavior=respawn`) routes through `respawn_agent` and re-applies zero articulation when `force_zero_trailer_articulation_at_init` is active.
 - In scenes with frequent respawns, articulation can repeatedly snap to zero at respawn boundaries by design.
-- After runtime override applies trailer geometry and zero-articulation init pose, the env checks whether the SDC trailer is already colliding at the initial state.
+- After runtime override applies trailer geometry and zero-articulation init pose, the env checks whether the SDC trailer is invalid at the initial state (collision or off-road).
 - If the initial trailer state is invalid, that sampled map/env instance is rejected during vectorized setup; on reset, vector envs are resampled and recreated.
 
 Reference parameter source:

@@ -6,7 +6,7 @@
 static PyObject *vec_has_invalid_initial_trailer_state(PyObject *self, PyObject *args);
 #define MY_METHODS                                                                                                     \
     {"vec_has_invalid_initial_trailer_state", vec_has_invalid_initial_trailer_state, METH_VARARGS,                   \
-     "Return True if any sub-environment has invalid initial trailer collision"}
+     "Return True if any sub-environment has invalid initial trailer state (collision/off-road)"}
 #include "../env_binding.h"
 
 static int unpack_non_kinematic_override(PyObject *kwargs, float *dst, int *enabled) {
@@ -172,7 +172,10 @@ static PyObject *my_shared(PyObject *self, PyObject *args, PyObject *kwargs) {
                     Py_DECREF(map_ids);
                     char error_msg[256];
                     if (invalid_initial_trailer_state) {
-                        sprintf(error_msg, "No valid maps left: all %d candidates had initial SDC trailer collision", num_maps);
+                        sprintf(error_msg,
+                                "No valid maps left: all %d candidates had invalid initial SDC trailer state "
+                                "(collision/off-road)",
+                                num_maps);
                     } else {
                         sprintf(error_msg, "No controllable agents found in any of the %d available maps", num_maps);
                     }

@@ -1464,6 +1464,37 @@ static inline int has_invalid_initial_sdc_trailer_collision(Drive *env) {
         }
     }
 
+    // Mirror runtime off-road semantics for trailer body at initial state:
+    // invalid if trailer box intersects any ROAD_EDGE segment.
+    float half_length = ego_trailer->length / 2.0f;
+    float half_width = ego_trailer->width / 2.0f;
+    float cos_heading = cosf(ego_trailer->heading);
+    float sin_heading = sinf(ego_trailer->heading);
+    float trailer_corners[4][2];
+    for (int i = 0; i < 4; i++) {
+        trailer_corners[i][0] = ego_trailer->x + (offsets[i][0] * half_length * cos_heading -
+                                                  offsets[i][1] * half_width * sin_heading);
+        trailer_corners[i][1] = ego_trailer->y + (offsets[i][0] * half_length * sin_heading +
+                                                  offsets[i][1] * half_width * cos_heading);
+    }
+    for (int i = 0; i < env->num_entities; i++) {
+        Entity *road = &env->entities[i];
+        if (road->type != ROAD_EDGE)
+            continue;
+        if (road->array_size < 2)
+            continue;
+        for (int j = 0; j < road->array_size - 1; j++) {
+            float start[2] = {road->traj_x[j], road->traj_y[j]};
+            float end[2] = {road->traj_x[j + 1], road->traj_y[j + 1]};
+            for (int k = 0; k < 4; k++) {
+                int next = (k + 1) % 4;
+                if (check_line_intersection(trailer_corners[k], trailer_corners[next], start, end)) {
+                    return 1;
+                }
+            }
+        }
+    }
+
     return 0;
 }
 
@@ -1946,7 +1977,7 @@ void init(Drive *env) {
     env->invalid_initial_trailer_state = has_invalid_initial_sdc_trailer_collision(env);
     if (env->invalid_initial_trailer_state) {
         raise_error_with_message(ERROR_INITIALIZATION_FAILED,
-                                 "Invalid initial state: SDC trailer collides at scenario start");
+                                 "Invalid initial state: SDC trailer collision/off-road at scenario start");
     }
     init_goal_positions(env);
     env->logs = (Log *)calloc(env->active_agent_count, sizeof(Log));
