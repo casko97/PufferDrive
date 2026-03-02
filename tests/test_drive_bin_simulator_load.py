@@ -5,9 +5,14 @@ from matplotlib.patches import Polygon
 from matplotlib.animation import FuncAnimation, PillowWriter
 from pathlib import Path
 import shutil
+import struct
 
 import pufferlib.ocean.drive.drive as drive_module
-from pufferlib.ocean.drive.drive import Drive
+from pufferlib.ocean.drive.drive import (
+    DEFAULT_SDC_RUNTIME_TRUCK_REF_BIN,
+    Drive,
+    _load_non_kinematic_vehicle_params_from_bin,
+)
 from pufferlib.ocean.drive.trailer_viz import parse_map_binary
 
 TESTS_DIR = Path(__file__).resolve().parent
@@ -16,6 +21,13 @@ BOSTON_REFERENCE_BIN = (
     / "artifacts"
     / "drive"
     / "traversing_traffic_light_intersection__97be27351e915863__97be27351e915863.bin"
+)
+TRAINING_CAR_REFERENCE_BIN = TESTS_DIR / "artifacts" / "drive" / "training_map_024_turning_car.bin"
+BOSTON_CAR_HEADER_BIN = (
+    TESTS_DIR
+    / "artifacts"
+    / "drive"
+    / "traversing_traffic_light_intersection__97be27351e915863__97be27351e915863__car_header.bin"
 )
 
 
@@ -48,6 +60,137 @@ def _load_boston_reference_map_and_trajectories(tmp_path):
     trailer = parsed["objects"][trailer_idx]
 
     # Ground-truth references saved for future behavior/regression checks.
+    gt_refs = {
+        "tractor": {
+            "x": np.asarray(tractor.x, dtype=np.float32),
+            "y": np.asarray(tractor.y, dtype=np.float32),
+            "heading": np.asarray(tractor.heading, dtype=np.float32),
+            "valid": np.asarray(tractor.valid, dtype=np.int32),
+            "length": float(tractor.length),
+            "width": float(tractor.width),
+        },
+        "trailer": {
+            "x": np.asarray(trailer.x, dtype=np.float32),
+            "y": np.asarray(trailer.y, dtype=np.float32),
+            "heading": np.asarray(trailer.heading, dtype=np.float32),
+            "valid": np.asarray(trailer.valid, dtype=np.int32),
+            "length": float(trailer.length),
+            "width": float(trailer.width),
+        },
+    }
+    return map_dir, gt_refs
+
+
+def _load_sdc_trajectory_from_base_bin(binary_path):
+    """Read SDC trajectory fields from base map binary layout (works for legacy bins)."""
+    with open(binary_path, "rb") as f:
+        sdc_track_index = struct.unpack("<i", f.read(4))[0]
+        num_tracks_to_predict = struct.unpack("<i", f.read(4))[0]
+        f.seek(4 * num_tracks_to_predict, 1)
+        num_objects = struct.unpack("<i", f.read(4))[0]
+        _ = struct.unpack("<i", f.read(4))[0]  # num_roads
+
+        tractor = None
+        for obj_idx in range(num_objects):
+            _ = struct.unpack("<i", f.read(4))[0]  # scenario_id
+            _ = struct.unpack("<i", f.read(4))[0]  # type
+            _ = struct.unpack("<i", f.read(4))[0]  # id
+            trajectory_length = struct.unpack("<i", f.read(4))[0]
+
+            x = np.array(struct.unpack(f"<{trajectory_length}f", f.read(4 * trajectory_length)), dtype=np.float32)
+            y = np.array(struct.unpack(f"<{trajectory_length}f", f.read(4 * trajectory_length)), dtype=np.float32)
+
+            # z + vx/vy/vz
+            f.seek(4 * trajectory_length * 4, 1)
+            heading = np.array(struct.unpack(f"<{trajectory_length}f", f.read(4 * trajectory_length)), dtype=np.float32)
+            valid = np.array(struct.unpack(f"<{trajectory_length}i", f.read(4 * trajectory_length)), dtype=np.int32)
+
+            width = float(struct.unpack("<f", f.read(4))[0])
+            length = float(struct.unpack("<f", f.read(4))[0])
+            # height + goal xyz + mark_as_expert
+            f.seek((4 * 4) + 4, 1)
+
+            if obj_idx == sdc_track_index:
+                tractor = {
+                    "x": x,
+                    "y": y,
+                    "heading": heading,
+                    "valid": valid,
+                    "length": length,
+                    "width": width,
+                }
+
+    if tractor is None:
+        raise ValueError(f"SDC track index {sdc_track_index} not found in {binary_path}")
+    return tractor
+
+
+def _load_roads_from_base_bin(binary_path):
+    """Read road polylines from base map binary layout (works for legacy bins)."""
+    roads = []
+    with open(binary_path, "rb") as f:
+        _ = struct.unpack("<i", f.read(4))[0]  # sdc_track_index
+        num_tracks_to_predict = struct.unpack("<i", f.read(4))[0]
+        f.seek(4 * num_tracks_to_predict, 1)
+        num_objects = struct.unpack("<i", f.read(4))[0]
+        num_roads = struct.unpack("<i", f.read(4))[0]
+
+        for _ in range(num_objects):
+            _ = struct.unpack("<i", f.read(4))[0]  # scenario_id
+            _ = struct.unpack("<i", f.read(4))[0]  # type
+            _ = struct.unpack("<i", f.read(4))[0]  # id
+            trajectory_length = struct.unpack("<i", f.read(4))[0]
+            # x,y,z,vx,vy,vz,heading,valid
+            f.seek(4 * trajectory_length * 8, 1)
+            # width, length, height, goal xyz, mark_as_expert
+            f.seek((6 * 4) + 4, 1)
+
+        for _ in range(num_roads):
+            _ = struct.unpack("<i", f.read(4))[0]  # scenario_id
+            entity_type = struct.unpack("<i", f.read(4))[0]
+            _ = struct.unpack("<i", f.read(4))[0]  # id
+            array_size = struct.unpack("<i", f.read(4))[0]
+            x = np.array(struct.unpack(f"<{array_size}f", f.read(4 * array_size)), dtype=np.float32)
+            y = np.array(struct.unpack(f"<{array_size}f", f.read(4 * array_size)), dtype=np.float32)
+            # z + width, length, height, goal xyz, mark_as_expert
+            f.seek((1 * 4 * array_size) + (6 * 4) + 4, 1)
+            roads.append({"entity_type": int(entity_type), "x": x, "y": y})
+    return roads
+
+
+def _load_training_car_reference_map_and_trajectory(tmp_path):
+    """Load a turning car map artifact and parse the SDC reference trajectory."""
+    if not TRAINING_CAR_REFERENCE_BIN.exists():
+        pytest.skip(f"Training car reference bin not found: {TRAINING_CAR_REFERENCE_BIN}")
+
+    map_dir = tmp_path / "training_car_reference_map"
+    map_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(TRAINING_CAR_REFERENCE_BIN, map_dir / "map_000.bin")
+    tractor_gt = _load_sdc_trajectory_from_base_bin(TRAINING_CAR_REFERENCE_BIN)
+    roads = _load_roads_from_base_bin(TRAINING_CAR_REFERENCE_BIN)
+    return map_dir, tractor_gt, roads
+
+
+def _load_boston_car_header_map_and_trajectories(tmp_path):
+    """Load patched Boston car-header map and return GT tractor/trailer trajectories from object data."""
+    if not BOSTON_CAR_HEADER_BIN.exists():
+        pytest.skip(f"Boston car-header bin not found: {BOSTON_CAR_HEADER_BIN}")
+
+    map_dir = tmp_path / "boston_car_header_map"
+    map_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(BOSTON_CAR_HEADER_BIN, map_dir / "map_000.bin")
+
+    parsed = parse_map_binary(str(BOSTON_CAR_HEADER_BIN))
+    sdc_idx = int(parsed["sdc_track_index"])
+    assert 0 <= sdc_idx < len(parsed["objects"])
+    tractor = parsed["objects"][sdc_idx]
+
+    trailer_candidates = [
+        obj for obj in parsed["objects"] if int(getattr(obj, "is_trailer", 0)) == 1 and int(obj.parent_track_index) == sdc_idx
+    ]
+    assert len(trailer_candidates) >= 1
+    trailer = trailer_candidates[0]
+
     gt_refs = {
         "tractor": {
             "x": np.asarray(tractor.x, dtype=np.float32),
@@ -248,8 +391,9 @@ def _make_boston_rollout_animation(
     tractor_ade_curve,
     trailer_ade_curve,
     map_binary_path=None,
+    map_roads=None,
 ):
-    """Create GIF animation: XY traces + heading curves + ADE curves over rollout."""
+    """Create GIF animation: XY traces + heading curves + articulation + ADE curves."""
     n_exec = min(
         len(pred_tractor_xy),
         len(pred_trailer_xy),
@@ -276,18 +420,29 @@ def _make_boston_rollout_animation(
     pred_trailer_width = pred_trailer_width[:n_exec]
     tractor_ade_curve = tractor_ade_curve[:n_exec]
     trailer_ade_curve = trailer_ade_curve[:n_exec]
+    gt_tractor_heading = _wrap_angle(np.asarray(gt_tractor_heading, dtype=np.float32))
+    gt_trailer_heading = _wrap_angle(np.asarray(gt_trailer_heading, dtype=np.float32))
+    pred_tractor_heading = _wrap_angle(np.asarray(pred_tractor_heading, dtype=np.float32))
+    pred_trailer_heading = _wrap_angle(np.asarray(pred_trailer_heading, dtype=np.float32))
 
     step_axis_gt = np.arange(max(len(gt_tractor_heading), len(gt_trailer_heading)), dtype=np.int32)
     step_axis_exec = np.arange(n_exec, dtype=np.int32)
 
-    fig = plt.figure(figsize=(14, 6))
-    gs = fig.add_gridspec(2, 2, width_ratios=[2.2, 1.0], height_ratios=[1, 1])
+    fig = plt.figure(figsize=(14, 8))
+    gs = fig.add_gridspec(3, 2, width_ratios=[2.2, 1.0], height_ratios=[1, 1, 1])
     ax_xy = fig.add_subplot(gs[:, 0])   # large simulation/map panel
     ax_h = fig.add_subplot(gs[0, 1])    # heading curves
-    ax_ade = fig.add_subplot(gs[1, 1])  # ADE curves
+    ax_art = fig.add_subplot(gs[1, 1])  # articulation angle
+    ax_ade = fig.add_subplot(gs[2, 1])  # ADE curves
 
     # Static map backdrop (if provided) + GT traces.
-    if map_binary_path is not None and Path(map_binary_path).exists():
+    if map_roads is not None:
+        for road in map_roads:
+            if int(road["entity_type"]) == 6:
+                ax_xy.plot(road["x"], road["y"], color="black", linewidth=1.2, alpha=0.85, zorder=0)
+            else:
+                ax_xy.plot(road["x"], road["y"], color="0.7", linewidth=0.8, alpha=0.55, zorder=0)
+    elif map_binary_path is not None and Path(map_binary_path).exists():
         parsed = parse_map_binary(str(map_binary_path))
         for road in parsed["roads"]:
             if road.entity_type == 6:
@@ -321,6 +476,23 @@ def _make_boston_rollout_animation(
     ax_h.set_ylabel("Heading [rad]")
     ax_h.grid(alpha=0.25)
     ax_h.legend(loc="best")
+
+    gt_articulation = _wrap_angle(gt_tractor_heading - gt_trailer_heading)
+    pred_articulation = _wrap_angle(pred_tractor_heading - pred_trailer_heading)
+    gt_art_line, = ax_art.plot(
+        np.arange(len(gt_articulation)),
+        gt_articulation,
+        "--",
+        color="tab:green",
+        alpha=0.5,
+        label="GT articulation",
+    )
+    pred_art_line, = ax_art.plot([], [], "-", color="tab:green", lw=2, label="Exec articulation")
+    ax_art.set_title("Trailer Articulation (Tractor - Trailer)")
+    ax_art.set_xlabel("Step")
+    ax_art.set_ylabel("Angle [rad]")
+    ax_art.grid(alpha=0.25)
+    ax_art.legend(loc="best")
 
     tr_ade_line, = ax_ade.plot([], [], color="tab:blue", lw=2, label="Tractor ADE(t)")
     tl_ade_line, = ax_ade.plot([], [], color="tab:orange", lw=2, label="Trailer ADE(t)")
@@ -368,6 +540,12 @@ def _make_boston_rollout_animation(
     ax_h.set_xlim(0, max(len(step_axis_gt) - 1, len(step_axis_exec) - 1))
     ax_h.set_ylim(h_min - h_pad, h_max + h_pad)
 
+    art_min = min(np.min(gt_articulation), np.min(pred_articulation))
+    art_max = max(np.max(gt_articulation), np.max(pred_articulation))
+    art_pad = 0.1 * max(1e-3, art_max - art_min)
+    ax_art.set_xlim(0, max(len(step_axis_gt) - 1, len(step_axis_exec) - 1))
+    ax_art.set_ylim(art_min - art_pad, art_max + art_pad)
+
     ade_max = max(float(np.max(tractor_ade_curve)), float(np.max(trailer_ade_curve)), 1e-3)
     ax_ade.set_xlim(0, max(1, len(step_axis_exec) - 1))
     ax_ade.set_ylim(0, ade_max * 1.1)
@@ -411,6 +589,7 @@ def _make_boston_rollout_animation(
 
         pred_tr_h_line.set_data(step_axis_exec[:end], pred_tractor_heading[:end])
         pred_tl_h_line.set_data(step_axis_exec[:end], pred_trailer_heading[:end])
+        pred_art_line.set_data(step_axis_exec[:end], pred_articulation[:end])
 
         tr_ade_line.set_data(step_axis_exec[:end], tractor_ade_curve[:end])
         tl_ade_line.set_data(step_axis_exec[:end], trailer_ade_curve[:end])
@@ -423,6 +602,7 @@ def _make_boston_rollout_animation(
             pred_tl_dot,
             pred_tr_h_line,
             pred_tl_h_line,
+            pred_art_line,
             tr_ade_line,
             tl_ade_line,
             pred_tr_box,
@@ -609,6 +789,124 @@ def test_boston_tractor_trailer_setup(tmp_path, monkeypatch):
     # Track-error bounds tightened to catch controller regressions.
     assert float(np.mean(track_err)) < 2.0
     assert float(np.max(track_err)) < 5.0
+
+
+def test_training_car_map_supports_runtime_truck_override(tmp_path, monkeypatch):
+    map_dir, gt_refs = _load_boston_car_header_map_and_trajectories(tmp_path)
+    _shared_patch(monkeypatch)
+
+    # Step 1: baseline car map should initialize and report no SDC trailer.
+    env = _make_env(map_dir=map_dir, episode_length=20)
+    try:
+        obs, _ = env.reset(seed=0)
+        assert obs.shape[0] == env.num_agents
+        base_tractor = env.get_global_agent_state()
+        base_trailer = env.get_sdc_trailer_state()
+        assert int(base_trailer["has_trailer"][0]) == 0
+        base_tractor_length = float(base_tractor["length"][0])
+        base_tractor_width = float(base_tractor["width"][0])
+    finally:
+        env.close()
+
+    # Step 2: enabling runtime truck override should inject truck/trailer params at reset.
+    env = _make_env(map_dir=map_dir, episode_length=180, sdc_runtime_truck_override=True)
+    try:
+        expected_params = _load_non_kinematic_vehicle_params_from_bin(
+            str(Path(DEFAULT_SDC_RUNTIME_TRUCK_REF_BIN).resolve())
+        )
+        obs, _ = env.reset(seed=0)
+        assert obs.shape[0] == env.num_agents
+        tractor = env.get_global_agent_state()
+        trailer = env.get_sdc_trailer_state()
+        assert int(trailer["has_trailer"][0]) == 1
+        assert float(tractor["length"][0]) > 0.0
+        assert float(tractor["width"][0]) > 0.0
+        assert float(trailer["length"][0]) > 0.0
+        assert float(trailer["width"][0]) > 0.0
+        # Runtime geometry should match reference non-kinematic truck params.
+        assert np.isclose(float(tractor["length"][0]), float(expected_params[0]), atol=1e-6)
+        assert np.isclose(float(tractor["width"][0]), float(expected_params[2]), atol=1e-6)
+        assert np.isclose(float(trailer["length"][0]), float(expected_params[1]), atol=1e-6)
+        assert np.isclose(float(trailer["width"][0]), float(expected_params[3]), atol=1e-6)
+
+        actions = np.zeros_like(env.actions)
+        obs, rewards, terminals, truncations, _ = env.step(actions)
+        assert np.isfinite(obs).all()
+        assert np.isfinite(rewards).all()
+        assert terminals.shape[0] == env.num_agents
+        assert truncations.shape[0] == env.num_agents
+
+        # Track the map's reference tractor trajectory with pure-pursuit.
+        tractor_valid = gt_refs["tractor"]["valid"] > 0
+        trailer_valid = gt_refs["trailer"]["valid"] > 0
+        gt_x = gt_refs["tractor"]["x"][tractor_valid]
+        gt_y = gt_refs["tractor"]["y"][tractor_valid]
+        gt_heading = gt_refs["tractor"]["heading"][tractor_valid]
+        gt_trailer_x = gt_refs["trailer"]["x"][trailer_valid]
+        gt_trailer_y = gt_refs["trailer"]["y"][trailer_valid]
+        gt_trailer_heading = gt_refs["trailer"]["heading"][trailer_valid]
+        assert gt_x.shape[0] >= 10
+
+        rollout_steps = 140
+        history = _rollout_pure_pursuit_and_collect_trajectories(
+            env=env,
+            gt_x=gt_x,
+            gt_y=gt_y,
+            num_steps=rollout_steps,
+        )
+        n_eval = min(
+            history["tractor_x"].shape[0],
+            history["trailer_x"].shape[0],
+            gt_x.shape[0],
+            gt_y.shape[0],
+            gt_heading.shape[0],
+            gt_trailer_x.shape[0],
+            gt_trailer_y.shape[0],
+            gt_trailer_heading.shape[0],
+        )
+        assert n_eval > 1
+
+        gt_tractor_xy = np.column_stack((gt_x[:n_eval], gt_y[:n_eval]))
+        gt_trailer_xy = np.column_stack((gt_trailer_x[:n_eval], gt_trailer_y[:n_eval]))
+        pred_tractor_xy = np.column_stack((history["tractor_x"][:n_eval], history["tractor_y"][:n_eval]))
+        pred_trailer_xy = np.column_stack((history["trailer_x"][:n_eval], history["trailer_y"][:n_eval]))
+        tractor_step_err = np.linalg.norm(pred_tractor_xy - gt_tractor_xy, axis=1).astype(np.float32)
+        trailer_step_err = np.linalg.norm(pred_trailer_xy - gt_trailer_xy, axis=1).astype(np.float32)
+        tractor_ade_curve = np.cumsum(tractor_step_err) / (np.arange(n_eval, dtype=np.float32) + 1.0)
+        trailer_ade_curve = np.cumsum(trailer_step_err) / (np.arange(n_eval, dtype=np.float32) + 1.0)
+        assert np.isfinite(tractor_ade_curve).all()
+        assert np.isfinite(trailer_ade_curve).all()
+
+        gif_path = tmp_path / "training_car_runtime_truck_override_rollout.gif"
+        _make_boston_rollout_animation(
+            output_path=gif_path,
+            gt_tractor_xy=gt_tractor_xy,
+            gt_trailer_xy=gt_trailer_xy,
+            pred_tractor_xy=pred_tractor_xy,
+            pred_trailer_xy=pred_trailer_xy,
+            gt_tractor_heading=gt_heading[:n_eval],
+            gt_trailer_heading=gt_trailer_heading[:n_eval],
+            pred_tractor_heading=history["tractor_heading"][:n_eval],
+            pred_trailer_heading=history["trailer_heading"][:n_eval],
+            pred_tractor_length=history["tractor_length"][:n_eval],
+            pred_tractor_width=history["tractor_width"][:n_eval],
+            pred_trailer_length=history["trailer_length"][:n_eval],
+            pred_trailer_width=history["trailer_width"][:n_eval],
+            tractor_ade_curve=tractor_ade_curve,
+            trailer_ade_curve=trailer_ade_curve,
+            map_binary_path=map_dir / "map_000.bin",
+        )
+        assert gif_path.exists()
+        assert gif_path.stat().st_size > 0
+
+        output_dir = Path("outputs/test_visualizations")
+        output_dir.mkdir(parents=True, exist_ok=True)
+        stable_gif_path = output_dir / "training_car_runtime_truck_override_rollout.gif"
+        shutil.copy2(gif_path, stable_gif_path)
+        assert stable_gif_path.exists()
+        assert stable_gif_path.stat().st_size > 0
+    finally:
+        env.close()
 
 
 def _make_map(tmp_path, scenario, unique_map_id=0):
@@ -917,7 +1215,7 @@ def _classic_joint_action(accel_idx, steer_idx):
     return accel_idx * 13 + steer_idx
 
 
-def _make_env(map_dir, episode_length):
+def _make_env(map_dir, episode_length, **kwargs):
     """Create a Drive env for SDC-only curved-rollout tests."""
     return Drive(
         num_agents=1,
@@ -929,4 +1227,5 @@ def _make_env(map_dir, episode_length):
         init_mode="create_all_valid",
         reward_vehicle_collision=-1.0,
         reward_offroad_collision=-1.0,
+        **kwargs,
     )

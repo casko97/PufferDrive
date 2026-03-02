@@ -96,7 +96,9 @@ Here, `L_effective` denotes the effective distance (`L_effective = max(0.5, trai
 Policy stepping (`c_step`):
 - Active policy agent uses `move_dynamics`.
 - If active agent is SDC and trailer pair is valid: `update_ego_trailer_pose` runs immediately after SDC dynamics each step.
-- On SDC respawn (`respawn_agent`), trailer pose is recomputed once via `update_ego_trailer_pose`.
+- On SDC respawn (`respawn_agent`), trailer pose is recomputed once:
+  - if `force_zero_trailer_articulation_at_init == 1`: `force_zero_trailer_articulation_pose_from_params` is used (resets articulation to zero),
+  - otherwise: `update_ego_trailer_pose` is used (keeps articulated follow behavior).
 
 Replay helpers (`move_expert`):
 - `move_expert` sets trajectory state from logs, then if `agent_idx == sdc_track_index`, also runs `update_ego_trailer_pose` (keeps articulated consistency during expert replay flows).
@@ -116,7 +118,33 @@ Observation note:
   - `env.get_global_agent_state(include_sdc_trailer=True)` (active agents + trailer payload)
 - Use these APIs for trailer-aware logging/evaluation/visualization.
 
-## 7) Evaluation Coverage and Agent Marking 
+## 7) Runtime Truck Override (`--sdc-runtime-truck-override`)
+
+This mode lets you run a car-only scene as a tractor+trailer setup at runtime, without editing the scenario file.
+
+What it does:
+- Enables runtime non-kinematic parameter override from a reference trailer `.bin`. (Defining geometry parameters of the trailer)
+- Forces zero articulation at init (`theta_trailer = theta_tractor`), then trailer motion is updated by articulated coupling in simulator steps.
+- If scene metadata has no ego trailer, a synthetic trailer entity is injected at runtime and coupled to SDC.
+
+Respawn / reset implications (override mode):
+- Episode reset (`c_reset`) always calls `set_start_position`; with override enabled, trailer starts aligned with tractor (zero articulation).
+- Mid-episode respawn (typically with `goal_behavior=respawn`) routes through `respawn_agent` and re-applies zero articulation when `force_zero_trailer_articulation_at_init` is active.
+- In scenes with frequent respawns, articulation can repeatedly snap to zero at respawn boundaries by design.
+- After runtime override applies trailer geometry and zero-articulation init pose, the env checks whether the SDC trailer is already colliding at the initial state.
+- If the initial trailer state is invalid, that sampled map/env instance is rejected during vectorized setup; on reset, vector envs are resampled and recreated.
+
+Reference parameter source:
+- CLI visualizer:
+  - `--sdc-runtime-truck-override`
+  - Optional: `--sdc-runtime-truck-ref-bin <path/to/reference.bin>`
+- Python env config:
+  - `sdc_runtime_truck_override=True`
+  - Optional: `sdc_runtime_truck_ref_bin=\"...\"`
+- If no ref path is provided, default is:
+  - `tests/artifacts/drive/traversing_traffic_light_intersection__97be27351e915863__97be27351e915863.bin`
+
+## 8) Evaluation Coverage and Agent Marking 
 
 - `mark_as_expert` and `tracks_to_predict` have different roles:
   - `mark_as_expert`: control/replay role (expert/static vs policy-controlled).

@@ -1,8 +1,45 @@
+#include <Python.h>
 #include "drive.h"
 #define Env Drive
 #define MY_SHARED
 #define MY_PUT
+static PyObject *vec_has_invalid_initial_trailer_state(PyObject *self, PyObject *args);
+#define MY_METHODS                                                                                                     \
+    {"vec_has_invalid_initial_trailer_state", vec_has_invalid_initial_trailer_state, METH_VARARGS,                   \
+     "Return True if any sub-environment has invalid initial trailer collision"}
 #include "../env_binding.h"
+
+static int unpack_non_kinematic_override(PyObject *kwargs, float *dst, int *enabled) {
+    *enabled = 0;
+    PyObject *obj = kwargs ? PyDict_GetItemString(kwargs, "non_kinematic_vehicle_params_override") : NULL;
+    if (obj == NULL || obj == Py_None) {
+        return 0;
+    }
+    if (!PySequence_Check(obj)) {
+        PyErr_SetString(PyExc_TypeError, "non_kinematic_vehicle_params_override must be a sequence of 13 floats");
+        return -1;
+    }
+    Py_ssize_t n = PySequence_Size(obj);
+    if (n != 13) {
+        PyErr_SetString(PyExc_ValueError, "non_kinematic_vehicle_params_override must have length 13");
+        return -1;
+    }
+    for (Py_ssize_t i = 0; i < n; i++) {
+        PyObject *item = PySequence_GetItem(obj, i);
+        if (!item) {
+            return -1;
+        }
+        double v = PyFloat_AsDouble(item);
+        Py_DECREF(item);
+        if (PyErr_Occurred()) {
+            PyErr_SetString(PyExc_TypeError, "non_kinematic_vehicle_params_override contains non-float value");
+            return -1;
+        }
+        dst[i] = (float)v;
+    }
+    *enabled = 1;
+    return 0;
+}
 
 static int my_put(Env *env, PyObject *args, PyObject *kwargs) {
     PyObject *obs = PyDict_GetItemString(kwargs, "observations");
@@ -77,6 +114,12 @@ static PyObject *my_shared(PyObject *self, PyObject *args, PyObject *kwargs) {
     int goal_behavior = unpack(kwargs, "goal_behavior");
     float goal_target_distance = unpack(kwargs, "goal_target_distance");
     int use_all_maps = unpack(kwargs, "use_all_maps");
+    float non_kinematic_override[13] = {0};
+    int override_non_kinematic = 0;
+    if (unpack_non_kinematic_override(kwargs, non_kinematic_override, &override_non_kinematic) != 0) {
+        return NULL;
+    }
+    int force_zero_trailer_articulation_at_init = unpack(kwargs, "force_zero_trailer_articulation_at_init");
     clock_gettime(CLOCK_REALTIME, &ts);
     srand(ts.tv_nsec);
     int total_agent_count = 0;
@@ -96,12 +139,22 @@ static PyObject *my_shared(PyObject *self, PyObject *args, PyObject *kwargs) {
         env->init_steps = init_steps;
         env->goal_behavior = goal_behavior;
         env->goal_target_distance = goal_target_distance;
+        env->override_non_kinematic_vehicle_params = override_non_kinematic;
+        env->force_zero_trailer_articulation_at_init = force_zero_trailer_articulation_at_init;
+        if (override_non_kinematic) {
+            for (int j = 0; j < 13; j++) {
+                env->non_kinematic_vehicle_params_override[j] = non_kinematic_override[j];
+            }
+        }
         snprintf(map_file, sizeof(map_file), "%s/map_%03d.bin", map_dir, map_id);
         env->entities = load_map_binary(map_file, env);
         set_active_agents(env);
+        set_start_position(env);
+
+        int invalid_initial_trailer_state = has_invalid_initial_sdc_trailer_collision(env);
 
         // Skip map if it doesn't contain any controllable agents
-        if (env->active_agent_count == 0) {
+        if (env->active_agent_count == 0 || invalid_initial_trailer_state) {
             if (!use_all_maps) {
                 maps_checked++;
 
@@ -118,7 +171,11 @@ static PyObject *my_shared(PyObject *self, PyObject *args, PyObject *kwargs) {
                     Py_DECREF(agent_offsets);
                     Py_DECREF(map_ids);
                     char error_msg[256];
-                    sprintf(error_msg, "No controllable agents found in any of the %d available maps", num_maps);
+                    if (invalid_initial_trailer_state) {
+                        sprintf(error_msg, "No valid maps left: all %d candidates had initial SDC trailer collision", num_maps);
+                    } else {
+                        sprintf(error_msg, "No controllable agents found in any of the %d available maps", num_maps);
+                    }
                     PyErr_SetString(PyExc_ValueError, error_msg);
                     return NULL;
                 }
@@ -202,6 +259,15 @@ static int my_init(Env *env, PyObject *args, PyObject *kwargs) {
     env->goal_target_distance = (float)unpack(kwargs, "goal_target_distance");
     env->goal_radius = (float)unpack(kwargs, "goal_radius");
     env->goal_speed = (float)unpack(kwargs, "goal_speed");
+    env->force_zero_trailer_articulation_at_init = (int)unpack(kwargs, "force_zero_trailer_articulation_at_init");
+    env->override_non_kinematic_vehicle_params = 0;
+    for (int i = 0; i < 13; i++) {
+        env->non_kinematic_vehicle_params_override[i] = 0.0f;
+    }
+    if (unpack_non_kinematic_override(kwargs, env->non_kinematic_vehicle_params_override,
+                                      &env->override_non_kinematic_vehicle_params) != 0) {
+        return -1;
+    }
     char *map_dir = unpack_str(kwargs, "map_dir");
     int map_id = unpack(kwargs, "map_id");
     int max_agents = unpack(kwargs, "max_agents");
@@ -233,4 +299,17 @@ static int my_log(PyObject *dict, Log *log) {
     assign_to_dict(dict, "speed_at_goal", log->speed_at_goal);
     // assign_to_dict(dict, "avg_displacement_error", log->avg_displacement_error);
     return 0;
+}
+
+static PyObject *vec_has_invalid_initial_trailer_state(PyObject *self, PyObject *args) {
+    VecEnv *vec = unpack_vecenv(args);
+    if (!vec) {
+        return NULL;
+    }
+    for (int i = 0; i < vec->num_envs; i++) {
+        if (vec->envs[i]->invalid_initial_trailer_state) {
+            Py_RETURN_TRUE;
+        }
+    }
+    Py_RETURN_FALSE;
 }

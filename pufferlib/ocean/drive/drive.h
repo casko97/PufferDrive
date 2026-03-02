@@ -338,11 +338,132 @@ struct Drive {
     int has_ego_trailer;
     int ego_trailer_track_index;
     float non_kinematic_vehicle_params[13];
+    int override_non_kinematic_vehicle_params;
+    float non_kinematic_vehicle_params_override[13];
+    int force_zero_trailer_articulation_at_init;
+    int invalid_initial_trailer_state;
     int num_tracks_to_predict;
     int *tracks_to_predict_indices;
     int init_mode;
     int control_mode;
 };
+
+Entity *load_map_binary(const char *filename, Drive *env);
+
+static inline int load_runtime_non_kinematic_params_from_reference_bin(const char *reference_bin, float *out_params) {
+    Drive tmp_env = {0};
+    Entity *tmp_entities = load_map_binary(reference_bin, &tmp_env);
+    if (tmp_entities == NULL) {
+        return 0;
+    }
+
+    for (int i = 0; i < 13; i++) {
+        out_params[i] = tmp_env.non_kinematic_vehicle_params[i];
+    }
+
+    for (int i = 0; i < tmp_env.num_entities; i++) {
+        free_entity(&tmp_entities[i]);
+    }
+    free(tmp_entities);
+    free(tmp_env.tracks_to_predict_indices);
+    return 1;
+}
+
+static inline int legacy_bin_has_truck_like_sdc(Drive *env, Entity *entities) {
+    // Legacy bins lack trailer metadata. For compatibility, classify by SDC shape only.
+    // We allow large background vehicles, but reject clearly truck-like SDC footprints.
+    const float max_non_truck_sdc_length = 8.0f;
+    const float max_non_truck_sdc_width = 2.6f;
+    const float max_non_truck_sdc_height = 3.5f;
+    if (env->sdc_track_index < 0 || env->sdc_track_index >= env->num_objects) {
+        return 0;
+    }
+    Entity *sdc = &entities[env->sdc_track_index];
+    if (sdc->type != VEHICLE) {
+        return 0;
+    }
+    return (sdc->length > max_non_truck_sdc_length || sdc->width > max_non_truck_sdc_width ||
+            sdc->height > max_non_truck_sdc_height);
+}
+
+static inline int maybe_add_runtime_sdc_trailer(Drive *env, Entity **entities_ptr) {
+    if (!env->override_non_kinematic_vehicle_params) {
+        return 1;
+    }
+    if (env->has_ego_trailer && env->sdc_track_index >= 0 && env->sdc_track_index < env->num_objects &&
+        env->ego_trailer_track_index >= 0 && env->ego_trailer_track_index < env->num_objects &&
+        env->ego_trailer_track_index != env->sdc_track_index) {
+        return 1;
+    }
+    if (env->sdc_track_index < 0 || env->sdc_track_index >= env->num_objects) {
+        return 1;
+    }
+
+    Entity *entities = *entities_ptr;
+    int old_num_objects = env->num_objects;
+    int old_num_entities = env->num_entities;
+
+    Entity *resized = (Entity *)realloc(entities, (old_num_entities + 1) * sizeof(Entity));
+    if (resized == NULL) {
+        return 0;
+    }
+    entities = resized;
+    memmove(&entities[old_num_objects + 1], &entities[old_num_objects],
+            (old_num_entities - old_num_objects) * sizeof(Entity));
+
+    Entity *sdc = &entities[env->sdc_track_index];
+    Entity *trailer = &entities[old_num_objects];
+    memset(trailer, 0, sizeof(Entity));
+
+    trailer->scenario_id = sdc->scenario_id;
+    trailer->type = VEHICLE;
+    trailer->id = -1000000 - old_num_objects;
+    trailer->source_track_id_hash = 0ULL;
+    trailer->is_trailer = 1;
+    trailer->parent_track_index = env->sdc_track_index;
+    trailer->array_size = sdc->array_size;
+
+    int size = trailer->array_size;
+    trailer->traj_x = (float *)malloc(size * sizeof(float));
+    trailer->traj_y = (float *)malloc(size * sizeof(float));
+    trailer->traj_z = (float *)malloc(size * sizeof(float));
+    trailer->traj_vx = (float *)malloc(size * sizeof(float));
+    trailer->traj_vy = (float *)malloc(size * sizeof(float));
+    trailer->traj_vz = (float *)malloc(size * sizeof(float));
+    trailer->traj_heading = (float *)malloc(size * sizeof(float));
+    trailer->traj_valid = (int *)malloc(size * sizeof(int));
+    if (trailer->traj_x == NULL || trailer->traj_y == NULL || trailer->traj_z == NULL || trailer->traj_vx == NULL ||
+        trailer->traj_vy == NULL || trailer->traj_vz == NULL || trailer->traj_heading == NULL ||
+        trailer->traj_valid == NULL) {
+        free_entity(trailer);
+        return 0;
+    }
+
+    memcpy(trailer->traj_x, sdc->traj_x, size * sizeof(float));
+    memcpy(trailer->traj_y, sdc->traj_y, size * sizeof(float));
+    memcpy(trailer->traj_z, sdc->traj_z, size * sizeof(float));
+    memcpy(trailer->traj_vx, sdc->traj_vx, size * sizeof(float));
+    memcpy(trailer->traj_vy, sdc->traj_vy, size * sizeof(float));
+    memcpy(trailer->traj_vz, sdc->traj_vz, size * sizeof(float));
+    memcpy(trailer->traj_heading, sdc->traj_heading, size * sizeof(float));
+    memcpy(trailer->traj_valid, sdc->traj_valid, size * sizeof(int));
+
+    trailer->width = env->non_kinematic_vehicle_params[3];
+    trailer->length = env->non_kinematic_vehicle_params[1];
+    trailer->height = env->non_kinematic_vehicle_params[5];
+    trailer->goal_position_x = sdc->goal_position_x;
+    trailer->goal_position_y = sdc->goal_position_y;
+    trailer->goal_position_z = sdc->goal_position_z;
+    trailer->mark_as_expert = 1;
+
+    env->has_ego_trailer = 1;
+    env->ego_trailer_track_index = old_num_objects;
+    env->num_objects = old_num_objects + 1;
+    env->num_entities = old_num_entities + 1;
+
+    *entities_ptr = entities;
+    return 1;
+}
 
 static inline bool has_valid_ego_trailer_pair(Drive *env) {
     if (!env->has_ego_trailer)
@@ -413,6 +534,59 @@ static inline void update_ego_trailer_pose(Drive *env) {
     trailer->heading_y = sinf(theta_trailer);
     trailer->vx = (trailer->x - old_x) / fmaxf(env->dt, 1e-4f);
     trailer->vy = (trailer->y - old_y) / fmaxf(env->dt, 1e-4f);
+}
+
+static inline void apply_non_kinematic_runtime_override(Drive *env) {
+    if (!env->override_non_kinematic_vehicle_params)
+        return;
+    for (int i = 0; i < 13; i++) {
+        env->non_kinematic_vehicle_params[i] = env->non_kinematic_vehicle_params_override[i];
+    }
+
+    if (env->sdc_track_index < 0 || env->sdc_track_index >= env->num_objects)
+        return;
+    Entity *tractor = &env->entities[env->sdc_track_index];
+    tractor->length = env->non_kinematic_vehicle_params[0];
+    tractor->width = env->non_kinematic_vehicle_params[2];
+    tractor->height = env->non_kinematic_vehicle_params[4];
+
+    if (!has_valid_ego_trailer_pair(env))
+        return;
+
+    Entity *trailer = &env->entities[env->ego_trailer_track_index];
+    trailer->length = env->non_kinematic_vehicle_params[1];
+    trailer->width = env->non_kinematic_vehicle_params[3];
+    trailer->height = env->non_kinematic_vehicle_params[5];
+}
+
+static inline void force_zero_trailer_articulation_pose_from_params(Drive *env) {
+    if (!has_valid_ego_trailer_pair(env))
+        return;
+
+    Entity *tractor = &env->entities[env->sdc_track_index];
+    Entity *trailer = &env->entities[env->ego_trailer_track_index];
+    if (tractor->removed || trailer->removed)
+        return;
+    if (tractor->x == INVALID_POSITION || trailer->x == INVALID_POSITION)
+        return;
+
+    float theta = tractor->heading;
+    float tractor2hitch = env->non_kinematic_vehicle_params[6];
+    float trailer2hitch = env->non_kinematic_vehicle_params[7];
+    float effective_length = fmaxf(0.5f, trailer->length - trailer2hitch);
+
+    float x_hitch = tractor->x + (-tractor->length * 0.5f + tractor2hitch) * cosf(theta);
+    float y_hitch = tractor->y + (-tractor->length * 0.5f + tractor2hitch) * sinf(theta);
+    float x_rear = x_hitch - effective_length * cosf(theta);
+    float y_rear = y_hitch - effective_length * sinf(theta);
+
+    trailer->x = x_rear + 0.5f * trailer->length * cosf(theta);
+    trailer->y = y_rear + 0.5f * trailer->length * sinf(theta);
+    trailer->heading = theta;
+    trailer->heading_x = cosf(theta);
+    trailer->heading_y = sinf(theta);
+    trailer->vx = tractor->vx;
+    trailer->vy = tractor->vy;
 }
 
 void add_log(Drive *env) {
@@ -547,13 +721,65 @@ Entity *load_map_binary(const char *filename, Drive *env) {
         fread(&entities[i].mark_as_expert, sizeof(int), 1, file);
     }
 
-    // Extension block is mandatory (v2 only).
+    // Optional extension block (v2). Legacy bins may end here.
     int extension_magic = 0;
-    if (fread(&extension_magic, sizeof(int), 1, file) != 1 || extension_magic != DRIVE_BIN_EXT_MAGIC) {
+    size_t read_magic = fread(&extension_magic, sizeof(int), 1, file);
+    if (read_magic != 1) {
+        if (legacy_bin_has_truck_like_sdc(env, entities)) {
+            fclose(file);
+            for (int i = 0; i < env->num_entities; i++) {
+                free_entity(&entities[i]);
+            }
+            free(entities);
+            free(env->tracks_to_predict_indices);
+            env->tracks_to_predict_indices = NULL;
+            raise_error_with_message(
+                ERROR_INITIALIZATION_FAILED,
+                "Legacy map binary without extension is only supported for non-truck scenes");
+        }
+        if (!maybe_add_runtime_sdc_trailer(env, &entities)) {
+            fclose(file);
+            for (int i = 0; i < env->num_entities; i++) {
+                free_entity(&entities[i]);
+            }
+            free(entities);
+            free(env->tracks_to_predict_indices);
+            env->tracks_to_predict_indices = NULL;
+            raise_error_with_message(ERROR_INITIALIZATION_FAILED, "Failed to allocate runtime synthetic trailer");
+        }
+        env->entities = entities;
+        apply_non_kinematic_runtime_override(env);
         fclose(file);
-        free(entities);
-        raise_error_with_message(ERROR_INITIALIZATION_FAILED,
-                                 "Map binary missing extension magic (expected DRIVE_BIN_EXT_MAGIC)");
+        return entities;
+    }
+    if (extension_magic != DRIVE_BIN_EXT_MAGIC) {
+        // Legacy format: no trailer extension metadata block.
+        if (legacy_bin_has_truck_like_sdc(env, entities)) {
+            fclose(file);
+            for (int i = 0; i < env->num_entities; i++) {
+                free_entity(&entities[i]);
+            }
+            free(entities);
+            free(env->tracks_to_predict_indices);
+            env->tracks_to_predict_indices = NULL;
+            raise_error_with_message(
+                ERROR_INITIALIZATION_FAILED,
+                "Legacy map binary without extension is only supported for non-truck scenes");
+        }
+        if (!maybe_add_runtime_sdc_trailer(env, &entities)) {
+            fclose(file);
+            for (int i = 0; i < env->num_entities; i++) {
+                free_entity(&entities[i]);
+            }
+            free(entities);
+            free(env->tracks_to_predict_indices);
+            env->tracks_to_predict_indices = NULL;
+            raise_error_with_message(ERROR_INITIALIZATION_FAILED, "Failed to allocate runtime synthetic trailer");
+        }
+        env->entities = entities;
+        apply_non_kinematic_runtime_override(env);
+        fclose(file);
+        return entities;
     }
 
     int extension_version = 0;
@@ -596,6 +822,18 @@ Entity *load_map_binary(const char *filename, Drive *env) {
     for (int i = 0; i < 13; i++) {
         fread(&env->non_kinematic_vehicle_params[i], sizeof(float), 1, file);
     }
+    if (!maybe_add_runtime_sdc_trailer(env, &entities)) {
+        fclose(file);
+        for (int i = 0; i < env->num_entities; i++) {
+            free_entity(&entities[i]);
+        }
+        free(entities);
+        free(env->tracks_to_predict_indices);
+        env->tracks_to_predict_indices = NULL;
+        raise_error_with_message(ERROR_INITIALIZATION_FAILED, "Failed to allocate runtime synthetic trailer");
+    }
+    env->entities = entities;
+    apply_non_kinematic_runtime_override(env);
 
     fclose(file);
     return entities;
@@ -659,6 +897,9 @@ void set_start_position(Drive *env) {
         e->jerk_lat = 0.0f;
         e->steering_angle = 0.0f;
         e->wheelbase = 0.6f * e->length;
+    }
+    if (env->force_zero_trailer_articulation_at_init) {
+        force_zero_trailer_articulation_pose_from_params(env);
     }
 }
 
@@ -954,6 +1195,9 @@ static inline void move_expert_trajectory_only(Drive *env, int agent_idx) {
         agent->x = INVALID_POSITION;
         agent->y = INVALID_POSITION;
         agent->z = 0.0f;
+        agent->vx = 0.0f;
+        agent->vy = 0.0f;
+        agent->vz = 0.0f;
         agent->heading = 0.0f;
         agent->heading_x = 1.0f;
         agent->heading_y = 0.0f;
@@ -963,6 +1207,9 @@ static inline void move_expert_trajectory_only(Drive *env, int agent_idx) {
         agent->x = INVALID_POSITION;
         agent->y = INVALID_POSITION;
         agent->z = 0.0f;
+        agent->vx = 0.0f;
+        agent->vy = 0.0f;
+        agent->vz = 0.0f;
         agent->heading = 0.0f;
         agent->heading_x = 1.0f;
         agent->heading_y = 0.0f;
@@ -971,6 +1218,9 @@ static inline void move_expert_trajectory_only(Drive *env, int agent_idx) {
     agent->x = agent->traj_x[t];
     agent->y = agent->traj_y[t];
     agent->z = agent->traj_z[t];
+    agent->vx = agent->traj_vx[t];
+    agent->vy = agent->traj_vy[t];
+    agent->vz = agent->traj_vz[t];
     agent->heading = agent->traj_heading[t];
     agent->heading_x = cosf(agent->heading);
     agent->heading_y = sinf(agent->heading);
@@ -1177,6 +1427,44 @@ int collision_check_with_sources(Drive *env, int agent_idx, int *agent_body_coll
 
 int collision_check(Drive *env, int agent_idx) {
     return collision_check_with_sources(env, agent_idx, NULL, NULL);
+}
+
+static inline int has_invalid_initial_sdc_trailer_collision(Drive *env) {
+    if (!env->override_non_kinematic_vehicle_params)
+        return 0;
+    if (!has_valid_ego_trailer_pair(env))
+        return 0;
+    if (env->sdc_track_index < 0 || env->sdc_track_index >= env->num_objects)
+        return 0;
+    if (env->ego_trailer_track_index < 0 || env->ego_trailer_track_index >= env->num_objects)
+        return 0;
+
+    Entity *ego_trailer = &env->entities[env->ego_trailer_track_index];
+    if (ego_trailer->x == INVALID_POSITION || ego_trailer->y == INVALID_POSITION)
+        return 0;
+
+    for (int i = 0; i < env->num_actors; i++) {
+        int index = -1;
+        if (i < env->active_agent_count) {
+            index = env->active_agent_indices[i];
+        } else if (i < env->active_agent_count + env->static_agent_count) {
+            index = env->static_agent_indices[i - env->active_agent_count];
+        }
+        if (index < 0 || index >= env->num_objects)
+            continue;
+        if (index == env->sdc_track_index || index == env->ego_trailer_track_index)
+            continue;
+        Entity *other = &env->entities[index];
+        if (other->x == INVALID_POSITION || other->y == INVALID_POSITION)
+            continue;
+        if (other->removed)
+            continue;
+        if (check_aabb_collision(ego_trailer, other)) {
+            return 1;
+        }
+    }
+
+    return 0;
 }
 
 int check_lane_aligned(Entity *car, Entity *lane, int geometry_idx) {
@@ -1457,10 +1745,6 @@ bool should_control_agent(Drive *env, int agent_idx) {
         return false;
     }
 
-    // TODO: Move this elsewhere or remove
-    entity->width *= 0.7f;
-    entity->length *= 0.7f;
-
     if (env->control_mode == CONTROL_SDC_ONLY) {
         return agent_idx == env->sdc_track_index;
     }
@@ -1659,6 +1943,11 @@ void init(Drive *env) {
     env->logs_capacity = env->active_agent_count;
     remove_bad_trajectories(env);
     set_start_position(env);
+    env->invalid_initial_trailer_state = has_invalid_initial_sdc_trailer_collision(env);
+    if (env->invalid_initial_trailer_state) {
+        raise_error_with_message(ERROR_INITIALIZATION_FAILED,
+                                 "Invalid initial state: SDC trailer collides at scenario start");
+    }
     init_goal_positions(env);
     env->logs = (Log *)calloc(env->active_agent_count, sizeof(Log));
 }
@@ -2232,6 +2521,7 @@ void sample_new_goal(Drive *env, int agent_idx) {
 void c_reset(Drive *env) {
     env->timestep = env->init_steps;
     set_start_position(env);
+    env->invalid_initial_trailer_state = has_invalid_initial_sdc_trailer_collision(env);
     for (int x = 0; x < env->active_agent_count; x++) {
         env->logs[x] = (Log){0};
         int agent_idx = env->active_agent_indices[x];
@@ -2289,7 +2579,11 @@ void respawn_agent(Drive *env, int agent_idx) {
     env->entities[agent_idx].steering_angle = 0.0f;
 
     if (has_valid_ego_trailer_pair(env) && agent_idx == env->sdc_track_index) {
-        update_ego_trailer_pose(env);
+        if (env->force_zero_trailer_articulation_at_init) {
+            force_zero_trailer_articulation_pose_from_params(env);
+        } else {
+            update_ego_trailer_pose(env);
+        }
     }
 }
 

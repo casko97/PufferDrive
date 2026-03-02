@@ -14,6 +14,8 @@
 #include "libgen.h"
 #include "../env_config.h"
 #define TRAJECTORY_LENGTH_DEFAULT 91
+#define DEFAULT_SDC_RUNTIME_TRUCK_REF_BIN                                                                       \
+    "tests/artifacts/drive/traversing_traffic_light_intersection__97be27351e915863__97be27351e915863.bin"
 
 typedef struct {
     int pipefd[2];
@@ -191,7 +193,8 @@ static int make_gif_from_frames(const char *pattern, int fps, const char *palett
 
 int eval_gif(const char *map_name, const char *policy_name, int show_grid, int obs_only, int lasers,
              int show_human_logs, int frame_skip, const char *view_mode, const char *output_topdown,
-             const char *output_agent, int num_maps, int zoom_in, float zoom_scale, int ground_truth) {
+             const char *output_agent, int num_maps, int zoom_in, float zoom_scale, int ground_truth,
+             int sdc_runtime_truck_override, const char *sdc_runtime_truck_ref_bin) {
 
     // Parse configuration from INI file
     env_init_config conf = {0};
@@ -248,6 +251,23 @@ int eval_gif(const char *map_name, const char *policy_name, int show_grid, int o
         .control_mode = conf.control_mode,
         .map_name = (char *)map_name,
     };
+    env.force_zero_trailer_articulation_at_init = sdc_runtime_truck_override ? 1 : 0;
+    env.override_non_kinematic_vehicle_params = 0;
+    for (int i = 0; i < 13; i++) {
+        env.non_kinematic_vehicle_params_override[i] = 0.0f;
+    }
+    if (sdc_runtime_truck_override) {
+        const char *reference_path =
+            (sdc_runtime_truck_ref_bin != NULL && strlen(sdc_runtime_truck_ref_bin) > 0)
+                ? sdc_runtime_truck_ref_bin
+                : DEFAULT_SDC_RUNTIME_TRUCK_REF_BIN;
+        if (!load_runtime_non_kinematic_params_from_reference_bin(reference_path,
+                                                                   env.non_kinematic_vehicle_params_override)) {
+            fprintf(stderr, "Error: Failed to load runtime truck params from reference bin: %s\n", reference_path);
+            return -1;
+        }
+        env.override_non_kinematic_vehicle_params = 1;
+    }
 
     allocate(&env);
 
@@ -365,10 +385,19 @@ int eval_gif(const char *map_name, const char *policy_name, int show_grid, int o
                 // non-controlled actors still move even if they are not in
                 // active/static index lists.
                 for (int j = 0; j < env.num_entities; j++) {
+                    if (env.override_non_kinematic_vehicle_params && has_valid_ego_trailer_pair(&env) &&
+                        j == env.ego_trailer_track_index) {
+                        // Synthetic runtime trailer should be driven by articulated
+                        // kinematics, not replayed from copied tractor trajectory.
+                        continue;
+                    }
                     int type = env.entities[j].type;
                     if (type == VEHICLE || type == PEDESTRIAN || type == CYCLIST) {
                         move_expert_trajectory_only(&env, j);
                     }
+                }
+                if (env.override_non_kinematic_vehicle_params && has_valid_ego_trailer_pair(&env)) {
+                    update_ego_trailer_pose(&env);
                 }
                 env.timestep++;
             } else {
@@ -396,10 +425,17 @@ int eval_gif(const char *map_name, const char *policy_name, int show_grid, int o
                 // non-controlled actors still move even if they are not in
                 // active/static index lists.
                 for (int j = 0; j < env.num_entities; j++) {
+                    if (env.override_non_kinematic_vehicle_params && has_valid_ego_trailer_pair(&env) &&
+                        j == env.ego_trailer_track_index) {
+                        continue;
+                    }
                     int type = env.entities[j].type;
                     if (type == VEHICLE || type == PEDESTRIAN || type == CYCLIST) {
                         move_expert_trajectory_only(&env, j);
                     }
+                }
+                if (env.override_non_kinematic_vehicle_params && has_valid_ego_trailer_pair(&env)) {
+                    update_ego_trailer_pose(&env);
                 }
                 env.timestep++;
             } else {
@@ -441,7 +477,9 @@ int main(int argc, char *argv[]) {
     int zoom_in = 0;
     float zoom_scale = 1.0f;
     int ground_truth = 0;
+    int sdc_runtime_truck_override = 0;
     const char *view_mode = "both";
+    const char *sdc_runtime_truck_ref_bin = NULL;
 
     // File paths and num_maps (not in [env] section)
     const char *map_name = NULL;
@@ -528,10 +566,21 @@ int main(int argc, char *argv[]) {
                 num_maps = atoi(argv[i + 1]);
                 i++;
             }
+        } else if (strcmp(argv[i], "--sdc-runtime-truck-override") == 0) {
+            sdc_runtime_truck_override = 1;
+        } else if (strcmp(argv[i], "--sdc-runtime-truck-ref-bin") == 0) {
+            if (i + 1 < argc) {
+                sdc_runtime_truck_ref_bin = argv[i + 1];
+                i++;
+            } else {
+                fprintf(stderr, "Error: --sdc-runtime-truck-ref-bin option requires a .bin path\n");
+                return 1;
+            }
         }
     }
 
     eval_gif(map_name, policy_name, show_grid, obs_only, lasers, show_human_logs, frame_skip, view_mode, output_topdown,
-             output_agent, num_maps, zoom_in, zoom_scale, ground_truth);
+             output_agent, num_maps, zoom_in, zoom_scale, ground_truth, sdc_runtime_truck_override,
+             sdc_runtime_truck_ref_bin);
     return 0;
 }
