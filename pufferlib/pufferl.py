@@ -198,6 +198,11 @@ class PuffeRL:
         epochs = config["total_timesteps"] // config["batch_size"]
         self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
         self.total_epochs = epochs
+        self.anneal_ent_coef = bool(config.get("anneal_ent_coef", False))
+        self.ent_coef_start = float(config["ent_coef"])
+        self.ent_coef_final = float(config.get("ent_coef_final", self.ent_coef_start))
+        self.ent_coef_anneal_fraction = float(config.get("ent_coef_anneal_fraction", 1.0))
+        self.ent_coef_anneal_fraction = min(max(self.ent_coef_anneal_fraction, 1e-8), 1.0)
 
         # Automatic mixed precision
         precision = config["precision"]
@@ -352,6 +357,11 @@ class PuffeRL:
         clip_coef = config["clip_coef"]
         vf_clip = config["vf_clip_coef"]
         anneal_beta = b0 + (1 - b0) * a * self.epoch / self.total_epochs
+        ent_coef = self.ent_coef_start
+        if self.anneal_ent_coef:
+            anneal_epochs = max(1, int(self.total_epochs * self.ent_coef_anneal_fraction))
+            progress = min(1.0, self.epoch / anneal_epochs)
+            ent_coef = self.ent_coef_start + (self.ent_coef_final - self.ent_coef_start) * progress
         self.ratio[:] = 1
 
         for mb in range(self.total_minibatches):
@@ -441,7 +451,7 @@ class PuffeRL:
 
             entropy_loss = entropy.mean()
 
-            loss = pg_loss + config["vf_coef"] * v_loss - config["ent_coef"] * entropy_loss
+            loss = pg_loss + config["vf_coef"] * v_loss - ent_coef * entropy_loss
             self.amp_context.__enter__()  # TODO: AMP needs some debugging
 
             # This breaks vloss clipping?
@@ -475,6 +485,7 @@ class PuffeRL:
         var_y = y_true.var()
         explained_var = torch.nan if var_y == 0 else 1 - (y_true - y_pred).var() / var_y
         losses["explained_variance"] = explained_var.item()
+        losses["ent_coef"] = ent_coef
 
         profile.end()
         logs = None
