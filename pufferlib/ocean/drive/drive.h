@@ -2252,6 +2252,63 @@ void c_get_global_agent_state(Drive *env, float *x_out, float *y_out, float *z_o
     }
 }
 
+void c_get_global_agent_types(Drive *env, int *type_out) {
+    for (int i = 0; i < env->active_agent_count; i++) {
+        int agent_idx = env->active_agent_indices[i];
+        Entity *agent = &env->entities[agent_idx];
+        type_out[i] = agent->type;
+    }
+}
+
+void c_get_partner_types(Drive *env, int *type_out) {
+    memset(type_out, 0, env->active_agent_count * (MAX_AGENTS - 1) * sizeof(int));
+    int (*types)[MAX_AGENTS - 1] = (int (*)[MAX_AGENTS - 1])type_out;
+    for (int i = 0; i < env->active_agent_count; i++) {
+        Entity *ego_entity = &env->entities[env->active_agent_indices[i]];
+        if (ego_entity->type > 3) {
+            continue;
+        }
+
+        int partner_idx = 0;
+        for (int j = 0; j < MAX_AGENTS; j++) {
+            int index = -1;
+            if (j < env->active_agent_count) {
+                index = env->active_agent_indices[j];
+            } else if (j < env->num_actors) {
+                index = env->static_agent_indices[j - env->active_agent_count];
+            }
+            if (index == -1) {
+                continue;
+            }
+            if (env->entities[index].type > 3) {
+                break;
+            }
+            if (index == env->active_agent_indices[i]) {
+                continue;
+            }
+            if (has_valid_ego_trailer_pair(env) && env->active_agent_indices[i] == env->sdc_track_index &&
+                index == env->ego_trailer_track_index) {
+                continue;
+            }
+            Entity *other_entity = &env->entities[index];
+            if (ego_entity->respawn_timestep != -1 || other_entity->respawn_timestep != -1) {
+                continue;
+            }
+            float dx = other_entity->x - ego_entity->x;
+            float dy = other_entity->y - ego_entity->y;
+            float dist = (dx * dx + dy * dy);
+            if (dist > 2500.0f) {
+                continue;
+            }
+            if (partner_idx >= (MAX_AGENTS - 1)) {
+                break;
+            }
+            types[i][partner_idx] = other_entity->type;
+            partner_idx++;
+        }
+    }
+}
+
 void c_get_sdc_trailer_state(Drive *env, int *has_trailer_out, float *x_out, float *y_out, float *z_out,
                              float *heading_out, int *id_out, float *length_out, float *width_out) {
     if (!has_valid_ego_trailer_pair(env)) {

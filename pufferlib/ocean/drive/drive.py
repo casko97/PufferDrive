@@ -28,6 +28,12 @@ _NON_KINEMATIC_PARAM_CACHE = {}
 DEFAULT_SDC_RUNTIME_TRUCK_REF_BIN = (
     "tests/artifacts/drive/traversing_traffic_light_intersection__97be27351e915863__97be27351e915863.bin"
 )
+_POLICY_TYPE_CAR = 0
+_POLICY_TYPE_TRUCK_WITH_TRAILER = 1
+_POLICY_TYPE_PEDESTRIAN = 2
+_POLICY_TYPE_CYCLIST = 3
+_MAX_VEH_LEN = 30.0
+_MAX_VEH_WIDTH = 15.0
 
 
 def _as_bool(value):
@@ -136,6 +142,7 @@ class Drive(pufferlib.PufferEnv):
         init_steps=0,
         init_mode="create_all_valid",
         control_mode="control_vehicles",
+        observation_mode="default",
         map_dir="resources/drive/binaries/training",
         use_all_maps=False,
         sdc_runtime_truck_override=False,
@@ -165,7 +172,7 @@ class Drive(pufferlib.PufferEnv):
         self.dynamics_model = dynamics_model
 
         # Observation space calculation
-        self.ego_features = {"classic": binding.EGO_FEATURES_CLASSIC, "jerk": binding.EGO_FEATURES_JERK}.get(
+        self._base_ego_features = {"classic": binding.EGO_FEATURES_CLASSIC, "jerk": binding.EGO_FEATURES_JERK}.get(
             dynamics_model
         )
 
@@ -173,19 +180,19 @@ class Drive(pufferlib.PufferEnv):
         # These need to be defined in C, since they determine the shape of the arrays
         self.max_road_objects = binding.MAX_ROAD_SEGMENT_OBSERVATIONS
         self.max_partner_objects = binding.MAX_AGENTS - 1
-        self.partner_features = binding.PARTNER_FEATURES
+        self._base_partner_features = binding.PARTNER_FEATURES
         self.road_features = binding.ROAD_FEATURES
 
-        self.num_obs = (
-            self.ego_features
-            + self.max_partner_objects * self.partner_features
+        self._sim_num_obs = (
+            self._base_ego_features
+            + self.max_partner_objects * self._base_partner_features
             + self.max_road_objects * self.road_features
         )
-        self.single_observation_space = gymnasium.spaces.Box(low=-1, high=1, shape=(self.num_obs,), dtype=np.float32)
 
         self.init_steps = init_steps
         self.init_mode_str = init_mode
         self.control_mode_str = control_mode
+        self.observation_mode_str = observation_mode
         self.map_dir = map_dir
         self.force_zero_trailer_articulation_at_init = _as_bool(force_zero_trailer_articulation_at_init)
         self.non_kinematic_vehicle_params_override = None
@@ -219,6 +226,29 @@ class Drive(pufferlib.PufferEnv):
             raise ValueError(
                 f"control_mode must be one of 'control_vehicles', 'control_wosac', or 'control_agents'. Got: {self.control_mode_str}"
             )
+        if self.observation_mode_str == "default":
+            self.observation_mode = 0
+            self.ego_features = self._base_ego_features
+            self.partner_features = self._base_partner_features
+        elif self.observation_mode_str == "sdc_only_with_trailer":
+            self.observation_mode = 1
+            if self.control_mode_str != "control_sdc_only":
+                raise ValueError(
+                    "observation_mode='sdc_only_with_trailer' currently requires control_mode='control_sdc_only'"
+                )
+            self.ego_features = self._base_ego_features + 5
+            self.partner_features = self._base_partner_features + 1
+        else:
+            raise ValueError(
+                "observation_mode must be one of 'default' or 'sdc_only_with_trailer'. "
+                f"Got: {self.observation_mode_str}"
+            )
+        self.num_obs = (
+            self.ego_features
+            + self.max_partner_objects * self.partner_features
+            + self.max_road_objects * self.road_features
+        )
+        self.single_observation_space = gymnasium.spaces.Box(low=-1, high=1, shape=(self.num_obs,), dtype=np.float32)
         if self.init_mode_str == "create_all_valid":
             self.init_mode = 0
         elif self.init_mode_str == "create_only_controlled":
@@ -268,6 +298,7 @@ class Drive(pufferlib.PufferEnv):
             num_maps=num_maps,
             init_mode=self.init_mode,
             control_mode=self.control_mode,
+            observation_mode=self.observation_mode,
             init_steps=self.init_steps,
             max_controlled_agents=self.max_controlled_agents,
             goal_behavior=self.goal_behavior,
@@ -283,12 +314,15 @@ class Drive(pufferlib.PufferEnv):
         self.map_ids = map_ids
         self.num_envs = num_envs
         super().__init__(buf=buf)
+        self._sim_observations = self.observations
+        if self.observation_mode == 1:
+            self._sim_observations = np.zeros((self.num_agents, self._sim_num_obs), dtype=np.float32)
         env_ids = []
         for i in range(num_envs):
             cur = agent_offsets[i]
             nxt = agent_offsets[i + 1]
             env_id = binding.env_init(
-                self.observations[cur:nxt],
+                self._sim_observations[cur:nxt],
                 self.actions[cur:nxt],
                 self.rewards[cur:nxt],
                 self.terminals[cur:nxt],
@@ -316,6 +350,7 @@ class Drive(pufferlib.PufferEnv):
                 init_steps=init_steps,
                 init_mode=self.init_mode,
                 control_mode=self.control_mode,
+                observation_mode=self.observation_mode,
                 map_dir=map_dir,
                 non_kinematic_vehicle_params_override=self.non_kinematic_vehicle_params_override,
                 force_zero_trailer_articulation_at_init=int(self.force_zero_trailer_articulation_at_init),
@@ -331,6 +366,7 @@ class Drive(pufferlib.PufferEnv):
             num_maps=self.num_maps,
             init_mode=self.init_mode,
             control_mode=self.control_mode,
+            observation_mode=self.observation_mode,
             init_steps=self.init_steps,
             max_controlled_agents=self.max_controlled_agents,
             goal_behavior=self.goal_behavior,
@@ -349,7 +385,7 @@ class Drive(pufferlib.PufferEnv):
             cur = agent_offsets[i]
             nxt = agent_offsets[i + 1]
             env_id = binding.env_init(
-                self.observations[cur:nxt],
+                self._sim_observations[cur:nxt],
                 self.actions[cur:nxt],
                 self.rewards[cur:nxt],
                 self.terminals[cur:nxt],
@@ -376,6 +412,7 @@ class Drive(pufferlib.PufferEnv):
                 init_steps=self.init_steps,
                 init_mode=self.init_mode,
                 control_mode=self.control_mode,
+                observation_mode=self.observation_mode,
                 map_dir=self.map_dir,
                 non_kinematic_vehicle_params_override=self.non_kinematic_vehicle_params_override,
                 force_zero_trailer_articulation_at_init=int(self.force_zero_trailer_articulation_at_init),
@@ -396,6 +433,7 @@ class Drive(pufferlib.PufferEnv):
                 )
             self._resample_vector_envs(np.random.randint(0, 2**32 - 1))
         self.tick = 0
+        self._postprocess_observations()
         return self.observations, []
 
     def step(self, actions):
@@ -414,9 +452,10 @@ class Drive(pufferlib.PufferEnv):
             seed = np.random.randint(0, 2**32 - 1)
             self._resample_vector_envs(seed)
             self.terminals[:] = 1
+        self._postprocess_observations()
         return (self.observations, self.rewards, self.terminals, self.truncations, info)
 
-    def get_global_agent_state(self, include_sdc_trailer=False):
+    def get_global_agent_state(self, include_sdc_trailer=False, include_types=False):
         """Get current global state of all active agents.
 
         Returns:
@@ -448,8 +487,105 @@ class Drive(pufferlib.PufferEnv):
 
         if include_sdc_trailer:
             states["sdc_trailer"] = self.get_sdc_trailer_state()
+        if include_types:
+            states["type"] = self.get_global_agent_types()
 
         return states
+
+    def get_global_agent_types(self):
+        """Get current type id for all active agents.
+
+        Returns:
+            np.ndarray of shape (num_active_agents,) with int32 type ids from the simulator.
+        """
+        types = np.zeros(self.num_agents, dtype=np.int32)
+        binding.vec_get_global_agent_types(self.c_envs, types)
+        return types
+
+    def get_partner_types(self):
+        """Get partner type ids in the same ordering as partner observations.
+
+        Returns:
+            np.ndarray with shape (num_active_agents, max_partner_objects), dtype int32.
+        """
+        types = np.zeros((self.num_agents, self.max_partner_objects), dtype=np.int32)
+        binding.vec_get_partner_types(self.c_envs, types)
+        return types
+
+    def _row_to_env_idx(self):
+        row_to_env = np.full(self.num_agents, -1, dtype=np.int32)
+        for env_idx in range(self.num_envs):
+            row_to_env[self.agent_offsets[env_idx] : self.agent_offsets[env_idx + 1]] = env_idx
+        return row_to_env
+
+    def _map_policy_type(self, raw_type, is_ego, has_trailer):
+        if raw_type == 1:
+            if is_ego and has_trailer:
+                return _POLICY_TYPE_TRUCK_WITH_TRAILER
+            return _POLICY_TYPE_CAR
+        if raw_type == 2:
+            return _POLICY_TYPE_PEDESTRIAN
+        if raw_type == 3:
+            return _POLICY_TYPE_CYCLIST
+        return int(raw_type)
+
+    def _postprocess_observations(self):
+        if self.observation_mode != 1:
+            return
+
+        base_ego = self._base_ego_features
+        base_partner = self._base_partner_features
+        partner_count = self.max_partner_objects
+        base_partner_dim = partner_count * base_partner
+        base_road_start = base_ego + base_partner_dim
+        road_dim = self.max_road_objects * self.road_features
+
+        aug_ego = self.ego_features
+        aug_partner = self.partner_features
+        aug_partner_dim = partner_count * aug_partner
+        aug_road_start = aug_ego + aug_partner_dim
+
+        self.observations[:] = 0.0
+        self.observations[:, :base_ego] = self._sim_observations[:, :base_ego]
+
+        sim_partner = self._sim_observations[:, base_ego:base_road_start].reshape(
+            self.num_agents, partner_count, base_partner
+        )
+        aug_partner_view = self.observations[:, aug_ego:aug_road_start].reshape(self.num_agents, partner_count, aug_partner)
+        aug_partner_view[:, :, :base_partner] = sim_partner
+        self.observations[:, aug_road_start : aug_road_start + road_dim] = self._sim_observations[
+            :, base_road_start : base_road_start + road_dim
+        ]
+
+        tractor = self.get_global_agent_state()
+        trailer = self.get_sdc_trailer_state()
+        ego_types = self.get_global_agent_types()
+        partner_types = self.get_partner_types()
+        row_to_env = self._row_to_env_idx()
+        trailer_start = base_ego
+        ego_type_idx = base_ego + 4
+
+        for row in range(self.num_agents):
+            env_idx = row_to_env[row]
+            has_trailer = bool(trailer["has_trailer"][env_idx])
+            if has_trailer:
+                dx = float(trailer["x"][env_idx] - tractor["x"][row])
+                dy = float(trailer["y"][env_idx] - tractor["y"][row])
+                heading = float(tractor["heading"][row])
+                cos_h = np.cos(heading)
+                sin_h = np.sin(heading)
+                self.observations[row, trailer_start] = (dx * cos_h + dy * sin_h) * 0.02
+                self.observations[row, trailer_start + 1] = (-dx * sin_h + dy * cos_h) * 0.02
+                self.observations[row, trailer_start + 2] = float(trailer["length"][env_idx]) / _MAX_VEH_LEN
+                self.observations[row, trailer_start + 3] = float(trailer["width"][env_idx]) / _MAX_VEH_WIDTH
+
+            self.observations[row, ego_type_idx] = float(
+                self._map_policy_type(int(ego_types[row]), is_ego=True, has_trailer=has_trailer)
+            )
+
+            for p in range(partner_count):
+                mapped = self._map_policy_type(int(partner_types[row, p]), is_ego=False, has_trailer=False)
+                aug_partner_view[row, p, base_partner] = float(mapped)
 
     def get_sdc_trailer_state(self):
         """Get SDC-associated trailer state for each vectorized environment.

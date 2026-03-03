@@ -726,6 +726,86 @@ static PyObject *vec_get_global_agent_state(PyObject *self, PyObject *args) {
     Py_RETURN_NONE;
 }
 
+static PyObject *get_global_agent_types(PyObject *self, PyObject *args) {
+    if (PyTuple_Size(args) != 2) {
+        PyErr_SetString(PyExc_TypeError, "get_global_agent_types requires 2 arguments");
+        return NULL;
+    }
+
+    Env *env = unpack_env(args);
+    if (!env) {
+        return NULL;
+    }
+
+    Drive *drive = (Drive *)env;
+    PyObject *types_arr = PyTuple_GetItem(args, 1);
+    if (!PyArray_Check(types_arr)) {
+        PyErr_SetString(PyExc_TypeError, "Output array must be a NumPy array");
+        return NULL;
+    }
+
+    int *types_data = (int *)PyArray_DATA((PyArrayObject *)types_arr);
+    c_get_global_agent_types(drive, types_data);
+
+    Py_RETURN_NONE;
+}
+
+static PyObject *vec_get_global_agent_types(PyObject *self, PyObject *args) {
+    if (PyTuple_Size(args) != 2) {
+        PyErr_SetString(PyExc_TypeError, "vec_get_global_agent_types requires 2 arguments");
+        return NULL;
+    }
+
+    VecEnv *vec = unpack_vecenv(args);
+    if (!vec) {
+        return NULL;
+    }
+
+    PyObject *types_arr = PyTuple_GetItem(args, 1);
+    if (!PyArray_Check(types_arr)) {
+        PyErr_SetString(PyExc_TypeError, "Output array must be a NumPy array");
+        return NULL;
+    }
+    int *types_base = (int *)PyArray_DATA((PyArrayObject *)types_arr);
+
+    int offset = 0;
+    for (int i = 0; i < vec->num_envs; i++) {
+        Drive *drive = (Drive *)vec->envs[i];
+        c_get_global_agent_types(drive, &types_base[offset]);
+        offset += drive->active_agent_count;
+    }
+
+    Py_RETURN_NONE;
+}
+
+static PyObject *vec_get_partner_types(PyObject *self, PyObject *args) {
+    if (PyTuple_Size(args) != 2) {
+        PyErr_SetString(PyExc_TypeError, "vec_get_partner_types requires 2 arguments");
+        return NULL;
+    }
+
+    VecEnv *vec = unpack_vecenv(args);
+    if (!vec) {
+        return NULL;
+    }
+
+    PyObject *types_arr = PyTuple_GetItem(args, 1);
+    if (!PyArray_Check(types_arr)) {
+        PyErr_SetString(PyExc_TypeError, "Output array must be a NumPy array");
+        return NULL;
+    }
+    int *types_base = (int *)PyArray_DATA((PyArrayObject *)types_arr);
+
+    int offset = 0;
+    for (int i = 0; i < vec->num_envs; i++) {
+        Drive *drive = (Drive *)vec->envs[i];
+        c_get_partner_types(drive, &types_base[offset]);
+        offset += drive->active_agent_count * (MAX_AGENTS - 1);
+    }
+
+    Py_RETURN_NONE;
+}
+
 static PyObject *get_sdc_trailer_state(PyObject *self, PyObject *args) {
     if (PyTuple_Size(args) != 9) {
         PyErr_SetString(PyExc_TypeError, "get_sdc_trailer_state requires 9 arguments");
@@ -1052,6 +1132,10 @@ static PyMethodDef methods[] = {
     {"shared", (PyCFunction)my_shared, METH_VARARGS | METH_KEYWORDS, "Shared state"},
     {"get_global_agent_state", get_global_agent_state, METH_VARARGS, "Get global agent state"},
     {"vec_get_global_agent_state", vec_get_global_agent_state, METH_VARARGS, "Get agent state from vectorized env"},
+    {"get_global_agent_types", get_global_agent_types, METH_VARARGS, "Get global agent types"},
+    {"vec_get_global_agent_types", vec_get_global_agent_types, METH_VARARGS,
+     "Get global agent types from vectorized env"},
+    {"vec_get_partner_types", vec_get_partner_types, METH_VARARGS, "Get partner agent types from vectorized env"},
     {"get_sdc_trailer_state", get_sdc_trailer_state, METH_VARARGS, "Get SDC trailer state"},
     {"vec_get_sdc_trailer_state", vec_get_sdc_trailer_state, METH_VARARGS, "Get SDC trailer state from vectorized env"},
     {"get_ground_truth_trajectories", get_ground_truth_trajectories, METH_VARARGS, "Get ground truth trajectories"},

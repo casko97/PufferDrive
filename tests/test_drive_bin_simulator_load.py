@@ -1229,3 +1229,214 @@ def _make_env(map_dir, episode_length, **kwargs):
         reward_offroad_collision=-1.0,
         **kwargs,
     )
+
+
+def test_get_global_agent_types_exposes_sim_entity_type(tmp_path):
+    map_dir, tractor_gt, _ = _load_training_car_reference_map_and_trajectory(tmp_path)
+    env = _make_env(map_dir, episode_length=len(tractor_gt["x"]))
+    try:
+        env.reset(seed=0)
+        types = env.get_global_agent_types()
+
+        assert isinstance(types, np.ndarray)
+        assert types.dtype == np.int32
+        assert types.shape == (env.num_agents,)
+        assert int(types[0]) == 1  # VEHICLE
+
+        state_with_types = env.get_global_agent_state(include_types=True)
+        assert "type" in state_with_types
+        np.testing.assert_array_equal(state_with_types["type"], types)
+    finally:
+        env.close()
+
+
+def test_sdc_only_with_trailer_observation_has_trailer_features(tmp_path):
+    map_dir, gt_refs = _load_boston_reference_map_and_trajectories(tmp_path)
+    episode_length = len(gt_refs["tractor"]["x"])
+    env = _make_env(map_dir, episode_length=episode_length, observation_mode="sdc_only_with_trailer")
+    try:
+        obs, _ = env.reset(seed=0)
+        assert obs.shape == (env.num_agents, env.num_obs)
+        assert env.ego_features == env._base_ego_features + 5
+        assert env.partner_features == env._base_partner_features + 1
+
+        base_ego = env._base_ego_features
+        trailer_start = base_ego
+        ego_type_idx = base_ego + 4
+
+        # trailer length and width should be populated when trailer exists
+        assert float(obs[0, trailer_start + 2]) > 0.0
+        assert float(obs[0, trailer_start + 3]) > 0.0
+        assert int(obs[0, ego_type_idx]) == 1  # truck-with-trailer
+    finally:
+        env.close()
+
+
+def test_sdc_only_with_trailer_observation_zero_pads_without_trailer(tmp_path):
+    map_dir, tractor_gt, _ = _load_training_car_reference_map_and_trajectory(tmp_path)
+    env = _make_env(
+        map_dir,
+        episode_length=len(tractor_gt["x"]),
+        observation_mode="sdc_only_with_trailer",
+        force_truck_params_from_ref_bin=None,
+    )
+    try:
+        obs, _ = env.reset(seed=0)
+        base_ego = env._base_ego_features
+        trailer_start = base_ego
+        ego_type_idx = base_ego + 4
+
+        np.testing.assert_allclose(obs[0, trailer_start : trailer_start + 4], np.zeros(4, dtype=np.float32))
+        assert int(obs[0, ego_type_idx]) == 0  # car
+    finally:
+        env.close()
+
+
+def test_sdc_only_with_trailer_policy_forward(tmp_path):
+    import torch
+    from pufferlib.ocean.torch import Drive as DrivePolicy
+
+    map_dir, gt_refs = _load_boston_reference_map_and_trajectories(tmp_path)
+    env = _make_env(map_dir, episode_length=len(gt_refs["tractor"]["x"]), observation_mode="sdc_only_with_trailer")
+    try:
+        obs, _ = env.reset(seed=0)
+        obs_t = torch.as_tensor(obs)
+        policy = DrivePolicy(env, input_size=64, hidden_size=64)
+        logits, value = policy(obs_t)
+        assert value.shape == (env.num_agents, 1)
+        assert isinstance(logits, tuple)
+        assert len(logits) >= 1
+    finally:
+        env.close()
+
+
+def test_default_observation_mode_policy_forward(tmp_path):
+    import torch
+    from pufferlib.ocean.torch import Drive as DrivePolicy
+
+    map_dir, gt_refs = _load_boston_reference_map_and_trajectories(tmp_path)
+    env = _make_env(map_dir, episode_length=len(gt_refs["tractor"]["x"]), observation_mode="default")
+    try:
+        obs, _ = env.reset(seed=0)
+        obs_t = torch.as_tensor(obs)
+        policy = DrivePolicy(env, input_size=64, hidden_size=64)
+        logits, value = policy(obs_t)
+        assert value.shape == (env.num_agents, 1)
+        assert isinstance(logits, tuple)
+        assert len(logits) >= 1
+    finally:
+        env.close()
+
+
+def test_sdc_only_with_trailer_exact_trailer_xy_transform(tmp_path):
+    map_dir, gt_refs = _load_boston_reference_map_and_trajectories(tmp_path)
+    env = _make_env(
+        map_dir,
+        episode_length=len(gt_refs["tractor"]["x"]),
+        observation_mode="sdc_only_with_trailer",
+        init_steps=0,
+    )
+    try:
+        obs, _ = env.reset(seed=0)
+        base_ego = env._base_ego_features
+        trailer_start = base_ego
+
+        tractor_x = float(gt_refs["tractor"]["x"][0])
+        tractor_y = float(gt_refs["tractor"]["y"][0])
+        tractor_heading = float(gt_refs["tractor"]["heading"][0])
+        trailer_x = float(gt_refs["trailer"]["x"][0])
+        trailer_y = float(gt_refs["trailer"]["y"][0])
+
+        dx = trailer_x - tractor_x
+        dy = trailer_y - tractor_y
+        cos_h = np.cos(tractor_heading)
+        sin_h = np.sin(tractor_heading)
+
+        expected_x_local = (dx * cos_h + dy * sin_h) * 0.02
+        expected_y_local = (-dx * sin_h + dy * cos_h) * 0.02
+
+        np.testing.assert_allclose(float(obs[0, trailer_start]), expected_x_local, rtol=0.0, atol=1e-5)
+        np.testing.assert_allclose(float(obs[0, trailer_start + 1]), expected_y_local, rtol=0.0, atol=1e-5)
+    finally:
+        env.close()
+
+
+def test_sdc_only_with_trailer_dims_and_sdc_type(tmp_path):
+    map_dir, gt_refs = _load_boston_reference_map_and_trajectories(tmp_path)
+    env = _make_env(
+        map_dir,
+        episode_length=len(gt_refs["tractor"]["x"]),
+        observation_mode="sdc_only_with_trailer",
+        init_steps=0,
+    )
+    try:
+        obs, _ = env.reset(seed=0)
+        base_ego = env._base_ego_features
+        trailer_start = base_ego
+        ego_type_idx = base_ego + 4
+
+        expected_len = float(gt_refs["trailer"]["length"]) / 30.0
+        expected_width = float(gt_refs["trailer"]["width"]) / 15.0
+
+        np.testing.assert_allclose(float(obs[0, trailer_start + 2]), expected_len, rtol=0.0, atol=1e-6)
+        np.testing.assert_allclose(float(obs[0, trailer_start + 3]), expected_width, rtol=0.0, atol=1e-6)
+        assert int(obs[0, ego_type_idx]) == 1  # truck_with_trailer
+    finally:
+        env.close()
+
+
+def test_sdc_only_with_trailer_partner_type_slots_exact_indices(tmp_path):
+    map_dir, gt_refs = _load_boston_reference_map_and_trajectories(tmp_path)
+    env = _make_env(
+        map_dir,
+        episode_length=len(gt_refs["tractor"]["x"]),
+        observation_mode="sdc_only_with_trailer",
+        init_steps=0,
+    )
+    try:
+        obs, _ = env.reset(seed=0)
+        partner_start = env.ego_features
+        slot_size = env.partner_features
+        type_offset = env._base_partner_features
+
+        partner_types_raw = env.get_partner_types()[0]
+        expected = np.asarray([env._map_policy_type(int(t), is_ego=False, has_trailer=False) for t in partner_types_raw])
+        observed = np.asarray(
+            [int(obs[0, partner_start + p * slot_size + type_offset]) for p in range(env.max_partner_objects)],
+            dtype=np.int32,
+        )
+        np.testing.assert_array_equal(observed, expected)
+
+        # Boston fixture has multiple observed partners; enforce that this is not a trivial single-slot check.
+        raw_partner_count = int((partner_types_raw != 0).sum())
+        assert raw_partner_count >= 2
+    finally:
+        env.close()
+
+
+def test_sdc_only_with_trailer_requires_control_sdc_only(tmp_path):
+    map_dir, tractor_gt, _ = _load_training_car_reference_map_and_trajectory(tmp_path)
+    with pytest.raises(ValueError, match="requires control_mode='control_sdc_only'"):
+        Drive(
+            num_agents=1,
+            num_maps=1,
+            map_dir=str(map_dir),
+            resample_frequency=0,
+            episode_length=len(tractor_gt["x"]),
+            control_mode="control_vehicles",
+            init_mode="create_all_valid",
+            observation_mode="sdc_only_with_trailer",
+        )
+
+
+def test_default_observation_mode_keeps_base_shape(tmp_path):
+    map_dir, tractor_gt, _ = _load_training_car_reference_map_and_trajectory(tmp_path)
+    env = _make_env(map_dir, episode_length=len(tractor_gt["x"]), observation_mode="default")
+    try:
+        obs, _ = env.reset(seed=0)
+        assert obs.shape == (env.num_agents, env.num_obs)
+        assert env.num_obs == env._sim_num_obs
+        assert env.ego_features == env._base_ego_features
+        assert env.partner_features == env._base_partner_features
+    finally:
+        env.close()
