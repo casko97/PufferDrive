@@ -571,10 +571,9 @@ class PuffeRL:
 
         if torch.distributed.is_initialized():
             if torch.distributed.get_rank() != 0:
-                self.logger.log(logs, agent_steps)
-                return logs
-            else:
                 return None
+            self.logger.log(logs, agent_steps)
+            return logs
 
         self.logger.log(logs, agent_steps)
         return logs
@@ -582,6 +581,9 @@ class PuffeRL:
     def close(self):
         self.vecenv.close()
         self.utilization.stop()
+        if torch.distributed.is_initialized() and torch.distributed.get_rank() != 0:
+            return None
+
         model_path = self.save_checkpoint()
         run_id = self.logger.run_id
         path = os.path.join(self.config["data_dir"], f"{self.config['env']}_{run_id}.pt")
@@ -974,6 +976,12 @@ class WandbLogger:
         return f"{data_dir}/{model_file}"
 
 
+def is_primary_process():
+    if torch.distributed.is_initialized():
+        return torch.distributed.get_rank() == 0
+    return int(os.environ.get("RANK", "0")) == 0
+
+
 def train(env_name, args=None, vecenv=None, policy=None, logger=None):
     args = args or load_config(env_name)
 
@@ -986,13 +994,12 @@ def train(env_name, args=None, vecenv=None, policy=None, logger=None):
         local_rank = int(os.environ["LOCAL_RANK"])
         print(f"rank: {local_rank}, MASTER_ADDR={master_addr}, MASTER_PORT={master_port}")
         torch.cuda.set_device(local_rank)
-        os.environ["CUDA_VISIBLE_DEVICES"] = str(local_rank)
 
     vecenv = vecenv or load_env(env_name, args)
     policy = policy or load_policy(args, vecenv, env_name)
 
     if "LOCAL_RANK" in os.environ:
-        args["train"]["device"] = torch.cuda.current_device()
+        args["train"]["device"] = f"cuda:{local_rank}"
         torch.distributed.init_process_group(backend="nccl", world_size=world_size)
         policy = policy.to(local_rank)
         model = torch.nn.parallel.DistributedDataParallel(policy, device_ids=[local_rank], output_device=local_rank)
@@ -1004,9 +1011,9 @@ def train(env_name, args=None, vecenv=None, policy=None, logger=None):
         policy = model.to(local_rank)
 
     if args["neptune"]:
-        logger = NeptuneLogger(args)
+        logger = NeptuneLogger(args) if is_primary_process() else NoLogger(args)
     elif args["wandb"]:
-        logger = WandbLogger(args)
+        logger = WandbLogger(args) if is_primary_process() else NoLogger(args)
 
     train_config = dict(**args["train"], env=env_name, eval=args.get("eval", {}))
     pufferl = PuffeRL(train_config, vecenv, policy, logger)
@@ -1039,7 +1046,8 @@ def train(env_name, args=None, vecenv=None, policy=None, logger=None):
 
     pufferl.print_dashboard()
     model_path = pufferl.close()
-    pufferl.logger.close(model_path)
+    if model_path is not None:
+        pufferl.logger.close(model_path)
     return all_logs
 
 
