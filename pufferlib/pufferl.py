@@ -53,7 +53,17 @@ rich.traceback.install(show_locals=False)
 
 import signal  # Aggressively exit on ctrl+c
 
-signal.signal(signal.SIGINT, lambda sig, frame: os._exit(0))
+# Request graceful shutdown on interrupts so logger/model finalization can run.
+SHUTDOWN_REQUESTED = False
+
+
+def _handle_shutdown_signal(sig, frame):
+    global SHUTDOWN_REQUESTED
+    SHUTDOWN_REQUESTED = True
+
+
+signal.signal(signal.SIGINT, _handle_shutdown_signal)
+signal.signal(signal.SIGTERM, _handle_shutdown_signal)
 
 # Assume advantage kernel has been built if CUDA compiler is available
 ADVANTAGE_CUDA = shutil.which("nvcc") is not None
@@ -491,7 +501,11 @@ class PuffeRL:
         logs = None
         self.epoch += 1
         done_training = self.global_step >= config["total_timesteps"]
-        if done_training or self.global_step == 0 or time.time() > self.last_log_time + 0.25:
+        should_log = done_training or self.global_step == 0 or time.time() > self.last_log_time + 0.25
+        if torch.distributed.is_initialized():
+            should_log = dist_any(should_log, device)
+
+        if should_log:
             logs = self.mean_and_log()
             self.losses = losses
             self.print_dashboard()
@@ -797,6 +811,15 @@ def dist_mean(value, device):
     return dist_sum(value, device) / torch.distributed.get_world_size()
 
 
+def dist_any(value, device):
+    if not torch.distributed.is_initialized():
+        return bool(value)
+
+    tensor = torch.tensor(int(bool(value)), device=device)
+    torch.distributed.all_reduce(tensor, op=torch.distributed.ReduceOp.MAX)
+    return bool(tensor.item())
+
+
 class Profile:
     def __init__(self, frequency=5):
         self.profiles = defaultdict(lambda: defaultdict(float))
@@ -1019,7 +1042,10 @@ def train(env_name, args=None, vecenv=None, policy=None, logger=None):
     pufferl = PuffeRL(train_config, vecenv, policy, logger)
 
     all_logs = []
-    while pufferl.global_step < train_config["total_timesteps"]:
+    while True:
+        if SHUTDOWN_REQUESTED:
+            break
+
         if train_config["device"] == "cuda":
             torch.compiler.cudagraph_mark_step_begin()
         pufferl.evaluate()
@@ -1031,20 +1057,29 @@ def train(env_name, args=None, vecenv=None, policy=None, logger=None):
             if pufferl.global_step > 0.20 * train_config["total_timesteps"]:
                 all_logs.append(logs)
 
+        reached_limit = pufferl.global_step >= train_config["total_timesteps"]
+        if dist_any(reached_limit or SHUTDOWN_REQUESTED, train_config["device"]):
+            break
+
+    if torch.distributed.is_initialized():
+        torch.distributed.barrier()
+
     # Final eval. You can reset the env here, but depending on
     # your env, this can skew data (i.e. you only collect the shortest
     # rollouts within a fixed number of epochs)
-    i = 0
-    stats = {}
-    while i < 32 or not stats:
-        stats = pufferl.evaluate()
-        i += 1
+    if not SHUTDOWN_REQUESTED:
+        stats = {}
+        max_final_eval_iters = 256
+        for i in range(max_final_eval_iters):
+            stats = pufferl.evaluate()
+            if i >= 31 and stats:
+                break
 
-    logs = pufferl.mean_and_log()
-    if logs is not None:
-        all_logs.append(logs)
+        logs = pufferl.mean_and_log()
+        if logs is not None:
+            all_logs.append(logs)
 
-    pufferl.print_dashboard()
+        pufferl.print_dashboard()
     model_path = pufferl.close()
     if model_path is not None:
         pufferl.logger.close(model_path)
