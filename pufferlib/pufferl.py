@@ -53,7 +53,7 @@ rich.traceback.install(show_locals=False)
 
 import signal  # Aggressively exit on ctrl+c
 
-# Request graceful shutdown on interrupts so logger/model finalization can run.
+# Request graceful shutdown on keyboard interrupts so logger/model finalization can run.
 SHUTDOWN_REQUESTED = False
 
 
@@ -63,7 +63,6 @@ def _handle_shutdown_signal(sig, frame):
 
 
 signal.signal(signal.SIGINT, _handle_shutdown_signal)
-signal.signal(signal.SIGTERM, _handle_shutdown_signal)
 
 # Assume advantage kernel has been built if CUDA compiler is available
 ADVANTAGE_CUDA = shutil.which("nvcc") is not None
@@ -1006,6 +1005,8 @@ def is_primary_process():
 
 
 def train(env_name, args=None, vecenv=None, policy=None, logger=None):
+    global SHUTDOWN_REQUESTED
+    SHUTDOWN_REQUESTED = False
     args = args or load_config(env_name)
 
     # Assume TorchRun DDP is used if LOCAL_RANK is set
