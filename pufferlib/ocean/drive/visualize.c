@@ -203,6 +203,15 @@ int eval_gif(const char *map_name, const char *policy_name, int show_grid, int o
         fprintf(stderr, "Error: Could not load %s. Cannot determine environment configuration.\n", ini_file);
         return -1;
     }
+    // Allow CLI to force override on, otherwise inherit from drive.ini.
+    // This keeps training/video renders consistent with Python env config files.
+    int effective_sdc_runtime_truck_override =
+        sdc_runtime_truck_override ? 1 : (conf.sdc_runtime_truck_override ? 1 : 0);
+    const char *effective_sdc_runtime_truck_ref_bin = sdc_runtime_truck_ref_bin;
+    if ((effective_sdc_runtime_truck_ref_bin == NULL || strlen(effective_sdc_runtime_truck_ref_bin) == 0) &&
+        strlen(conf.sdc_runtime_truck_ref_bin) > 0) {
+        effective_sdc_runtime_truck_ref_bin = conf.sdc_runtime_truck_ref_bin;
+    }
 
     char map_buffer[100];
     if (map_name == NULL) {
@@ -251,15 +260,15 @@ int eval_gif(const char *map_name, const char *policy_name, int show_grid, int o
         .control_mode = conf.control_mode,
         .map_name = (char *)map_name,
     };
-    env.force_zero_trailer_articulation_at_init = sdc_runtime_truck_override ? 1 : 0;
+    env.force_zero_trailer_articulation_at_init = effective_sdc_runtime_truck_override ? 1 : 0;
     env.override_non_kinematic_vehicle_params = 0;
     for (int i = 0; i < 13; i++) {
         env.non_kinematic_vehicle_params_override[i] = 0.0f;
     }
-    if (sdc_runtime_truck_override) {
+    if (effective_sdc_runtime_truck_override) {
         const char *reference_path =
-            (sdc_runtime_truck_ref_bin != NULL && strlen(sdc_runtime_truck_ref_bin) > 0)
-                ? sdc_runtime_truck_ref_bin
+            (effective_sdc_runtime_truck_ref_bin != NULL && strlen(effective_sdc_runtime_truck_ref_bin) > 0)
+                ? effective_sdc_runtime_truck_ref_bin
                 : DEFAULT_SDC_RUNTIME_TRUCK_REF_BIN;
         if (!load_runtime_non_kinematic_params_from_reference_bin(reference_path,
                                                                    env.non_kinematic_vehicle_params_override)) {

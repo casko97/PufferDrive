@@ -29,6 +29,8 @@ typedef struct {
     int init_mode;
     int control_mode;
     char map_dir[256];
+    int sdc_runtime_truck_override;
+    char sdc_runtime_truck_ref_bin[512];
 } env_init_config;
 
 // INI file parser handler - parses all environment configuration from drive.ini
@@ -87,15 +89,46 @@ static int handler(void *config, const char *section, const char *name, const ch
     } else if (MATCH("env", "init_steps")) {
         env_config->init_steps = atoi(value);
     } else if (MATCH("env", "init_mode")) {
-        env_config->init_mode = atoi(value);
+        if (strcmp(value, "\"create_all_valid\"") == 0 || strcmp(value, "create_all_valid") == 0 ||
+            strcmp(value, "\"created_all_valid\"") == 0 || strcmp(value, "created_all_valid") == 0) {
+            env_config->init_mode = 0; // INIT_ALL_VALID
+        } else if (strcmp(value, "\"create_only_controlled\"") == 0 || strcmp(value, "create_only_controlled") == 0) {
+            env_config->init_mode = 1; // INIT_ONLY_CONTROLLABLE_AGENTS
+        } else {
+            // Allow numeric fallback for backward compatibility.
+            env_config->init_mode = atoi(value);
+        }
     } else if (MATCH("env", "control_mode")) {
-        env_config->control_mode = atoi(value);
+        if (strcmp(value, "\"control_vehicles\"") == 0 || strcmp(value, "control_vehicles") == 0) {
+            env_config->control_mode = 0; // CONTROL_VEHICLES
+        } else if (strcmp(value, "\"control_agents\"") == 0 || strcmp(value, "control_agents") == 0) {
+            env_config->control_mode = 1; // CONTROL_AGENTS
+        } else if (strcmp(value, "\"control_wosac\"") == 0 || strcmp(value, "control_wosac") == 0) {
+            env_config->control_mode = 2; // CONTROL_WOSAC
+        } else if (strcmp(value, "\"control_sdc_only\"") == 0 || strcmp(value, "control_sdc_only") == 0) {
+            env_config->control_mode = 3; // CONTROL_SDC_ONLY
+        } else {
+            // Allow numeric fallback for backward compatibility.
+            env_config->control_mode = atoi(value);
+        }
     } else if (MATCH("env", "map_dir")) {
         if (sscanf(value, "\"%255[^\"]\"", env_config->map_dir) != 1) {
             strncpy(env_config->map_dir, value, sizeof(env_config->map_dir) - 1);
             env_config->map_dir[sizeof(env_config->map_dir) - 1] = '\0';
         }
         // printf("Parsed map_dir: '%s'\n", env_config->map_dir);
+    } else if (MATCH("env", "sdc_runtime_truck_override")) {
+        if (strcmp(value, "\"True\"") == 0 || strcmp(value, "True") == 0 || strcmp(value, "\"true\"") == 0 ||
+            strcmp(value, "true") == 0 || strcmp(value, "1") == 0) {
+            env_config->sdc_runtime_truck_override = 1;
+        } else {
+            env_config->sdc_runtime_truck_override = 0;
+        }
+    } else if (MATCH("env", "sdc_runtime_truck_ref_bin")) {
+        if (sscanf(value, "\"%511[^\"]\"", env_config->sdc_runtime_truck_ref_bin) != 1) {
+            strncpy(env_config->sdc_runtime_truck_ref_bin, value, sizeof(env_config->sdc_runtime_truck_ref_bin) - 1);
+            env_config->sdc_runtime_truck_ref_bin[sizeof(env_config->sdc_runtime_truck_ref_bin) - 1] = '\0';
+        }
     } else {
         return 0; // Unknown section/name, indicate failure to handle
     }
