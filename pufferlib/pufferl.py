@@ -1024,7 +1024,7 @@ def train(env_name, args=None, vecenv=None, policy=None, logger=None):
 
     if "LOCAL_RANK" in os.environ:
         args["train"]["device"] = f"cuda:{local_rank}"
-        torch.distributed.init_process_group(backend="nccl", world_size=world_size)
+        torch.distributed.init_process_group(backend="nccl", world_size=world_size, device_id=local_rank)
         policy = policy.to(local_rank)
         model = torch.nn.parallel.DistributedDataParallel(policy, device_ids=[local_rank], output_device=local_rank)
         if hasattr(policy, "lstm"):
@@ -1043,48 +1043,49 @@ def train(env_name, args=None, vecenv=None, policy=None, logger=None):
     pufferl = PuffeRL(train_config, vecenv, policy, logger)
 
     all_logs = []
-    while True:
-        if SHUTDOWN_REQUESTED:
-            break
-
-        if train_config["device"] == "cuda":
-            torch.compiler.cudagraph_mark_step_begin()
-        pufferl.evaluate()
-        if train_config["device"] == "cuda":
-            torch.compiler.cudagraph_mark_step_begin()
-        logs = pufferl.train()
-
-        if logs is not None:
-            if pufferl.global_step > 0.20 * train_config["total_timesteps"]:
-                all_logs.append(logs)
-
-        reached_limit = pufferl.global_step >= train_config["total_timesteps"]
-        if dist_any(reached_limit or SHUTDOWN_REQUESTED, train_config["device"]):
-            break
-
-    if torch.distributed.is_initialized():
-        torch.distributed.barrier()
-
-    # Final eval. You can reset the env here, but depending on
-    # your env, this can skew data (i.e. you only collect the shortest
-    # rollouts within a fixed number of epochs)
-    if not SHUTDOWN_REQUESTED:
-        stats = {}
-        max_final_eval_iters = 256
-        for i in range(max_final_eval_iters):
-            stats = pufferl.evaluate()
-            if i >= 31 and stats:
+    try:
+        while True:
+            if SHUTDOWN_REQUESTED:
                 break
 
-        logs = pufferl.mean_and_log()
-        if logs is not None:
-            all_logs.append(logs)
+            if train_config["device"] == "cuda":
+                torch.compiler.cudagraph_mark_step_begin()
+            pufferl.evaluate()
+            if train_config["device"] == "cuda":
+                torch.compiler.cudagraph_mark_step_begin()
+            logs = pufferl.train()
 
-        pufferl.print_dashboard()
-    model_path = pufferl.close()
-    if model_path is not None:
-        pufferl.logger.close(model_path)
-    return all_logs
+            if logs is not None:
+                if pufferl.global_step > 0.20 * train_config["total_timesteps"]:
+                    all_logs.append(logs)
+
+            reached_limit = pufferl.global_step >= train_config["total_timesteps"]
+            if dist_any(reached_limit or SHUTDOWN_REQUESTED, train_config["device"]):
+                break
+
+        # Final eval. You can reset the env here, but depending on
+        # your env, this can skew data (i.e. you only collect the shortest
+        # rollouts within a fixed number of epochs)
+        if not SHUTDOWN_REQUESTED:
+            stats = {}
+            max_final_eval_iters = 256
+            for i in range(max_final_eval_iters):
+                stats = pufferl.evaluate()
+                if i >= 31 and stats:
+                    break
+
+            logs = pufferl.mean_and_log()
+            if logs is not None:
+                all_logs.append(logs)
+
+            pufferl.print_dashboard()
+        model_path = pufferl.close()
+        if model_path is not None:
+            pufferl.logger.close(model_path)
+        return all_logs
+    finally:
+        if torch.distributed.is_initialized():
+            torch.distributed.destroy_process_group()
 
 
 def eval(env_name, args=None, vecenv=None, policy=None):
