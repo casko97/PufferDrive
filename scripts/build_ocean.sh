@@ -78,15 +78,28 @@ if [ "$MODE" = "web" ]; then
     exit 0
 fi
 
-# Detect available compiler and set compiler-specific flags
-if command -v clang >/dev/null 2>&1; then
+# Detect available compiler and set compiler-specific flags.
+# Honor CC first so training jobs can force gcc (e.g. CC=gcc).
+if [ -n "${CC:-}" ]; then
+    if command -v "$CC" >/dev/null 2>&1; then
+        COMPILER="$CC"
+        echo "Using compiler from CC=$CC"
+    else
+        echo "CC is set but not found in PATH: $CC"
+        exit 1
+    fi
+elif command -v clang >/dev/null 2>&1; then
     COMPILER="clang"
-    ERROR_LIMIT_FLAG="-ferror-limit=3"
     echo "Using clang compiler"
 else
     COMPILER="gcc"
-    ERROR_LIMIT_FLAG="-fmax-errors=3"
     echo "Using gcc compiler (clang not found)"
+fi
+
+if [[ "$(basename "$COMPILER")" == clang* ]]; then
+    ERROR_LIMIT_FLAG="-ferror-limit=3"
+else
+    ERROR_LIMIT_FLAG="-fmax-errors=3"
 fi
 
 FLAGS=(
