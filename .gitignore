@@ -162,6 +162,7 @@ pufferlib/ocean/impulse_wars/release-*/
 pufferlib/ocean/impulse_wars/benchmark/
 
 # Ignore data files
+outputs/
 data/
 pufferlib/resources/drive/binaries/
 pufferlib/resources/drive/binaries/training/
