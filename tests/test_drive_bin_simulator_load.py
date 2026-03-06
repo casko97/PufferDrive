@@ -1414,19 +1414,28 @@ def test_sdc_only_with_trailer_partner_type_slots_exact_indices(tmp_path):
         env.close()
 
 
-def test_sdc_only_with_trailer_requires_control_sdc_only(tmp_path):
+def test_sdc_only_with_trailer_control_vehicles_zero_pads_trailer_slots(tmp_path):
     map_dir, tractor_gt, _ = _load_training_car_reference_map_and_trajectory(tmp_path)
-    with pytest.raises(ValueError, match="requires control_mode='control_sdc_only'"):
-        Drive(
-            num_agents=1,
-            num_maps=1,
-            map_dir=str(map_dir),
-            resample_frequency=0,
-            episode_length=len(tractor_gt["x"]),
-            control_mode="control_vehicles",
-            init_mode="create_all_valid",
-            observation_mode="sdc_only_with_trailer",
-        )
+    env = Drive(
+        num_agents=1,
+        num_maps=1,
+        map_dir=str(map_dir),
+        resample_frequency=0,
+        episode_length=len(tractor_gt["x"]),
+        control_mode="control_vehicles",
+        init_mode="create_all_valid",
+        observation_mode="sdc_only_with_trailer",
+    )
+    try:
+        obs, _ = env.reset(seed=0)
+        base_ego = env._base_ego_features
+        trailer_start = base_ego
+        ego_type_idx = base_ego + 4
+
+        np.testing.assert_allclose(obs[0, trailer_start : trailer_start + 4], np.zeros(4, dtype=np.float32))
+        assert int(obs[0, ego_type_idx]) == 0  # car
+    finally:
+        env.close()
 
 
 def test_default_observation_mode_keeps_base_shape(tmp_path):

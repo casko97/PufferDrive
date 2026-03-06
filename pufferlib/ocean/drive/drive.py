@@ -232,10 +232,6 @@ class Drive(pufferlib.PufferEnv):
             self.partner_features = self._base_partner_features
         elif self.observation_mode_str == "sdc_only_with_trailer":
             self.observation_mode = 1
-            if self.control_mode_str != "control_sdc_only":
-                raise ValueError(
-                    "observation_mode='sdc_only_with_trailer' currently requires control_mode='control_sdc_only'"
-                )
             self.ego_features = self._base_ego_features + 5
             self.partner_features = self._base_partner_features + 1
         else:
@@ -558,7 +554,7 @@ class Drive(pufferlib.PufferEnv):
         ]
 
         tractor = self.get_global_agent_state()
-        trailer = self.get_sdc_trailer_state()
+        trailer = self.get_sdc_trailer_state() if self.control_mode_str == "control_sdc_only" else None
         ego_types = self.get_global_agent_types()
         partner_types = self.get_partner_types()
         row_to_env = self._row_to_env_idx()
@@ -567,7 +563,7 @@ class Drive(pufferlib.PufferEnv):
 
         for row in range(self.num_agents):
             env_idx = row_to_env[row]
-            has_trailer = bool(trailer["has_trailer"][env_idx])
+            has_trailer = bool(trailer["has_trailer"][env_idx]) if trailer is not None else False
             if has_trailer:
                 dx = float(trailer["x"][env_idx] - tractor["x"][row])
                 dy = float(trailer["y"][env_idx] - tractor["y"][row])
