@@ -68,6 +68,15 @@ signal.signal(signal.SIGINT, _handle_shutdown_signal)
 ADVANTAGE_CUDA = shutil.which("nvcc") is not None
 
 
+def _is_rank0():
+    return (not torch.distributed.is_initialized()) or torch.distributed.get_rank() == 0
+
+
+def _phase(msg):
+    if _is_rank0():
+        print(f"\n========== {msg} ==========\n", flush=True)
+
+
 class PuffeRL:
     def __init__(self, config, vecenv, policy, logger=None):
         # Backend perf optimization
@@ -548,12 +557,30 @@ class PuffeRL:
         if self.config["eval"]["wosac_realism_eval"] and (
             self.epoch % self.config["eval"]["eval_interval"] == 0 or done_training
         ):
-            pufferlib.utils.run_wosac_eval_in_subprocess(self.config, self.logger, self.global_step)
+            if torch.distributed.is_initialized():
+                if torch.distributed.get_rank() == 0:
+                    _phase(f"WOSAC EVAL START (epoch={self.epoch}, step={self.global_step})")
+                    pufferlib.utils.run_wosac_eval_in_subprocess(self.config, self.logger, self.global_step)
+                    _phase("WOSAC EVAL END")
+                torch.distributed.barrier()
+            else:
+                _phase(f"WOSAC EVAL START (epoch={self.epoch}, step={self.global_step})")
+                pufferlib.utils.run_wosac_eval_in_subprocess(self.config, self.logger, self.global_step)
+                _phase("WOSAC EVAL END")
 
         if self.config["eval"]["human_replay_eval"] and (
             self.epoch % self.config["eval"]["eval_interval"] == 0 or done_training
         ):
-            pufferlib.utils.run_human_replay_eval_in_subprocess(self.config, self.logger, self.global_step)
+            if torch.distributed.is_initialized():
+                if torch.distributed.get_rank() == 0:
+                    _phase(f"HUMAN REPLAY EVAL START (epoch={self.epoch}, step={self.global_step})")
+                    pufferlib.utils.run_human_replay_eval_in_subprocess(self.config, self.logger, self.global_step)
+                    _phase("HUMAN REPLAY EVAL END")
+                torch.distributed.barrier()
+            else:
+                _phase(f"HUMAN REPLAY EVAL START (epoch={self.epoch}, step={self.global_step})")
+                pufferlib.utils.run_human_replay_eval_in_subprocess(self.config, self.logger, self.global_step)
+                _phase("HUMAN REPLAY EVAL END")
 
     def mean_and_log(self):
         config = self.config
@@ -1061,12 +1088,15 @@ def train(env_name, args=None, vecenv=None, policy=None, logger=None):
 
             reached_limit = pufferl.global_step >= train_config["total_timesteps"]
             if dist_any(reached_limit or SHUTDOWN_REQUESTED, train_config["device"]):
+                if reached_limit:
+                    _phase(f"TRAINING COMPLETE (step={pufferl.global_step}, epoch={pufferl.epoch})")
                 break
 
         # Final eval. You can reset the env here, but depending on
         # your env, this can skew data (i.e. you only collect the shortest
         # rollouts within a fixed number of epochs)
         if not SHUTDOWN_REQUESTED:
+            _phase("FINAL TRAINING EVAL START")
             stats = {}
             max_final_eval_iters = 256
             for i in range(max_final_eval_iters):
@@ -1079,9 +1109,12 @@ def train(env_name, args=None, vecenv=None, policy=None, logger=None):
                 all_logs.append(logs)
 
             pufferl.print_dashboard()
+            _phase("FINAL TRAINING EVAL END")
+        _phase("FINALIZE CHECKPOINT/LOGGER START")
         model_path = pufferl.close()
         if model_path is not None:
             pufferl.logger.close(model_path)
+        _phase("TRAINING RUN END")
         return all_logs
     finally:
         if torch.distributed.is_initialized():

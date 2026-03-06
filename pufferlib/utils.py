@@ -4,6 +4,57 @@ import glob
 import shutil
 import subprocess
 import json
+import select
+import time
+
+
+def _run_subprocess_with_live_output(cmd, timeout, cwd):
+    """Run a subprocess, stream output live to terminal, and return combined output."""
+    env = os.environ.copy()
+    env["PYTHONUNBUFFERED"] = "1"
+
+    process = subprocess.Popen(
+        cmd,
+        cwd=cwd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        env=env,
+    )
+
+    output_chunks = []
+    start_time = time.monotonic()
+    stdout_fd = process.stdout.fileno() if process.stdout is not None else None
+
+    while True:
+        if timeout is not None and (time.monotonic() - start_time) > timeout:
+            process.kill()
+            process.wait()
+            raise subprocess.TimeoutExpired(cmd=cmd, timeout=timeout)
+
+        if stdout_fd is not None:
+            ready, _, _ = select.select([stdout_fd], [], [], 0.1)
+            if ready:
+                chunk = os.read(stdout_fd, 4096)
+                if chunk:
+                    decoded = chunk.decode("utf-8", errors="replace")
+                    print(decoded, end="", flush=True)
+                    output_chunks.append(decoded)
+
+        if process.poll() is not None:
+            if stdout_fd is not None:
+                while True:
+                    ready, _, _ = select.select([stdout_fd], [], [], 0)
+                    if not ready:
+                        break
+                    chunk = os.read(stdout_fd, 4096)
+                    if not chunk:
+                        break
+                    decoded = chunk.decode("utf-8", errors="replace")
+                    print(decoded, end="", flush=True)
+                    output_chunks.append(decoded)
+            break
+
+    return process.returncode, "".join(output_chunks)
 
 
 def run_human_replay_eval_in_subprocess(config, logger, global_step):
@@ -42,12 +93,11 @@ def run_human_replay_eval_in_subprocess(config, logger, global_step):
             str(eval_config["human_replay_control_mode"]),
         ]
 
-        # Run human replay evaluation in subprocess
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=600, cwd=os.getcwd())
+        # Run human replay evaluation in subprocess with live stdout/stderr
+        returncode, stdout = _run_subprocess_with_live_output(cmd, timeout=600, cwd=os.getcwd())
 
-        if result.returncode == 0:
+        if returncode == 0:
             # Extract JSON from stdout between markers
-            stdout = result.stdout
             if "HUMAN_REPLAY_METRICS_START" in stdout and "HUMAN_REPLAY_METRICS_END" in stdout:
                 start = stdout.find("HUMAN_REPLAY_METRICS_START") + len("HUMAN_REPLAY_METRICS_START")
                 end = stdout.find("HUMAN_REPLAY_METRICS_END")
@@ -65,7 +115,7 @@ def run_human_replay_eval_in_subprocess(config, logger, global_step):
                         step=global_step,
                     )
         else:
-            print(f"Human replay evaluation failed with exit code {result.returncode}: {result.stderr}")
+            print(f"Human replay evaluation failed with exit code {returncode}")
 
     except subprocess.TimeoutExpired:
         print("Human replay evaluation timed out")
@@ -127,12 +177,11 @@ def run_wosac_eval_in_subprocess(config, logger, global_step):
             str(eval_config.get("wosac_aggregate_results", True)),
         ]
 
-        # Run WOSAC evaluation in subprocess
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=600, cwd=os.getcwd())
+        # Run WOSAC evaluation in subprocess with live stdout/stderr
+        returncode, stdout = _run_subprocess_with_live_output(cmd, timeout=600, cwd=os.getcwd())
 
-        if result.returncode == 0:
+        if returncode == 0:
             # Extract JSON from stdout between markers
-            stdout = result.stdout
             if "WOSAC_METRICS_START" in stdout and "WOSAC_METRICS_END" in stdout:
                 start = stdout.find("WOSAC_METRICS_START") + len("WOSAC_METRICS_START")
                 end = stdout.find("WOSAC_METRICS_END")
@@ -151,11 +200,10 @@ def run_wosac_eval_in_subprocess(config, logger, global_step):
                         step=global_step,
                     )
         else:
-            print(f"WOSAC evaluation failed with exit code {result.returncode}")
-            print(f"Error: {result.stderr}")
+            print(f"WOSAC evaluation failed with exit code {returncode}")
 
             # Check for memory issues
-            stderr_lower = result.stderr.lower()
+            stderr_lower = stdout.lower()
             if "out of memory" in stderr_lower or "cuda out of memory" in stderr_lower:
                 print("GPU out of memory. Skipping this WOSAC evaluation.")
 
