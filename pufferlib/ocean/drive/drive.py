@@ -8,6 +8,9 @@ from pufferlib.ocean.drive import binding
 from multiprocessing import Pool, cpu_count
 from tqdm import tqdm
 
+_POLICY_TYPE_PADDED = 0
+_POLICY_TYPE_MAX = 4
+
 
 class Drive(pufferlib.PufferEnv):
     def __init__(
@@ -67,7 +70,7 @@ class Drive(pufferlib.PufferEnv):
         self.dynamics_model = dynamics_model
 
         # Observation space calculation
-        self.ego_features = {"classic": binding.EGO_FEATURES_CLASSIC, "jerk": binding.EGO_FEATURES_JERK}.get(
+        self._base_ego_features = {"classic": binding.EGO_FEATURES_CLASSIC, "jerk": binding.EGO_FEATURES_JERK}.get(
             dynamics_model
         )
 
@@ -75,15 +78,14 @@ class Drive(pufferlib.PufferEnv):
         # These need to be defined in C, since they determine the shape of the arrays
         self.max_road_objects = binding.MAX_ROAD_SEGMENT_OBSERVATIONS
         self.max_partner_objects = binding.MAX_AGENTS - 1
-        self.partner_features = binding.PARTNER_FEATURES
+        self._base_partner_features = binding.PARTNER_FEATURES
         self.road_features = binding.ROAD_FEATURES
 
-        self.num_obs = (
-            self.ego_features
-            + self.max_partner_objects * self.partner_features
+        self._sim_num_obs = (
+            self._base_ego_features
+            + self.max_partner_objects * self._base_partner_features
             + self.max_road_objects * self.road_features
         )
-        self.single_observation_space = gymnasium.spaces.Box(low=-1, high=1, shape=(self.num_obs,), dtype=np.float32)
 
         self.init_steps = init_steps
         self.init_mode_str = init_mode
@@ -112,6 +114,18 @@ class Drive(pufferlib.PufferEnv):
                 "observation_mode must be one of 'default' or 'sdc_only_with_trailer'. "
                 f"Got: {self.observation_mode_str}"
             )
+        if self.observation_mode == 0:
+            self.ego_features = self._base_ego_features
+            self.partner_features = self._base_partner_features
+        else:
+            self.ego_features = self._base_ego_features + 5
+            self.partner_features = self._base_partner_features + 1
+        self.num_obs = (
+            self.ego_features
+            + self.max_partner_objects * self.partner_features
+            + self.max_road_objects * self.road_features
+        )
+        self.single_observation_space = gymnasium.spaces.Box(low=-1, high=1, shape=(self.num_obs,), dtype=np.float32)
         if self.init_mode_str == "create_all_valid":
             self.init_mode = 0
         elif self.init_mode_str == "create_only_controlled":
@@ -174,12 +188,15 @@ class Drive(pufferlib.PufferEnv):
         self.map_ids = map_ids
         self.num_envs = num_envs
         super().__init__(buf=buf)
+        self._sim_observations = self.observations
+        if self.observation_mode == 1:
+            self._sim_observations = np.zeros((self.num_agents, self._sim_num_obs), dtype=np.float32)
         env_ids = []
         for i in range(num_envs):
             cur = agent_offsets[i]
             nxt = agent_offsets[i + 1]
             env_id = binding.env_init(
-                self.observations[cur:nxt],
+                self._sim_observations[cur:nxt],
                 self.actions[cur:nxt],
                 self.rewards[cur:nxt],
                 self.terminals[cur:nxt],
@@ -216,6 +233,7 @@ class Drive(pufferlib.PufferEnv):
     def reset(self, seed=0):
         binding.vec_reset(self.c_envs, seed)
         self.tick = 0
+        self._postprocess_observations()
         return self.observations, []
 
     def step(self, actions):
@@ -254,7 +272,7 @@ class Drive(pufferlib.PufferEnv):
                 cur = agent_offsets[i]
                 nxt = agent_offsets[i + 1]
                 env_id = binding.env_init(
-                    self.observations[cur:nxt],
+                    self._sim_observations[cur:nxt],
                     self.actions[cur:nxt],
                     self.rewards[cur:nxt],
                     self.terminals[cur:nxt],
@@ -288,6 +306,7 @@ class Drive(pufferlib.PufferEnv):
 
             binding.vec_reset(self.c_envs, seed)
             self.terminals[:] = 1
+        self._postprocess_observations()
         return (self.observations, self.rewards, self.terminals, self.truncations, info)
 
     def get_global_agent_state(self):
@@ -333,6 +352,47 @@ class Drive(pufferlib.PufferEnv):
         types = np.zeros((self.num_agents, self.max_partner_objects), dtype=np.int32)
         binding.vec_get_partner_types(self.c_envs, types)
         return types
+
+    def _postprocess_observations(self):
+        if self.observation_mode != 1:
+            return
+
+        base_ego = self._base_ego_features
+        base_partner = self._base_partner_features
+        partner_count = self.max_partner_objects
+        base_partner_dim = partner_count * base_partner
+        base_road_start = base_ego + base_partner_dim
+        road_dim = self.max_road_objects * self.road_features
+
+        aug_ego = self.ego_features
+        aug_partner = self.partner_features
+        aug_partner_dim = partner_count * aug_partner
+        aug_road_start = aug_ego + aug_partner_dim
+
+        self.observations[:] = 0.0
+        self.observations[:, :base_ego] = self._sim_observations[:, :base_ego]
+
+        sim_partner = self._sim_observations[:, base_ego:base_road_start].reshape(
+            self.num_agents, partner_count, base_partner
+        )
+        aug_partner_view = self.observations[:, aug_ego:aug_road_start].reshape(self.num_agents, partner_count, aug_partner)
+        aug_partner_view[:, :, :base_partner] = sim_partner
+        self.observations[:, aug_road_start : aug_road_start + road_dim] = self._sim_observations[
+            :, base_road_start : base_road_start + road_dim
+        ]
+
+        ego_types = np.clip(self.get_global_agent_types(), _POLICY_TYPE_PADDED, _POLICY_TYPE_MAX).astype(np.float32)
+        partner_types = np.clip(self.get_partner_types(), _POLICY_TYPE_PADDED, _POLICY_TYPE_MAX).astype(np.float32)
+
+        # No trailer-state query in this patch: keep trailer feature slots zero-filled.
+        ego_type_idx = base_ego + 4
+        self.observations[:, ego_type_idx] = ego_types
+
+        # Populate partner type channel only for occupied partner slots.
+        occupied_partner_slots = np.logical_or(np.abs(sim_partner[:, :, 2]) > 1e-8, np.abs(sim_partner[:, :, 3]) > 1e-8)
+        aug_partner_view[:, :, base_partner] = np.where(
+            occupied_partner_slots, partner_types, _POLICY_TYPE_PADDED
+        ).astype(np.float32)
 
     def get_ground_truth_trajectories(self):
         """Get ground truth trajectories for all active agents.
