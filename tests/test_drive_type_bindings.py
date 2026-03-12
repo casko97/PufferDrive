@@ -110,3 +110,66 @@ def test_drive_type_api_order_and_padding(tmp_path):
         np.testing.assert_array_equal(occupied_partner_slots, partner_types != 0)
     finally:
         env.close()
+
+
+def test_augmented_observation_mode_type_slots_and_padding(tmp_path):
+    map_dir = tmp_path / "maps"
+    map_dir.mkdir()
+    _write_type_test_map(map_dir)
+
+    env = Drive(
+        num_agents=4,
+        num_maps=1,
+        map_dir=str(map_dir),
+        episode_length=91,
+        init_steps=0,
+        control_mode="control_agents",
+        init_mode="create_all_valid",
+        resample_frequency=0,
+        observation_mode="sdc_only_with_trailer",
+    )
+    try:
+        obs, _ = env.reset(seed=0)
+
+        assert env.ego_features == env._base_ego_features + 5
+        assert env.partner_features == env._base_partner_features + 1
+        assert obs.shape == (env.num_agents, env.num_obs)
+
+        base_ego = env._base_ego_features
+        base_partner = env._base_partner_features
+
+        # Trailer feature slots are reserved in this patch and should stay zero-filled.
+        np.testing.assert_array_equal(obs[:, base_ego : base_ego + 4], np.zeros((env.num_agents, 4), dtype=np.float32))
+
+        # Ego type id slot should be filled from API types.
+        expected_global_types = np.array([1, 2, 3, 1], dtype=np.float32)
+        np.testing.assert_array_equal(obs[:, base_ego + 4], expected_global_types)
+
+        aug_partner_start = env.ego_features
+        aug_partner_dim = env.max_partner_objects * env.partner_features
+        aug_partner_view = obs[:, aug_partner_start : aug_partner_start + aug_partner_dim].reshape(
+            env.num_agents, env.max_partner_objects, env.partner_features
+        )
+
+        # Type channel appended after base partner features.
+        partner_type_channel = aug_partner_view[:, :, base_partner]
+        expected_partner_prefix = np.array(
+            [
+                [2, 3, 1],
+                [1, 3, 1],
+                [1, 2, 1],
+                [1, 2, 3],
+            ],
+            dtype=np.float32,
+        )
+        np.testing.assert_array_equal(partner_type_channel[:, :3], expected_partner_prefix)
+        np.testing.assert_array_equal(
+            partner_type_channel[:, 3:], np.zeros_like(partner_type_channel[:, 3:], dtype=np.float32)
+        )
+
+        # Empty/non-existing partner slots must stay padded with 0 in the added type field.
+        base_partner_features = aug_partner_view[:, :, :base_partner]
+        occupied_slots = np.logical_or(np.abs(base_partner_features[:, :, 2]) > 1e-8, np.abs(base_partner_features[:, :, 3]) > 1e-8)
+        np.testing.assert_array_equal(partner_type_channel[~occupied_slots], np.zeros(np.count_nonzero(~occupied_slots)))
+    finally:
+        env.close()
