@@ -118,7 +118,7 @@ class Drive(pufferlib.PufferEnv):
             self.ego_features = self._base_ego_features
             self.partner_features = self._base_partner_features
         else:
-            self.ego_features = self._base_ego_features + 5
+            self.ego_features = self._base_ego_features + 1
             self.partner_features = self._base_partner_features + 1
         self.num_obs = (
             self.ego_features
@@ -384,8 +384,7 @@ class Drive(pufferlib.PufferEnv):
         ego_types = np.clip(self.get_global_agent_types(), _POLICY_TYPE_PADDED, _POLICY_TYPE_MAX).astype(np.float32)
         partner_types = np.clip(self.get_partner_types(), _POLICY_TYPE_PADDED, _POLICY_TYPE_MAX).astype(np.float32)
 
-        # No trailer-state query in this patch: keep trailer feature slots zero-filled.
-        ego_type_idx = base_ego + 4
+        ego_type_idx = base_ego
         self.observations[:, ego_type_idx] = ego_types
 
         # Populate partner type channel only for occupied partner slots.

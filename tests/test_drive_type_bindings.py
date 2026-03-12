@@ -131,19 +131,16 @@ def test_augmented_observation_mode_type_slots_and_padding(tmp_path):
     try:
         obs, _ = env.reset(seed=0)
 
-        assert env.ego_features == env._base_ego_features + 5
+        assert env.ego_features == env._base_ego_features + 1
         assert env.partner_features == env._base_partner_features + 1
         assert obs.shape == (env.num_agents, env.num_obs)
 
         base_ego = env._base_ego_features
         base_partner = env._base_partner_features
 
-        # Trailer feature slots are reserved in this patch and should stay zero-filled.
-        np.testing.assert_array_equal(obs[:, base_ego : base_ego + 4], np.zeros((env.num_agents, 4), dtype=np.float32))
-
         # Ego type id slot should be filled from API types.
         expected_global_types = np.array([1, 2, 3, 1], dtype=np.float32)
-        np.testing.assert_array_equal(obs[:, base_ego + 4], expected_global_types)
+        np.testing.assert_array_equal(obs[:, base_ego], expected_global_types)
 
         aug_partner_start = env.ego_features
         aug_partner_dim = env.max_partner_objects * env.partner_features
