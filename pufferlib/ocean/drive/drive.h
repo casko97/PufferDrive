@@ -99,6 +99,15 @@
 #define MAX_RG_COORD 1000.0f
 #define MAX_ROAD_SCALE 100.0f
 #define MAX_ROAD_SEGMENT_LENGTH 100.0f
+// Partner observation range is 50m => squared distance cap 2500.
+#define MAX_PARTNER_OBS_DIST2 2500.0f
+
+// Policy-facing type ids returned by type APIs.
+#define POLICY_TYPE_PADDED 0
+#define POLICY_TYPE_VEHICLE_SINGLE 1
+#define POLICY_TYPE_PEDESTRIAN 2
+#define POLICY_TYPE_CYCLIST 3
+#define POLICY_TYPE_VEHICLE_MULTI 4
 
 // Goal behavior
 #define GOAL_RESPAWN 0
@@ -1674,6 +1683,19 @@ static inline int get_track_id_or_placeholder(Drive *env, int agent_idx) {
     return -1;
 }
 
+static inline int map_entity_to_policy_type(const Entity *entity) {
+    if (entity->type == VEHICLE) {
+        return POLICY_TYPE_VEHICLE_SINGLE;
+    }
+    if (entity->type == PEDESTRIAN) {
+        return POLICY_TYPE_PEDESTRIAN;
+    }
+    if (entity->type == CYCLIST) {
+        return POLICY_TYPE_CYCLIST;
+    }
+    return POLICY_TYPE_PADDED;
+}
+
 void c_get_global_agent_state(Drive *env, float *x_out, float *y_out, float *z_out, float *heading_out, int *id_out,
                               float *length_out, float *width_out) {
     for (int i = 0; i < env->active_agent_count; i++) {
@@ -1695,7 +1717,7 @@ void c_get_global_agent_types(Drive *env, int *type_out) {
     for (int i = 0; i < env->active_agent_count; i++) {
         int agent_idx = env->active_agent_indices[i];
         Entity *agent = &env->entities[agent_idx];
-        type_out[i] = agent->type;
+        type_out[i] = map_entity_to_policy_type(agent);
     }
 }
 
@@ -1732,13 +1754,13 @@ void c_get_partner_types(Drive *env, int *type_out) {
             float dx = other_entity->x - ego_entity->x;
             float dy = other_entity->y - ego_entity->y;
             float dist = (dx * dx + dy * dy);
-            if (dist > 2500.0f) {
+            if (dist > MAX_PARTNER_OBS_DIST2) {
                 continue;
             }
             if (partner_idx >= (MAX_AGENTS - 1)) {
                 break;
             }
-            types[i][partner_idx] = other_entity->type;
+            types[i][partner_idx] = map_entity_to_policy_type(other_entity);
             partner_idx++;
         }
     }
@@ -1862,7 +1884,7 @@ void compute_observations(Drive *env) {
             float dx = other_entity->x - ego_entity->x;
             float dy = other_entity->y - ego_entity->y;
             float dist = (dx * dx + dy * dy);
-            if (dist > 2500.0f)
+            if (dist > MAX_PARTNER_OBS_DIST2)
                 continue;
             // Rotate to ego vehicle's frame
             float rel_x = dx * cos_heading + dy * sin_heading;
