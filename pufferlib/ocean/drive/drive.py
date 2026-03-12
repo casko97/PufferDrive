@@ -41,7 +41,6 @@ class Drive(pufferlib.PufferEnv):
         init_steps=0,
         init_mode="create_all_valid",
         control_mode="control_vehicles",
-        observation_mode="default",
         map_dir="resources/drive/binaries/training",
         sequential_map_sampling=False,
     ):
@@ -67,7 +66,7 @@ class Drive(pufferlib.PufferEnv):
         self.dynamics_model = dynamics_model
 
         # Observation space calculation
-        self._base_ego_features = {"classic": binding.EGO_FEATURES_CLASSIC, "jerk": binding.EGO_FEATURES_JERK}.get(
+        self.ego_features = {"classic": binding.EGO_FEATURES_CLASSIC, "jerk": binding.EGO_FEATURES_JERK}.get(
             dynamics_model
         )
 
@@ -75,19 +74,19 @@ class Drive(pufferlib.PufferEnv):
         # These need to be defined in C, since they determine the shape of the arrays
         self.max_road_objects = binding.MAX_ROAD_SEGMENT_OBSERVATIONS
         self.max_partner_objects = binding.MAX_AGENTS - 1
-        self._base_partner_features = binding.PARTNER_FEATURES
+        self.partner_features = binding.PARTNER_FEATURES
         self.road_features = binding.ROAD_FEATURES
 
-        self._sim_num_obs = (
-            self._base_ego_features
-            + self.max_partner_objects * self._base_partner_features
+        self.num_obs = (
+            self.ego_features
+            + self.max_partner_objects * self.partner_features
             + self.max_road_objects * self.road_features
         )
+        self.single_observation_space = gymnasium.spaces.Box(low=-1, high=1, shape=(self.num_obs,), dtype=np.float32)
 
         self.init_steps = init_steps
         self.init_mode_str = init_mode
         self.control_mode_str = control_mode
-        self.observation_mode_str = observation_mode
         self.map_dir = map_dir
 
         if self.control_mode_str == "control_vehicles":
@@ -102,25 +101,6 @@ class Drive(pufferlib.PufferEnv):
             raise ValueError(
                 f"control_mode must be one of 'control_vehicles', 'control_wosac', or 'control_agents'. Got: {self.control_mode_str}"
             )
-        if self.observation_mode_str == "default":
-            self.observation_mode = 0
-            self.ego_features = self._base_ego_features
-            self.partner_features = self._base_partner_features
-        elif self.observation_mode_str == "sdc_only_with_trailer":
-            self.observation_mode = 1
-            self.ego_features = self._base_ego_features + 5
-            self.partner_features = self._base_partner_features + 1
-        else:
-            raise ValueError(
-                "observation_mode must be one of 'default' or 'sdc_only_with_trailer'. "
-                f"Got: {self.observation_mode_str}"
-            )
-        self.num_obs = (
-            self.ego_features
-            + self.max_partner_objects * self.partner_features
-            + self.max_road_objects * self.road_features
-        )
-        self.single_observation_space = gymnasium.spaces.Box(low=-1, high=1, shape=(self.num_obs,), dtype=np.float32)
         if self.init_mode_str == "create_all_valid":
             self.init_mode = 0
         elif self.init_mode_str == "create_only_controlled":
@@ -183,15 +163,12 @@ class Drive(pufferlib.PufferEnv):
         self.map_ids = map_ids
         self.num_envs = num_envs
         super().__init__(buf=buf)
-        self._sim_observations = self.observations
-        if self.observation_mode == 1:
-            self._sim_observations = np.zeros((self.num_agents, self._sim_num_obs), dtype=np.float32)
         env_ids = []
         for i in range(num_envs):
             cur = agent_offsets[i]
             nxt = agent_offsets[i + 1]
             env_id = binding.env_init(
-                self._sim_observations[cur:nxt],
+                self.observations[cur:nxt],
                 self.actions[cur:nxt],
                 self.rewards[cur:nxt],
                 self.terminals[cur:nxt],
@@ -266,7 +243,7 @@ class Drive(pufferlib.PufferEnv):
                 cur = agent_offsets[i]
                 nxt = agent_offsets[i + 1]
                 env_id = binding.env_init(
-                    self._sim_observations[cur:nxt],
+                    self.observations[cur:nxt],
                     self.actions[cur:nxt],
                     self.rewards[cur:nxt],
                     self.terminals[cur:nxt],
