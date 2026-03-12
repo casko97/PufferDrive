@@ -27,7 +27,7 @@ class Drive(nn.Module):
         self.base_ego_dim = 10 if env.dynamics_model == "jerk" else 7
         self.ego_dim = env.ego_features
         self.base_partner_features = 7
-        self.type_classes = 5
+        self.type_classes = env.type_classes
         self.has_augmented_ego = self.ego_dim > self.base_ego_dim
         self.has_partner_type = self.partner_features > self.base_partner_features
         self.ego_encoder_input_dim = self.base_ego_dim + (self.type_classes if self.has_augmented_ego else 0)

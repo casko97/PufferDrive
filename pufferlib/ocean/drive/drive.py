@@ -9,7 +9,6 @@ from multiprocessing import Pool, cpu_count
 from tqdm import tqdm
 
 _POLICY_TYPE_PADDED = 0
-_POLICY_TYPE_MAX = 4
 
 
 class Drive(pufferlib.PufferEnv):
@@ -68,6 +67,7 @@ class Drive(pufferlib.PufferEnv):
         self.termination_mode = termination_mode
         self.resample_frequency = resample_frequency
         self.dynamics_model = dynamics_model
+        self.type_classes = binding.POLICY_TYPE_CLASS_COUNT
 
         # Observation space calculation
         self._base_ego_features = {"classic": binding.EGO_FEATURES_CLASSIC, "jerk": binding.EGO_FEATURES_JERK}.get(
@@ -381,8 +381,9 @@ class Drive(pufferlib.PufferEnv):
             :, base_road_start : base_road_start + road_dim
         ]
 
-        ego_types = np.clip(self.get_global_agent_types(), _POLICY_TYPE_PADDED, _POLICY_TYPE_MAX).astype(np.float32)
-        partner_types = np.clip(self.get_partner_types(), _POLICY_TYPE_PADDED, _POLICY_TYPE_MAX).astype(np.float32)
+        policy_type_max = self.type_classes - 1
+        ego_types = np.clip(self.get_global_agent_types(), _POLICY_TYPE_PADDED, policy_type_max).astype(np.float32)
+        partner_types = np.clip(self.get_partner_types(), _POLICY_TYPE_PADDED, policy_type_max).astype(np.float32)
 
         ego_type_idx = base_ego
         self.observations[:, ego_type_idx] = ego_types
