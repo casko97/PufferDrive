@@ -30,7 +30,7 @@ class Drive(nn.Module):
         self.type_classes = 5
         self.has_augmented_ego = self.ego_dim > self.base_ego_dim
         self.has_partner_type = self.partner_features > self.base_partner_features
-        self.ego_encoder_input_dim = self.base_ego_dim + (4 + self.type_classes if self.has_augmented_ego else 0)
+        self.ego_encoder_input_dim = self.base_ego_dim + (self.type_classes if self.has_augmented_ego else 0)
         self.partner_encoder_input_dim = self.base_partner_features + (self.type_classes if self.has_partner_type else 0)
 
         self.ego_encoder = nn.Sequential(
@@ -101,10 +101,9 @@ class Drive(nn.Module):
 
         if self.has_augmented_ego:
             ego_core = ego_obs[:, : self.base_ego_dim]
-            ego_trailer = ego_obs[:, self.base_ego_dim : self.base_ego_dim + 4]
-            ego_type = ego_obs[:, self.base_ego_dim + 4].long().clamp(min=0, max=self.type_classes - 1)
+            ego_type = ego_obs[:, self.base_ego_dim].long().clamp(min=0, max=self.type_classes - 1)
             ego_type_onehot = F.one_hot(ego_type, num_classes=self.type_classes).to(ego_core.dtype)
-            ego_obs = torch.cat([ego_core, ego_trailer, ego_type_onehot], dim=1)
+            ego_obs = torch.cat([ego_core, ego_type_onehot], dim=1)
         ego_features = self.ego_encoder(ego_obs)
         partner_features, _ = self.partner_encoder(partner_objects).max(dim=1)
         road_features, _ = self.road_encoder(road_objects).max(dim=1)
