@@ -322,6 +322,18 @@ class Drive(pufferlib.PufferEnv):
 
         return states
 
+    def get_global_agent_types(self):
+        """Get current type id for all active agents."""
+        types = np.zeros(self.num_agents, dtype=np.int32)
+        binding.vec_get_global_agent_types(self.c_envs, types)
+        return types
+
+    def get_partner_types(self):
+        """Get partner type ids in the same ordering as partner observations."""
+        types = np.zeros((self.num_agents, self.max_partner_objects), dtype=np.int32)
+        binding.vec_get_partner_types(self.c_envs, types)
+        return types
+
     def get_ground_truth_trajectories(self):
         """Get ground truth trajectories for all active agents.
 
