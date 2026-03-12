@@ -41,6 +41,7 @@ class Drive(pufferlib.PufferEnv):
         init_steps=0,
         init_mode="create_all_valid",
         control_mode="control_vehicles",
+        observation_mode="default",
         map_dir="resources/drive/binaries/training",
         sequential_map_sampling=False,
     ):
@@ -87,6 +88,7 @@ class Drive(pufferlib.PufferEnv):
         self.init_steps = init_steps
         self.init_mode_str = init_mode
         self.control_mode_str = control_mode
+        self.observation_mode_str = observation_mode
         self.map_dir = map_dir
 
         if self.control_mode_str == "control_vehicles":
@@ -100,6 +102,15 @@ class Drive(pufferlib.PufferEnv):
         else:
             raise ValueError(
                 f"control_mode must be one of 'control_vehicles', 'control_wosac', or 'control_agents'. Got: {self.control_mode_str}"
+            )
+        if self.observation_mode_str == "default":
+            self.observation_mode = 0
+        elif self.observation_mode_str == "sdc_only_with_trailer":
+            self.observation_mode = 1
+        else:
+            raise ValueError(
+                "observation_mode must be one of 'default' or 'sdc_only_with_trailer'. "
+                f"Got: {self.observation_mode_str}"
             )
         if self.init_mode_str == "create_all_valid":
             self.init_mode = 0

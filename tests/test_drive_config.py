@@ -68,6 +68,7 @@ class TestDriveConfig(unittest.TestCase):
         self.assertEqual(args["rnn_name"], "Recurrent")
         self.assertEqual(args["env"]["num_agents"], 1024)
         self.assertEqual(args["env"]["action_type"], "discrete")
+        self.assertEqual(args["env"]["observation_mode"], "default")
         self.assertEqual(args["policy"]["input_size"], 64)
         self.assertEqual(args["policy"]["hidden_size"], 256)
         self.assertEqual(args["rnn"]["input_size"], 256)
