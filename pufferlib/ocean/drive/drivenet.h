@@ -59,8 +59,8 @@ DriveNet *init_drivenet(Weights *weights, int num_agents, int dynamics_model, in
     int max_road_obs = MAX_ROAD_SEGMENT_OBSERVATIONS;
     int raw_ego_dim = base_ego_dim + (observation_mode == 1 ? PARTNER_TYPE_CHANNELS : 0);
     int raw_partner_features = PARTNER_FEATURES + (observation_mode == 1 ? PARTNER_TYPE_CHANNELS : 0);
-    int ego_encoder_input_dim = base_ego_dim + (observation_mode == 1 ? DEBUG_TYPE_CHANNELS : 0);
-    int partner_encoder_input_dim = PARTNER_FEATURES + (observation_mode == 1 ? DEBUG_TYPE_CHANNELS : 0);
+    int ego_encoder_input_dim = base_ego_dim + (observation_mode == 1 ? POLICY_TYPE_CLASS_COUNT : 0);
+    int partner_encoder_input_dim = PARTNER_FEATURES + (observation_mode == 1 ? (POLICY_TYPE_CLASS_COUNT - 1) : 0);
     int road_features = ROAD_FEATURES;
     int input_size = NN_INPUT_SIZE;
     int hidden_size = NN_HIDDEN_SIZE;
@@ -196,8 +196,13 @@ void forward(DriveNet *net, float *observations, void *actions) {
             net->obs_self[b * net->ego_encoder_input_dim + i] = observations[b_offset + i];
         }
         if (net->observation_mode == 1) {
-            net->obs_self[b * net->ego_encoder_input_dim + base_ego_dim] = 1.0f;
-            net->obs_self[b * net->ego_encoder_input_dim + base_ego_dim + 1] = 0.0f;
+            int ego_type = (int)observations[b_offset + base_ego_dim];
+            if (ego_type < 0) {
+                ego_type = 0;
+            } else if (ego_type >= POLICY_TYPE_CLASS_COUNT) {
+                ego_type = POLICY_TYPE_CLASS_COUNT - 1;
+            }
+            net->obs_self[b * net->ego_encoder_input_dim + base_ego_dim + ego_type] = 1.0f;
         }
 
         // Process partner observation
@@ -215,8 +220,15 @@ void forward(DriveNet *net, float *observations, void *actions) {
                         break;
                     }
                 }
-                partner_dst[PARTNER_FEATURES] = occupied ? 1.0f : 0.0f;
-                partner_dst[PARTNER_FEATURES + 1] = 0.0f;
+                if (occupied) {
+                    int partner_type = (int)partner_src[PARTNER_FEATURES];
+                    if (partner_type < 1) {
+                        partner_type = 1;
+                    } else if (partner_type >= POLICY_TYPE_CLASS_COUNT) {
+                        partner_type = POLICY_TYPE_CLASS_COUNT - 1;
+                    }
+                    partner_dst[PARTNER_FEATURES + (partner_type - 1)] = 1.0f;
+                }
             }
         }
 
