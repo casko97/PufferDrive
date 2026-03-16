@@ -226,11 +226,12 @@ int eval_gif(const char *map_name, const char *policy_name, int show_grid, int o
     }
     fclose(policy_file);
 
+    int observation_mode = cli_observation_mode >= 0 ? cli_observation_mode : conf.observation_mode;
     // Initialize environment with all config values from INI [env] section
     Drive env = {
         .action_type = conf.action_type,
         .dynamics_model = conf.dynamics_model,
-        .observation_mode = cli_observation_mode >= 0 ? cli_observation_mode : conf.observation_mode,
+        .observation_mode = observation_mode,
         .reward_vehicle_collision = conf.reward_vehicle_collision,
         .reward_offroad_collision = conf.reward_offroad_collision,
         .reward_goal = conf.reward_goal,
