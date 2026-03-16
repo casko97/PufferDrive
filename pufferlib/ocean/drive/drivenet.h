@@ -60,9 +60,11 @@ DriveNet *init_drivenet(Weights *weights, int num_agents, int dynamics_model, in
     int base_ego_dim = (dynamics_model == JERK) ? EGO_FEATURES_JERK : EGO_FEATURES_CLASSIC;
     int max_partners = MAX_AGENTS - 1;
     int max_road_obs = MAX_ROAD_SEGMENT_OBSERVATIONS;
-    int raw_ego_dim = base_ego_dim + (observation_mode == 1 ? PARTNER_TYPE_CHANNELS : 0);
+    int augmented_ego_features = (observation_mode == 1 ? (PARTNER_TYPE_CHANNELS + EGO_TRAILER_STATE_FEATURES) : 0);
+    int raw_ego_dim = base_ego_dim + augmented_ego_features;
     int raw_partner_features = PARTNER_FEATURES + (observation_mode == 1 ? PARTNER_TYPE_CHANNELS : 0);
-    int ego_encoder_input_dim = base_ego_dim + (observation_mode == 1 ? POLICY_TYPE_CLASS_COUNT : 0);
+    int ego_encoder_input_dim =
+        base_ego_dim + (observation_mode == 1 ? (EGO_TRAILER_STATE_FEATURES + POLICY_TYPE_CLASS_COUNT) : 0);
     int partner_encoder_input_dim = PARTNER_FEATURES + (observation_mode == 1 ? (POLICY_TYPE_CLASS_COUNT - 1) : 0);
     int road_features = ROAD_FEATURES;
     int input_size = NN_INPUT_SIZE;
@@ -206,13 +208,23 @@ static inline float *prepare_policy_observations(DriveNet *net, Drive *env) {
         memcpy(&policy_obs[aug_road_offset], &sim_obs[sim_road_offset], sim_road_dim * sizeof(float));
 
         Entity *ego_entity = &env->entities[env->active_agent_indices[b]];
-        int ego_type = ego_entity->type;
+        int ego_type = map_entity_to_policy_type(env, env->active_agent_indices[b]);
         if (ego_type < 0) {
             ego_type = 0;
         } else if (ego_type >= POLICY_TYPE_CLASS_COUNT) {
             ego_type = POLICY_TYPE_CLASS_COUNT - 1;
         }
         policy_obs[base_ego_dim] = (float)ego_type;
+        if (has_valid_ego_trailer_pair(env) && env->active_agent_indices[b] == env->sdc_track_index) {
+            float trailer_rel_x = 0.0f, trailer_rel_y = 0.0f;
+            float trailer_rel_heading_x = 0.0f, trailer_rel_heading_y = 0.0f;
+            get_ego_trailer_obs_features_for_agent(env, env->active_agent_indices[b], &trailer_rel_x, &trailer_rel_y,
+                                                   &trailer_rel_heading_x, &trailer_rel_heading_y);
+            policy_obs[base_ego_dim + 1] = trailer_rel_x;
+            policy_obs[base_ego_dim + 2] = trailer_rel_y;
+            policy_obs[base_ego_dim + 3] = trailer_rel_heading_x;
+            policy_obs[base_ego_dim + 4] = trailer_rel_heading_y;
+        }
 
         const float *sim_partner_obs = &sim_obs[base_ego_dim];
         float *policy_partner_obs = &policy_obs[aug_ego_dim];
@@ -259,7 +271,7 @@ static inline float *prepare_policy_observations(DriveNet *net, Drive *env) {
                 }
             }
             if (occupied) {
-                int partner_type = other_entity->type;
+                int partner_type = map_entity_to_policy_type(env, index);
                 if (partner_type < 0) {
                     partner_type = 0;
                 } else if (partner_type >= POLICY_TYPE_CLASS_COUNT) {
@@ -278,7 +290,8 @@ void forward(DriveNet *net, float *observations, void *actions) {
     int raw_ego_dim = net->raw_ego_dim;
     int max_partners = MAX_AGENTS - 1;
     int max_road_obs = MAX_ROAD_SEGMENT_OBSERVATIONS;
-    int base_ego_dim = raw_ego_dim - (net->observation_mode == 1 ? PARTNER_TYPE_CHANNELS : 0);
+    int ego_extra_features = (net->observation_mode == 1 ? (PARTNER_TYPE_CHANNELS + EGO_TRAILER_STATE_FEATURES) : 0);
+    int base_ego_dim = raw_ego_dim - ego_extra_features;
     int raw_partner_features = net->raw_partner_features;
     int partner_features = net->partner_encoder_input_dim;
     int road_features = ROAD_FEATURES;
@@ -300,12 +313,16 @@ void forward(DriveNet *net, float *observations, void *actions) {
         }
         if (net->observation_mode == 1) {
             int ego_type = (int)observations[b_offset + base_ego_dim];
+            for (int i = 0; i < EGO_TRAILER_STATE_FEATURES; i++) {
+                net->obs_self[b * net->ego_encoder_input_dim + base_ego_dim + i] =
+                    observations[b_offset + base_ego_dim + 1 + i];
+            }
             if (ego_type < 0) {
                 ego_type = 0;
             } else if (ego_type >= POLICY_TYPE_CLASS_COUNT) {
                 ego_type = POLICY_TYPE_CLASS_COUNT - 1;
             }
-            net->obs_self[b * net->ego_encoder_input_dim + base_ego_dim + ego_type] = 1.0f;
+            net->obs_self[b * net->ego_encoder_input_dim + base_ego_dim + EGO_TRAILER_STATE_FEATURES + ego_type] = 1.0f;
         }
 
         // Process partner observation

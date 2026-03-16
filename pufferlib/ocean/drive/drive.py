@@ -11,6 +11,7 @@ from tqdm import tqdm
 
 _POLICY_TYPE_PADDED = 0
 _EMPTY_PARTNER_EPS = 1e-8
+_EGO_TRAILER_STATE_FEATURES = 4
 _NON_KINEMATIC_PARAM_ORDER = [
     "tractor_length",
     "trailer_length",
@@ -224,7 +225,7 @@ class Drive(pufferlib.PufferEnv):
             self.ego_features = self._base_ego_features
             self.partner_features = self._base_partner_features
         else:
-            self.ego_features = self._base_ego_features + 1
+            self.ego_features = self._base_ego_features + 1 + _EGO_TRAILER_STATE_FEATURES
             self.partner_features = self._base_partner_features + 1
         self.num_obs = (
             self.ego_features
@@ -509,6 +510,23 @@ class Drive(pufferlib.PufferEnv):
         )
         return trailer
 
+    def get_ego_trailer_obs_features(self):
+        trailer_features = {
+            "rel_x": np.zeros(self.num_agents, dtype=np.float32),
+            "rel_y": np.zeros(self.num_agents, dtype=np.float32),
+            "rel_heading_x": np.zeros(self.num_agents, dtype=np.float32),
+            "rel_heading_y": np.zeros(self.num_agents, dtype=np.float32),
+        }
+
+        binding.vec_get_ego_trailer_obs_features(
+            self.c_envs,
+            trailer_features["rel_x"],
+            trailer_features["rel_y"],
+            trailer_features["rel_heading_x"],
+            trailer_features["rel_heading_y"],
+        )
+        return trailer_features
+
     def _postprocess_observations(self):
         if getattr(self, "observation_mode", 0) != 1:
             return
@@ -540,9 +558,15 @@ class Drive(pufferlib.PufferEnv):
         policy_type_max = self.type_classes - 1
         ego_types = np.clip(self.get_global_agent_types(), _POLICY_TYPE_PADDED, policy_type_max).astype(np.float32)
         partner_types = np.clip(self.get_partner_types(), _POLICY_TYPE_PADDED, policy_type_max).astype(np.float32)
+        ego_trailer_features = self.get_ego_trailer_obs_features()
 
         ego_type_idx = base_ego
         self.observations[:, ego_type_idx] = ego_types
+        trailer_feature_start = ego_type_idx + 1
+        self.observations[:, trailer_feature_start] = ego_trailer_features["rel_x"]
+        self.observations[:, trailer_feature_start + 1] = ego_trailer_features["rel_y"]
+        self.observations[:, trailer_feature_start + 2] = ego_trailer_features["rel_heading_x"]
+        self.observations[:, trailer_feature_start + 3] = ego_trailer_features["rel_heading_y"]
 
         # Populate partner type channel only for occupied partner slots.
         occupied_partner_slots = np.any(np.abs(sim_partner) > _EMPTY_PARTNER_EPS, axis=2)

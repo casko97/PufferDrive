@@ -114,6 +114,7 @@
 #define POLICY_TYPE_CYCLIST 3
 #define POLICY_TYPE_VEHICLE_MULTI 4
 #define POLICY_TYPE_CLASS_COUNT 5
+#define EGO_TRAILER_STATE_FEATURES 4
 
 // Goal behavior
 #define GOAL_RESPAWN 0
@@ -2247,6 +2248,62 @@ static inline int get_track_id_or_placeholder(Drive *env, int agent_idx) {
     return -1;
 }
 
+static inline int map_entity_to_policy_type(Drive *env, int entity_idx) {
+    Entity *entity = &env->entities[entity_idx];
+    if (entity->type == VEHICLE) {
+        if (entity->is_trailer) {
+            return POLICY_TYPE_VEHICLE_MULTI;
+        }
+        if (has_valid_ego_trailer_pair(env) &&
+            (entity_idx == env->sdc_track_index || entity_idx == env->ego_trailer_track_index)) {
+            return POLICY_TYPE_VEHICLE_MULTI;
+        }
+        return POLICY_TYPE_VEHICLE_SINGLE;
+    }
+    if (entity->type == PEDESTRIAN) {
+        return POLICY_TYPE_PEDESTRIAN;
+    }
+    if (entity->type == CYCLIST) {
+        return POLICY_TYPE_CYCLIST;
+    }
+    return POLICY_TYPE_PADDED;
+}
+
+static inline void get_ego_trailer_obs_features_for_agent(Drive *env, int agent_idx, float *trailer_rel_x_out,
+                                                          float *trailer_rel_y_out, float *trailer_rel_heading_x_out,
+                                                          float *trailer_rel_heading_y_out) {
+    *trailer_rel_x_out = 0.0f;
+    *trailer_rel_y_out = 0.0f;
+    *trailer_rel_heading_x_out = 0.0f;
+    *trailer_rel_heading_y_out = 0.0f;
+    if (!has_valid_ego_trailer_pair(env) || agent_idx != env->sdc_track_index) {
+        return;
+    }
+
+    Entity *ego = &env->entities[agent_idx];
+    Entity *trailer = &env->entities[env->ego_trailer_track_index];
+    float dx = trailer->x - ego->x;
+    float dy = trailer->y - ego->y;
+    float rel_x = dx * ego->heading_x + dy * ego->heading_y;
+    float rel_y = -dx * ego->heading_y + dy * ego->heading_x;
+    float rel_heading_x = trailer->heading_x * ego->heading_x + trailer->heading_y * ego->heading_y;
+    float rel_heading_y = trailer->heading_y * ego->heading_x - trailer->heading_x * ego->heading_y;
+
+    *trailer_rel_x_out = rel_x * 0.02f;
+    *trailer_rel_y_out = rel_y * 0.02f;
+    *trailer_rel_heading_x_out = rel_heading_x;
+    *trailer_rel_heading_y_out = rel_heading_y;
+}
+
+void c_get_ego_trailer_obs_features(Drive *env, float *trailer_rel_x_out, float *trailer_rel_y_out,
+                                    float *trailer_rel_heading_x_out, float *trailer_rel_heading_y_out) {
+    for (int i = 0; i < env->active_agent_count; i++) {
+        int agent_idx = env->active_agent_indices[i];
+        get_ego_trailer_obs_features_for_agent(env, agent_idx, &trailer_rel_x_out[i], &trailer_rel_y_out[i],
+                                               &trailer_rel_heading_x_out[i], &trailer_rel_heading_y_out[i]);
+    }
+}
+
 void c_get_global_agent_state(Drive *env, float *x_out, float *y_out, float *z_out, float *heading_out, int *id_out,
                               float *length_out, float *width_out) {
     for (int i = 0; i < env->active_agent_count; i++) {
@@ -2267,8 +2324,7 @@ void c_get_global_agent_state(Drive *env, float *x_out, float *y_out, float *z_o
 void c_get_global_agent_types(Drive *env, int *type_out) {
     for (int i = 0; i < env->active_agent_count; i++) {
         int agent_idx = env->active_agent_indices[i];
-        Entity *agent = &env->entities[agent_idx];
-        type_out[i] = agent->type;
+        type_out[i] = map_entity_to_policy_type(env, agent_idx);
     }
 }
 
@@ -2315,7 +2371,7 @@ void c_get_partner_types(Drive *env, int *type_out) {
             if (partner_idx >= (MAX_AGENTS - 1)) {
                 break;
             }
-            types[i][partner_idx] = other_entity->type;
+            types[i][partner_idx] = map_entity_to_policy_type(env, index);
             partner_idx++;
         }
     }
