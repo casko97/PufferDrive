@@ -95,7 +95,7 @@ int demo(const char *map_name, const char *policy_name, int show_grid, int obs_o
     while (!WindowShouldClose()) {
         int *actions = (int *)env.actions; // Single integer per agent
 
-        forward(net, env.observations, actions);
+        forward_drive_env(net, &env, actions);
 
         if (IsKeyDown(KEY_LEFT_SHIFT)) {
             if (env.dynamics_model == CLASSIC) {
