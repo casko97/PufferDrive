@@ -9,6 +9,7 @@ from multiprocessing import Pool, cpu_count
 from tqdm import tqdm
 
 _POLICY_TYPE_PADDED = 0
+_EMPTY_PARTNER_EPS = 1e-8
 
 
 class Drive(pufferlib.PufferEnv):
@@ -389,7 +390,7 @@ class Drive(pufferlib.PufferEnv):
         self.observations[:, ego_type_idx] = ego_types
 
         # Populate partner type channel only for occupied partner slots.
-        occupied_partner_slots = np.logical_or(np.abs(sim_partner[:, :, 2]) > 1e-8, np.abs(sim_partner[:, :, 3]) > 1e-8)
+        occupied_partner_slots = np.any(np.abs(sim_partner) > _EMPTY_PARTNER_EPS, axis=2)
         aug_partner_view[:, :, base_partner] = np.where(
             occupied_partner_slots, partner_types, _POLICY_TYPE_PADDED
         ).astype(np.float32)
