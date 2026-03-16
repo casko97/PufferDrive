@@ -10,6 +10,7 @@ from pufferlib.models import Convolutional as Conv  # noqa: F401
 
 
 Recurrent = pufferlib.models.LSTMWrapper
+EMPTY_PARTNER_EPS = 1e-8
 
 
 class Drive(nn.Module):
@@ -28,10 +29,13 @@ class Drive(nn.Module):
         self.ego_dim = env.ego_features
         self.base_partner_features = 7
         self.type_classes = env.type_classes
+        self.real_type_classes = max(1, self.type_classes - 1)
         self.has_augmented_ego = self.ego_dim > self.base_ego_dim
         self.has_partner_type = self.partner_features > self.base_partner_features
         self.ego_encoder_input_dim = self.base_ego_dim + (self.type_classes if self.has_augmented_ego else 0)
-        self.partner_encoder_input_dim = self.base_partner_features + (self.type_classes if self.has_partner_type else 0)
+        self.partner_encoder_input_dim = self.base_partner_features + (
+            self.real_type_classes if self.has_partner_type else 0
+        )
 
         self.ego_encoder = nn.Sequential(
             pufferlib.pytorch.layer_init(nn.Linear(self.ego_encoder_input_dim, input_size)),
@@ -90,7 +94,13 @@ class Drive(nn.Module):
             partner_type = partner_objects[:, :, self.base_partner_features].long().clamp(
                 min=0, max=self.type_classes - 1
             )
-            partner_type_onehot = F.one_hot(partner_type, num_classes=self.type_classes).to(partner_continuous.dtype)
+            # Empty slots are zero-padded in width/length and must not emit type signal.
+            occupied_partner_slots = partner_continuous.abs().amax(dim=2) > EMPTY_PARTNER_EPS
+            partner_type_idx = (partner_type - 1).clamp(min=0, max=self.real_type_classes - 1)
+            partner_type_onehot = F.one_hot(partner_type_idx, num_classes=self.real_type_classes).to(
+                partner_continuous.dtype
+            )
+            partner_type_onehot = partner_type_onehot * occupied_partner_slots.unsqueeze(-1).to(partner_continuous.dtype)
             partner_objects = torch.cat([partner_continuous, partner_type_onehot], dim=2)
 
         road_objects = road_obs.view(-1, self.max_road_objects, self.road_features)

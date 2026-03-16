@@ -166,7 +166,7 @@ def test_augmented_observation_mode_type_slots_and_padding(tmp_path):
 
         # Empty/non-existing partner slots must stay padded with 0 in the added type field.
         base_partner_features = aug_partner_view[:, :, :base_partner]
-        occupied_slots = np.logical_or(np.abs(base_partner_features[:, :, 2]) > 1e-8, np.abs(base_partner_features[:, :, 3]) > 1e-8)
+        occupied_slots = np.any(np.abs(base_partner_features) > 1e-8, axis=2)
         np.testing.assert_array_equal(partner_type_channel[~occupied_slots], np.zeros(np.count_nonzero(~occupied_slots)))
     finally:
         env.close()
