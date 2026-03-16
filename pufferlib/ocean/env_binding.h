@@ -806,6 +806,95 @@ static PyObject *vec_get_partner_types(PyObject *self, PyObject *args) {
     Py_RETURN_NONE;
 }
 
+static PyObject *get_sdc_trailer_state(PyObject *self, PyObject *args) {
+    if (PyTuple_Size(args) != 9) {
+        PyErr_SetString(PyExc_TypeError, "get_sdc_trailer_state requires 9 arguments");
+        return NULL;
+    }
+
+    Env *env = unpack_env(args);
+    if (!env) {
+        return NULL;
+    }
+
+    Drive *drive = (Drive *)env;
+
+    PyObject *has_trailer_arr = PyTuple_GetItem(args, 1);
+    PyObject *x_arr = PyTuple_GetItem(args, 2);
+    PyObject *y_arr = PyTuple_GetItem(args, 3);
+    PyObject *z_arr = PyTuple_GetItem(args, 4);
+    PyObject *heading_arr = PyTuple_GetItem(args, 5);
+    PyObject *id_arr = PyTuple_GetItem(args, 6);
+    PyObject *length_arr = PyTuple_GetItem(args, 7);
+    PyObject *width_arr = PyTuple_GetItem(args, 8);
+
+    if (!PyArray_Check(has_trailer_arr) || !PyArray_Check(x_arr) || !PyArray_Check(y_arr) || !PyArray_Check(z_arr) ||
+        !PyArray_Check(heading_arr) || !PyArray_Check(id_arr) || !PyArray_Check(length_arr) ||
+        !PyArray_Check(width_arr)) {
+        PyErr_SetString(PyExc_TypeError, "All output arrays must be NumPy arrays");
+        return NULL;
+    }
+
+    int *has_trailer_data = (int *)PyArray_DATA((PyArrayObject *)has_trailer_arr);
+    float *x_data = (float *)PyArray_DATA((PyArrayObject *)x_arr);
+    float *y_data = (float *)PyArray_DATA((PyArrayObject *)y_arr);
+    float *z_data = (float *)PyArray_DATA((PyArrayObject *)z_arr);
+    float *heading_data = (float *)PyArray_DATA((PyArrayObject *)heading_arr);
+    int *id_data = (int *)PyArray_DATA((PyArrayObject *)id_arr);
+    float *length_data = (float *)PyArray_DATA((PyArrayObject *)length_arr);
+    float *width_data = (float *)PyArray_DATA((PyArrayObject *)width_arr);
+
+    c_get_sdc_trailer_state(drive, has_trailer_data, x_data, y_data, z_data, heading_data, id_data, length_data,
+                            width_data);
+
+    Py_RETURN_NONE;
+}
+
+static PyObject *vec_get_sdc_trailer_state(PyObject *self, PyObject *args) {
+    if (PyTuple_Size(args) != 9) {
+        PyErr_SetString(PyExc_TypeError, "vec_get_sdc_trailer_state requires 9 arguments");
+        return NULL;
+    }
+
+    VecEnv *vec = unpack_vecenv(args);
+    if (!vec) {
+        return NULL;
+    }
+
+    PyObject *has_trailer_arr = PyTuple_GetItem(args, 1);
+    PyObject *x_arr = PyTuple_GetItem(args, 2);
+    PyObject *y_arr = PyTuple_GetItem(args, 3);
+    PyObject *z_arr = PyTuple_GetItem(args, 4);
+    PyObject *heading_arr = PyTuple_GetItem(args, 5);
+    PyObject *id_arr = PyTuple_GetItem(args, 6);
+    PyObject *length_arr = PyTuple_GetItem(args, 7);
+    PyObject *width_arr = PyTuple_GetItem(args, 8);
+
+    if (!PyArray_Check(has_trailer_arr) || !PyArray_Check(x_arr) || !PyArray_Check(y_arr) || !PyArray_Check(z_arr) ||
+        !PyArray_Check(heading_arr) || !PyArray_Check(id_arr) || !PyArray_Check(length_arr) ||
+        !PyArray_Check(width_arr)) {
+        PyErr_SetString(PyExc_TypeError, "All output arrays must be NumPy arrays");
+        return NULL;
+    }
+
+    int *has_trailer_base = (int *)PyArray_DATA((PyArrayObject *)has_trailer_arr);
+    float *x_base = (float *)PyArray_DATA((PyArrayObject *)x_arr);
+    float *y_base = (float *)PyArray_DATA((PyArrayObject *)y_arr);
+    float *z_base = (float *)PyArray_DATA((PyArrayObject *)z_arr);
+    float *heading_base = (float *)PyArray_DATA((PyArrayObject *)heading_arr);
+    int *id_base = (int *)PyArray_DATA((PyArrayObject *)id_arr);
+    float *length_base = (float *)PyArray_DATA((PyArrayObject *)length_arr);
+    float *width_base = (float *)PyArray_DATA((PyArrayObject *)width_arr);
+
+    for (int i = 0; i < vec->num_envs; i++) {
+        Drive *drive = (Drive *)vec->envs[i];
+        c_get_sdc_trailer_state(drive, &has_trailer_base[i], &x_base[i], &y_base[i], &z_base[i], &heading_base[i],
+                                &id_base[i], &length_base[i], &width_base[i]);
+    }
+
+    Py_RETURN_NONE;
+}
+
 static PyObject *get_ground_truth_trajectories(PyObject *self, PyObject *args) {
     if (PyTuple_Size(args) != 8) {
         PyErr_SetString(PyExc_TypeError, "get_ground_truth_trajectories requires 8 arguments");
@@ -1055,6 +1144,8 @@ static PyMethodDef methods[] = {
     {"vec_get_global_agent_types", vec_get_global_agent_types, METH_VARARGS,
      "Get global agent types from vectorized env"},
     {"vec_get_partner_types", vec_get_partner_types, METH_VARARGS, "Get partner agent types from vectorized env"},
+    {"get_sdc_trailer_state", get_sdc_trailer_state, METH_VARARGS, "Get SDC trailer state"},
+    {"vec_get_sdc_trailer_state", vec_get_sdc_trailer_state, METH_VARARGS, "Get SDC trailer state from vectorized env"},
     {"get_ground_truth_trajectories", get_ground_truth_trajectories, METH_VARARGS, "Get ground truth trajectories"},
     {"vec_get_global_ground_truth_trajectories", vec_get_global_ground_truth_trajectories, METH_VARARGS,
      "Get ground truth trajectories from vectorized env"},

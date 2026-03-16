@@ -61,6 +61,10 @@
 #define REACHED_GOAL_IDX 2
 #define LANE_ALIGNED_IDX 3
 
+// Optional binary extension block marker/version (written by drive.py).
+#define DRIVE_BIN_EXT_MAGIC 0x54524C52
+#define DRIVE_BIN_EXT_VERSION 2
+
 // Grid cell size
 #define GRID_CELL_SIZE 5.0f
 #define MAX_ENTITIES_PER_CELL                                                                                          \
@@ -101,10 +105,9 @@
 #define MAX_RG_COORD 1000.0f
 #define MAX_ROAD_SCALE 100.0f
 #define MAX_ROAD_SEGMENT_LENGTH 100.0f
-// Partner observation range is 50m => squared distance cap 2500.
 #define MAX_PARTNER_OBS_DIST2 2500.0f
 
-// Policy-facing type ids returned by type APIs.
+// Policy-facing type ids used by the current Python policy code.
 #define POLICY_TYPE_PADDED 0
 #define POLICY_TYPE_VEHICLE_SINGLE 1
 #define POLICY_TYPE_PEDESTRIAN 2
@@ -182,6 +185,9 @@ struct Entity {
     int scenario_id;
     int type;
     int id;
+    unsigned long long source_track_id_hash;
+    int is_trailer;
+    int parent_track_index;
     int array_size;
     float *traj_x;
     float *traj_y;
@@ -201,6 +207,9 @@ struct Entity {
     float init_goal_y;
     int mark_as_expert;
     int collision_state;
+    int combo_collision_any;
+    int combo_collision_tractor_body;
+    int combo_collision_trailer_body;
     float metrics_array[5]; // metrics_array: [collision, offroad, reached_goal, lane_aligned
     float x;
     float y;
@@ -337,6 +346,13 @@ struct Drive {
     int collision_behavior;
     int offroad_behavior;
     int sdc_track_index;
+    int has_ego_trailer;
+    int ego_trailer_track_index;
+    float non_kinematic_vehicle_params[13];
+    int override_non_kinematic_vehicle_params;
+    float non_kinematic_vehicle_params_override[13];
+    int force_zero_trailer_articulation_at_init;
+    int invalid_initial_trailer_state;
     int num_tracks_to_predict;
     int *tracks_to_predict_indices;
     int init_mode;
@@ -344,21 +360,245 @@ struct Drive {
     int observation_mode;
 };
 
-static inline int get_base_ego_obs_dim(const Drive *env) {
-    return (env->dynamics_model == JERK) ? EGO_FEATURES_JERK : EGO_FEATURES_CLASSIC;
+Entity *load_map_binary(const char *filename, Drive *env);
+
+static inline int load_runtime_non_kinematic_params_from_reference_bin(const char *reference_bin, float *out_params) {
+    Drive tmp_env = {0};
+    Entity *tmp_entities = load_map_binary(reference_bin, &tmp_env);
+    if (tmp_entities == NULL) {
+        return 0;
+    }
+
+    for (int i = 0; i < 13; i++) {
+        out_params[i] = tmp_env.non_kinematic_vehicle_params[i];
+    }
+
+    for (int i = 0; i < tmp_env.num_entities; i++) {
+        free_entity(&tmp_entities[i]);
+    }
+    free(tmp_entities);
+    free(tmp_env.tracks_to_predict_indices);
+    return 1;
 }
 
-static inline int get_raw_ego_obs_dim(const Drive *env) {
-    return get_base_ego_obs_dim(env) + (env->observation_mode == 1 ? PARTNER_TYPE_CHANNELS : 0);
+static inline int legacy_bin_has_truck_like_sdc(Drive *env, Entity *entities) {
+    // Legacy bins lack trailer metadata. For compatibility, classify by SDC shape only.
+    // We allow large background vehicles, but reject clearly truck-like SDC footprints.
+    const float max_non_truck_sdc_length = 8.0f;
+    const float max_non_truck_sdc_width = 2.6f;
+    const float max_non_truck_sdc_height = 3.5f;
+    if (env->sdc_track_index < 0 || env->sdc_track_index >= env->num_objects) {
+        return 0;
+    }
+    Entity *sdc = &entities[env->sdc_track_index];
+    if (sdc->type != VEHICLE) {
+        return 0;
+    }
+    return (sdc->length > max_non_truck_sdc_length || sdc->width > max_non_truck_sdc_width ||
+            sdc->height > max_non_truck_sdc_height);
 }
 
-static inline int get_raw_partner_obs_dim(const Drive *env) {
-    return PARTNER_FEATURES + (env->observation_mode == 1 ? PARTNER_TYPE_CHANNELS : 0);
+static inline int maybe_add_runtime_sdc_trailer(Drive *env, Entity **entities_ptr) {
+    if (!env->override_non_kinematic_vehicle_params) {
+        return 1;
+    }
+    if (env->has_ego_trailer && env->sdc_track_index >= 0 && env->sdc_track_index < env->num_objects &&
+        env->ego_trailer_track_index >= 0 && env->ego_trailer_track_index < env->num_objects &&
+        env->ego_trailer_track_index != env->sdc_track_index) {
+        return 1;
+    }
+    if (env->sdc_track_index < 0 || env->sdc_track_index >= env->num_objects) {
+        return 1;
+    }
+
+    Entity *entities = *entities_ptr;
+    int old_num_objects = env->num_objects;
+    int old_num_entities = env->num_entities;
+
+    Entity *resized = (Entity *)realloc(entities, (old_num_entities + 1) * sizeof(Entity));
+    if (resized == NULL) {
+        return 0;
+    }
+    entities = resized;
+    memmove(&entities[old_num_objects + 1], &entities[old_num_objects],
+            (old_num_entities - old_num_objects) * sizeof(Entity));
+
+    Entity *sdc = &entities[env->sdc_track_index];
+    Entity *trailer = &entities[old_num_objects];
+    memset(trailer, 0, sizeof(Entity));
+
+    trailer->scenario_id = sdc->scenario_id;
+    trailer->type = VEHICLE;
+    trailer->id = -1000000 - old_num_objects;
+    trailer->source_track_id_hash = 0ULL;
+    trailer->is_trailer = 1;
+    trailer->parent_track_index = env->sdc_track_index;
+    trailer->array_size = sdc->array_size;
+
+    int size = trailer->array_size;
+    trailer->traj_x = (float *)malloc(size * sizeof(float));
+    trailer->traj_y = (float *)malloc(size * sizeof(float));
+    trailer->traj_z = (float *)malloc(size * sizeof(float));
+    trailer->traj_vx = (float *)malloc(size * sizeof(float));
+    trailer->traj_vy = (float *)malloc(size * sizeof(float));
+    trailer->traj_vz = (float *)malloc(size * sizeof(float));
+    trailer->traj_heading = (float *)malloc(size * sizeof(float));
+    trailer->traj_valid = (int *)malloc(size * sizeof(int));
+    if (trailer->traj_x == NULL || trailer->traj_y == NULL || trailer->traj_z == NULL || trailer->traj_vx == NULL ||
+        trailer->traj_vy == NULL || trailer->traj_vz == NULL || trailer->traj_heading == NULL ||
+        trailer->traj_valid == NULL) {
+        free_entity(trailer);
+        return 0;
+    }
+
+    memcpy(trailer->traj_x, sdc->traj_x, size * sizeof(float));
+    memcpy(trailer->traj_y, sdc->traj_y, size * sizeof(float));
+    memcpy(trailer->traj_z, sdc->traj_z, size * sizeof(float));
+    memcpy(trailer->traj_vx, sdc->traj_vx, size * sizeof(float));
+    memcpy(trailer->traj_vy, sdc->traj_vy, size * sizeof(float));
+    memcpy(trailer->traj_vz, sdc->traj_vz, size * sizeof(float));
+    memcpy(trailer->traj_heading, sdc->traj_heading, size * sizeof(float));
+    memcpy(trailer->traj_valid, sdc->traj_valid, size * sizeof(int));
+
+    trailer->width = env->non_kinematic_vehicle_params[3];
+    trailer->length = env->non_kinematic_vehicle_params[1];
+    trailer->height = env->non_kinematic_vehicle_params[5];
+    trailer->goal_position_x = sdc->goal_position_x;
+    trailer->goal_position_y = sdc->goal_position_y;
+    trailer->goal_position_z = sdc->goal_position_z;
+    trailer->mark_as_expert = 1;
+
+    env->has_ego_trailer = 1;
+    env->ego_trailer_track_index = old_num_objects;
+    env->num_objects = old_num_objects + 1;
+    env->num_entities = old_num_entities + 1;
+
+    *entities_ptr = entities;
+    return 1;
 }
 
-static inline int get_max_obs_dim(const Drive *env) {
-    return get_raw_ego_obs_dim(env) + get_raw_partner_obs_dim(env) * (MAX_AGENTS - 1) +
-           ROAD_FEATURES * MAX_ROAD_SEGMENT_OBSERVATIONS;
+static inline bool has_valid_ego_trailer_pair(Drive *env) {
+    if (!env->has_ego_trailer)
+        return false;
+    if (env->sdc_track_index < 0 || env->sdc_track_index >= env->num_objects)
+        return false;
+    if (env->ego_trailer_track_index < 0 || env->ego_trailer_track_index >= env->num_objects)
+        return false;
+    if (env->ego_trailer_track_index == env->sdc_track_index)
+        return false;
+    return true;
+}
+
+static inline bool is_ego_or_trailer_pair(Drive *env, int a, int b) {
+    if (!has_valid_ego_trailer_pair(env))
+        return false;
+    return ((a == env->sdc_track_index && b == env->ego_trailer_track_index) ||
+            (a == env->ego_trailer_track_index && b == env->sdc_track_index));
+}
+
+static inline void update_ego_trailer_pose(Drive *env) {
+    if (!has_valid_ego_trailer_pair(env))
+        return;
+
+    Entity *tractor = &env->entities[env->sdc_track_index];
+    Entity *trailer = &env->entities[env->ego_trailer_track_index];
+    if (tractor->removed || trailer->removed)
+        return;
+    if (tractor->x == INVALID_POSITION || trailer->x == INVALID_POSITION)
+        return;
+
+    // Use dataset non-kinematic geometry parameters from extension v2.
+    float tractor2hitch = env->non_kinematic_vehicle_params[6];
+    float trailer2hitch = env->non_kinematic_vehicle_params[7];
+    float effective_length = fmaxf(0.5f, trailer->length - trailer2hitch);
+    float theta_tractor = tractor->heading;
+    float theta_trailer = trailer->heading;
+
+    // Update trailer yaw using articulation kinematics.
+    float tractor_speed = sqrtf(tractor->vx * tractor->vx + tractor->vy * tractor->vy);
+    float tractor_signed_speed =
+        copysignf(tractor_speed, tractor->vx * tractor->heading_x + tractor->vy * tractor->heading_y);
+    float articulation = theta_tractor - theta_trailer;
+    if (articulation > M_PI)
+        articulation -= 2.0f * M_PI;
+    if (articulation < -M_PI)
+        articulation += 2.0f * M_PI;
+    theta_trailer = theta_trailer + (tractor_signed_speed / effective_length) * sinf(articulation) * env->dt;
+    if (theta_trailer > M_PI)
+        theta_trailer -= 2.0f * M_PI;
+    if (theta_trailer < -M_PI)
+        theta_trailer += 2.0f * M_PI;
+
+    // Compute trailer center from hitch point and updated trailer yaw.
+    float x_hitch = tractor->x + (-tractor->length * 0.5f + tractor2hitch) * cosf(theta_tractor);
+    float y_hitch = tractor->y + (-tractor->length * 0.5f + tractor2hitch) * sinf(theta_tractor);
+    float x_rear = x_hitch - effective_length * cosf(theta_trailer);
+    float y_rear = y_hitch - effective_length * sinf(theta_trailer);
+    float new_x = x_rear + 0.5f * trailer->length * cosf(theta_trailer);
+    float new_y = y_rear + 0.5f * trailer->length * sinf(theta_trailer);
+
+    float old_x = trailer->x;
+    float old_y = trailer->y;
+    trailer->x = new_x;
+    trailer->y = new_y;
+    trailer->heading = theta_trailer;
+    trailer->heading_x = cosf(theta_trailer);
+    trailer->heading_y = sinf(theta_trailer);
+    trailer->vx = (trailer->x - old_x) / fmaxf(env->dt, 1e-4f);
+    trailer->vy = (trailer->y - old_y) / fmaxf(env->dt, 1e-4f);
+}
+
+static inline void apply_non_kinematic_runtime_override(Drive *env) {
+    if (!env->override_non_kinematic_vehicle_params)
+        return;
+    for (int i = 0; i < 13; i++) {
+        env->non_kinematic_vehicle_params[i] = env->non_kinematic_vehicle_params_override[i];
+    }
+
+    if (env->sdc_track_index < 0 || env->sdc_track_index >= env->num_objects)
+        return;
+    Entity *tractor = &env->entities[env->sdc_track_index];
+    tractor->length = env->non_kinematic_vehicle_params[0];
+    tractor->width = env->non_kinematic_vehicle_params[2];
+    tractor->height = env->non_kinematic_vehicle_params[4];
+
+    if (!has_valid_ego_trailer_pair(env))
+        return;
+
+    Entity *trailer = &env->entities[env->ego_trailer_track_index];
+    trailer->length = env->non_kinematic_vehicle_params[1];
+    trailer->width = env->non_kinematic_vehicle_params[3];
+    trailer->height = env->non_kinematic_vehicle_params[5];
+}
+
+static inline void force_zero_trailer_articulation_pose_from_params(Drive *env) {
+    if (!has_valid_ego_trailer_pair(env))
+        return;
+
+    Entity *tractor = &env->entities[env->sdc_track_index];
+    Entity *trailer = &env->entities[env->ego_trailer_track_index];
+    if (tractor->removed || trailer->removed)
+        return;
+    if (tractor->x == INVALID_POSITION || trailer->x == INVALID_POSITION)
+        return;
+
+    float theta = tractor->heading;
+    float tractor2hitch = env->non_kinematic_vehicle_params[6];
+    float trailer2hitch = env->non_kinematic_vehicle_params[7];
+    float effective_length = fmaxf(0.5f, trailer->length - trailer2hitch);
+
+    float x_hitch = tractor->x + (-tractor->length * 0.5f + tractor2hitch) * cosf(theta);
+    float y_hitch = tractor->y + (-tractor->length * 0.5f + tractor2hitch) * sinf(theta);
+    float x_rear = x_hitch - effective_length * cosf(theta);
+    float y_rear = y_hitch - effective_length * sinf(theta);
+
+    trailer->x = x_rear + 0.5f * trailer->length * cosf(theta);
+    trailer->y = y_rear + 0.5f * trailer->length * sinf(theta);
+    trailer->heading = theta;
+    trailer->heading_x = cosf(theta);
+    trailer->heading_y = sinf(theta);
+    trailer->vx = tractor->vx;
+    trailer->vy = tractor->vy;
 }
 
 void add_log(Drive *env) {
@@ -416,6 +656,12 @@ Entity *load_map_binary(const char *filename, Drive *env) {
     if (!file)
         return NULL;
 
+    env->has_ego_trailer = 0;
+    env->ego_trailer_track_index = -1;
+    for (int i = 0; i < 13; i++) {
+        env->non_kinematic_vehicle_params[i] = 0.0f;
+    }
+
     // Read sdc_track_index
     fread(&env->sdc_track_index, sizeof(int), 1, file);
 
@@ -440,6 +686,9 @@ Entity *load_map_binary(const char *filename, Drive *env) {
         fread(&entities[i].scenario_id, sizeof(int), 1, file);
         fread(&entities[i].type, sizeof(int), 1, file);
         fread(&entities[i].id, sizeof(int), 1, file);
+        entities[i].source_track_id_hash = 0ULL;
+        entities[i].is_trailer = 0;
+        entities[i].parent_track_index = -1;
         fread(&entities[i].array_size, sizeof(int), 1, file);
         // Allocate arrays based on type
         int size = entities[i].array_size;
@@ -484,6 +733,120 @@ Entity *load_map_binary(const char *filename, Drive *env) {
         fread(&entities[i].mark_as_expert, sizeof(int), 1, file);
     }
 
+    // Optional extension block (v2). Legacy bins may end here.
+    int extension_magic = 0;
+    size_t read_magic = fread(&extension_magic, sizeof(int), 1, file);
+    if (read_magic != 1) {
+        if (legacy_bin_has_truck_like_sdc(env, entities)) {
+            fclose(file);
+            for (int i = 0; i < env->num_entities; i++) {
+                free_entity(&entities[i]);
+            }
+            free(entities);
+            free(env->tracks_to_predict_indices);
+            env->tracks_to_predict_indices = NULL;
+            raise_error_with_message(
+                ERROR_INITIALIZATION_FAILED,
+                "Legacy map binary without extension is only supported for non-truck scenes");
+        }
+        if (!maybe_add_runtime_sdc_trailer(env, &entities)) {
+            fclose(file);
+            for (int i = 0; i < env->num_entities; i++) {
+                free_entity(&entities[i]);
+            }
+            free(entities);
+            free(env->tracks_to_predict_indices);
+            env->tracks_to_predict_indices = NULL;
+            raise_error_with_message(ERROR_INITIALIZATION_FAILED, "Failed to allocate runtime synthetic trailer");
+        }
+        env->entities = entities;
+        apply_non_kinematic_runtime_override(env);
+        fclose(file);
+        return entities;
+    }
+    if (extension_magic != DRIVE_BIN_EXT_MAGIC) {
+        // Legacy format: no trailer extension metadata block.
+        if (legacy_bin_has_truck_like_sdc(env, entities)) {
+            fclose(file);
+            for (int i = 0; i < env->num_entities; i++) {
+                free_entity(&entities[i]);
+            }
+            free(entities);
+            free(env->tracks_to_predict_indices);
+            env->tracks_to_predict_indices = NULL;
+            raise_error_with_message(
+                ERROR_INITIALIZATION_FAILED,
+                "Legacy map binary without extension is only supported for non-truck scenes");
+        }
+        if (!maybe_add_runtime_sdc_trailer(env, &entities)) {
+            fclose(file);
+            for (int i = 0; i < env->num_entities; i++) {
+                free_entity(&entities[i]);
+            }
+            free(entities);
+            free(env->tracks_to_predict_indices);
+            env->tracks_to_predict_indices = NULL;
+            raise_error_with_message(ERROR_INITIALIZATION_FAILED, "Failed to allocate runtime synthetic trailer");
+        }
+        env->entities = entities;
+        apply_non_kinematic_runtime_override(env);
+        fclose(file);
+        return entities;
+    }
+
+    int extension_version = 0;
+    if (fread(&extension_version, sizeof(int), 1, file) != 1 || extension_version != DRIVE_BIN_EXT_VERSION) {
+        fclose(file);
+        free(entities);
+        raise_error_with_message(ERROR_INITIALIZATION_FAILED,
+                                 "Map binary extension version mismatch: expected %d got %d", DRIVE_BIN_EXT_VERSION,
+                                 extension_version);
+    }
+
+    fread(&env->has_ego_trailer, sizeof(int), 1, file);
+    fread(&env->ego_trailer_track_index, sizeof(int), 1, file);
+
+    int object_meta_count = 0;
+    fread(&object_meta_count, sizeof(int), 1, file);
+    for (int i = 0; i < object_meta_count; i++) {
+        unsigned long long source_hash = 0ULL;
+        int is_trailer = 0;
+        int parent_track_index = -1;
+        fread(&source_hash, sizeof(unsigned long long), 1, file);
+        fread(&is_trailer, sizeof(int), 1, file);
+        fread(&parent_track_index, sizeof(int), 1, file);
+        if (i < env->num_objects) {
+            entities[i].source_track_id_hash = source_hash;
+            entities[i].is_trailer = is_trailer;
+            entities[i].parent_track_index = parent_track_index;
+        }
+    }
+
+    int vehicle_param_count = 0;
+    fread(&vehicle_param_count, sizeof(int), 1, file);
+    if (vehicle_param_count != 13) {
+        fclose(file);
+        free(entities);
+        raise_error_with_message(ERROR_INITIALIZATION_FAILED,
+                                 "Map binary non_kinematic_vehicle_params count mismatch: expected 13 got %d",
+                                 vehicle_param_count);
+    }
+    for (int i = 0; i < 13; i++) {
+        fread(&env->non_kinematic_vehicle_params[i], sizeof(float), 1, file);
+    }
+    if (!maybe_add_runtime_sdc_trailer(env, &entities)) {
+        fclose(file);
+        for (int i = 0; i < env->num_entities; i++) {
+            free_entity(&entities[i]);
+        }
+        free(entities);
+        free(env->tracks_to_predict_indices);
+        env->tracks_to_predict_indices = NULL;
+        raise_error_with_message(ERROR_INITIALIZATION_FAILED, "Failed to allocate runtime synthetic trailer");
+    }
+    env->entities = entities;
+    apply_non_kinematic_runtime_override(env);
+
     fclose(file);
     return entities;
 }
@@ -527,6 +890,9 @@ void set_start_position(Drive *env) {
         e->heading_y = sinf(e->heading);
         e->valid = e->traj_valid[env->init_steps];
         e->collision_state = 0;
+        e->combo_collision_any = 0;
+        e->combo_collision_tractor_body = 0;
+        e->combo_collision_trailer_body = 0;
         e->metrics_array[COLLISION_IDX] = 0.0f;    // vehicle collision
         e->metrics_array[OFFROAD_IDX] = 0.0f;      // offroad
         e->metrics_array[REACHED_GOAL_IDX] = 0.0f; // reached goal
@@ -543,6 +909,9 @@ void set_start_position(Drive *env) {
         e->jerk_lat = 0.0f;
         e->steering_angle = 0.0f;
         e->wheelbase = 0.6f * e->length;
+    }
+    if (env->force_zero_trailer_articulation_at_init) {
+        force_zero_trailer_articulation_pose_from_params(env);
     }
 }
 
@@ -831,13 +1200,16 @@ void set_means(Drive *env) {
     }
 }
 
-void move_expert(Drive *env, float *actions, int agent_idx) {
+static inline void move_expert_trajectory_only(Drive *env, int agent_idx) {
     Entity *agent = &env->entities[agent_idx];
     int t = env->timestep;
     if (t < 0 || t >= agent->array_size) {
         agent->x = INVALID_POSITION;
         agent->y = INVALID_POSITION;
         agent->z = 0.0f;
+        agent->vx = 0.0f;
+        agent->vy = 0.0f;
+        agent->vz = 0.0f;
         agent->heading = 0.0f;
         agent->heading_x = 1.0f;
         agent->heading_y = 0.0f;
@@ -847,6 +1219,9 @@ void move_expert(Drive *env, float *actions, int agent_idx) {
         agent->x = INVALID_POSITION;
         agent->y = INVALID_POSITION;
         agent->z = 0.0f;
+        agent->vx = 0.0f;
+        agent->vy = 0.0f;
+        agent->vz = 0.0f;
         agent->heading = 0.0f;
         agent->heading_x = 1.0f;
         agent->heading_y = 0.0f;
@@ -855,9 +1230,21 @@ void move_expert(Drive *env, float *actions, int agent_idx) {
     agent->x = agent->traj_x[t];
     agent->y = agent->traj_y[t];
     agent->z = agent->traj_z[t];
+    agent->vx = agent->traj_vx[t];
+    agent->vy = agent->traj_vy[t];
+    agent->vz = agent->traj_vz[t];
     agent->heading = agent->traj_heading[t];
     agent->heading_x = cosf(agent->heading);
     agent->heading_y = sinf(agent->heading);
+}
+
+void move_expert(Drive *env, float *actions, int agent_idx) {
+    move_expert_trajectory_only(env, agent_idx);
+
+    // Keep replayed trailer pose consistent with articulated geometry in extension v2.
+    if (has_valid_ego_trailer_pair(env) && agent_idx == env->sdc_track_index) {
+        update_ego_trailer_pose(env);
+    }
 }
 
 bool check_line_intersection(float p1[2], float p2[2], float q1[2], float q2[2]) {
@@ -986,11 +1373,21 @@ int check_aabb_collision(Entity *car1, Entity *car2) {
     return 1; // Collision
 }
 
-int collision_check(Drive *env, int agent_idx) {
+int collision_check_with_sources(Drive *env, int agent_idx, int *agent_body_collided, int *trailer_body_collided) {
     Entity *agent = &env->entities[agent_idx];
+    Entity *ego_trailer = NULL;
+    bool check_ego_trailer = has_valid_ego_trailer_pair(env) && agent_idx == env->sdc_track_index;
+    if (check_ego_trailer) {
+        ego_trailer = &env->entities[env->ego_trailer_track_index];
+    }
 
     if (agent->x == INVALID_POSITION)
         return -1;
+
+    if (agent_body_collided != NULL)
+        *agent_body_collided = 0;
+    if (trailer_body_collided != NULL)
+        *trailer_body_collided = 0;
 
     int car_collided_with_index = -1;
 
@@ -1001,28 +1398,116 @@ int collision_check(Drive *env, int agent_idx) {
         int index = -1;
         if (i < env->active_agent_count) {
             index = env->active_agent_indices[i];
-        } else if (i < env->num_actors && env->static_agent_count > 0) {
+        } else if (i < env->num_actors) {
             index = env->static_agent_indices[i - env->active_agent_count];
         }
         if (index == -1)
             continue;
         if (index == agent_idx)
             continue;
+        if (is_ego_or_trailer_pair(env, agent_idx, index))
+            continue;
         Entity *entity = &env->entities[index];
         if (entity->respawn_timestep != -1)
             continue; // Skip respawning entities
         float x1 = entity->x;
         float y1 = entity->y;
-        float dist = ((x1 - agent->x) * (x1 - agent->x) + (y1 - agent->y) * (y1 - agent->y));
-        if (dist > 225.0f)
+        float dist_agent = ((x1 - agent->x) * (x1 - agent->x) + (y1 - agent->y) * (y1 - agent->y));
+        float dist_trailer = dist_agent;
+        if (check_ego_trailer && ego_trailer != NULL) {
+            dist_trailer = ((x1 - ego_trailer->x) * (x1 - ego_trailer->x) + (y1 - ego_trailer->y) * (y1 - ego_trailer->y));
+        }
+        if (dist_agent > 225.0f && dist_trailer > 225.0f)
             continue;
-        if (check_aabb_collision(agent, entity)) {
+        int agent_hit = check_aabb_collision(agent, entity);
+        int trailer_hit = 0;
+        if (check_ego_trailer && ego_trailer != NULL) {
+            trailer_hit = check_aabb_collision(ego_trailer, entity);
+        }
+        if (agent_hit || trailer_hit) {
+            if (agent_body_collided != NULL && agent_hit)
+                *agent_body_collided = 1;
+            if (trailer_body_collided != NULL && trailer_hit)
+                *trailer_body_collided = 1;
             car_collided_with_index = index;
             break;
         }
     }
 
     return car_collided_with_index;
+}
+
+int collision_check(Drive *env, int agent_idx) {
+    return collision_check_with_sources(env, agent_idx, NULL, NULL);
+}
+
+static inline int has_invalid_initial_sdc_trailer_collision(Drive *env) {
+    if (!env->override_non_kinematic_vehicle_params)
+        return 0;
+    if (!has_valid_ego_trailer_pair(env))
+        return 0;
+    if (env->sdc_track_index < 0 || env->sdc_track_index >= env->num_objects)
+        return 0;
+    if (env->ego_trailer_track_index < 0 || env->ego_trailer_track_index >= env->num_objects)
+        return 0;
+
+    Entity *ego_trailer = &env->entities[env->ego_trailer_track_index];
+    if (ego_trailer->x == INVALID_POSITION || ego_trailer->y == INVALID_POSITION)
+        return 0;
+
+    for (int i = 0; i < env->num_actors; i++) {
+        int index = -1;
+        if (i < env->active_agent_count) {
+            index = env->active_agent_indices[i];
+        } else if (i < env->active_agent_count + env->static_agent_count) {
+            index = env->static_agent_indices[i - env->active_agent_count];
+        }
+        if (index < 0 || index >= env->num_objects)
+            continue;
+        if (index == env->sdc_track_index || index == env->ego_trailer_track_index)
+            continue;
+        Entity *other = &env->entities[index];
+        if (other->x == INVALID_POSITION || other->y == INVALID_POSITION)
+            continue;
+        if (other->removed)
+            continue;
+        if (check_aabb_collision(ego_trailer, other)) {
+            return 1;
+        }
+    }
+
+    // Mirror runtime off-road semantics for trailer body at initial state:
+    // invalid if trailer box intersects any ROAD_EDGE segment.
+    float half_length = ego_trailer->length / 2.0f;
+    float half_width = ego_trailer->width / 2.0f;
+    float cos_heading = cosf(ego_trailer->heading);
+    float sin_heading = sinf(ego_trailer->heading);
+    float trailer_corners[4][2];
+    for (int i = 0; i < 4; i++) {
+        trailer_corners[i][0] = ego_trailer->x + (offsets[i][0] * half_length * cos_heading -
+                                                  offsets[i][1] * half_width * sin_heading);
+        trailer_corners[i][1] = ego_trailer->y + (offsets[i][0] * half_length * sin_heading +
+                                                  offsets[i][1] * half_width * cos_heading);
+    }
+    for (int i = 0; i < env->num_entities; i++) {
+        Entity *road = &env->entities[i];
+        if (road->type != ROAD_EDGE)
+            continue;
+        if (road->array_size < 2)
+            continue;
+        for (int j = 0; j < road->array_size - 1; j++) {
+            float start[2] = {road->traj_x[j], road->traj_y[j]};
+            float end[2] = {road->traj_x[j + 1], road->traj_y[j + 1]};
+            for (int k = 0; k < 4; k++) {
+                int next = (k + 1) % 4;
+                if (check_line_intersection(trailer_corners[k], trailer_corners[next], start, end)) {
+                    return 1;
+                }
+            }
+        }
+    }
+
+    return 0;
 }
 
 int check_lane_aligned(Entity *car, Entity *lane, int geometry_idx) {
@@ -1077,6 +1562,9 @@ void reset_agent_metrics(Drive *env, int agent_idx) {
     agent->metrics_array[OFFROAD_IDX] = 0.0f;      // offroad
     agent->metrics_array[LANE_ALIGNED_IDX] = 0.0f; // lane aligned
     agent->collision_state = 0;
+    agent->combo_collision_any = 0;
+    agent->combo_collision_tractor_body = 0;
+    agent->combo_collision_trailer_body = 0;
 }
 
 float point_to_segment_distance_2d(float px, float py, float x1, float y1, float x2, float y2) {
@@ -1107,6 +1595,8 @@ float point_to_segment_distance_2d(float px, float py, float x1, float y1, float
 
 void compute_agent_metrics(Drive *env, int agent_idx) {
     Entity *agent = &env->entities[agent_idx];
+    bool check_ego_trailer = has_valid_ego_trailer_pair(env) && agent_idx == env->sdc_track_index;
+    Entity *ego_trailer = check_ego_trailer ? &env->entities[env->ego_trailer_track_index] : NULL;
 
     reset_agent_metrics(env, agent_idx);
 
@@ -1114,6 +1604,12 @@ void compute_agent_metrics(Drive *env, int agent_idx) {
         return; // invalid agent position
 
     int collided = 0;
+    int offroad_agent_body_collided = 0;
+    int offroad_trailer_body_collided = 0;
+    int vehicle_agent_body_collided = 0;
+    int vehicle_trailer_body_collided = 0;
+    int final_agent_body_collided = 0;
+    int final_trailer_body_collided = 0;
     float half_length = agent->length / 2.0f;
     float half_width = agent->width / 2.0f;
     float cos_heading = cosf(agent->heading);
@@ -1131,9 +1627,32 @@ void compute_agent_metrics(Drive *env, int agent_idx) {
             agent->y + (offsets[i][0] * half_length * sin_heading + offsets[i][1] * half_width * cos_heading);
     }
 
-    GridMapEntity entity_list[MAX_ENTITIES_PER_CELL * 25]; // Array big enough for all neighboring cells
+    float trailer_corners[4][2];
+    if (check_ego_trailer && ego_trailer != NULL) {
+        float trailer_half_length = ego_trailer->length / 2.0f;
+        float trailer_half_width = ego_trailer->width / 2.0f;
+        float trailer_cos_heading = cosf(ego_trailer->heading);
+        float trailer_sin_heading = sinf(ego_trailer->heading);
+        for (int i = 0; i < 4; i++) {
+            trailer_corners[i][0] = ego_trailer->x +
+                                    (offsets[i][0] * trailer_half_length * trailer_cos_heading -
+                                     offsets[i][1] * trailer_half_width * trailer_sin_heading);
+            trailer_corners[i][1] = ego_trailer->y +
+                                    (offsets[i][0] * trailer_half_length * trailer_sin_heading +
+                                     offsets[i][1] * trailer_half_width * trailer_cos_heading);
+        }
+    }
+
+    GridMapEntity entity_list[MAX_ENTITIES_PER_CELL * 50]; // Tractor neighborhood + optional trailer neighborhood
     int list_size =
-        checkNeighbors(env, agent->x, agent->y, entity_list, MAX_ENTITIES_PER_CELL * 25, collision_offsets, 25);
+        checkNeighbors(env, agent->x, agent->y, entity_list, MAX_ENTITIES_PER_CELL * 50, collision_offsets, 25);
+    if (check_ego_trailer && ego_trailer != NULL) {
+        int remaining = (MAX_ENTITIES_PER_CELL * 50) - list_size;
+        if (remaining > 0) {
+            list_size += checkNeighbors(env, ego_trailer->x, ego_trailer->y, &entity_list[list_size], remaining,
+                                        collision_offsets, 25);
+        }
+    }
     for (int i = 0; i < list_size; i++) {
         if (entity_list[i].entity_idx == -1)
             continue;
@@ -1151,6 +1670,13 @@ void compute_agent_metrics(Drive *env, int agent_idx) {
                 int next = (k + 1) % 4;
                 if (check_line_intersection(corners[k], corners[next], start, end)) {
                     collided = OFFROAD;
+                    offroad_agent_body_collided = 1;
+                    break;
+                }
+                if (check_ego_trailer && ego_trailer != NULL &&
+                    check_line_intersection(trailer_corners[k], trailer_corners[next], start, end)) {
+                    collided = OFFROAD;
+                    offroad_trailer_body_collided = 1;
                     break;
                 }
             }
@@ -1199,11 +1725,28 @@ void compute_agent_metrics(Drive *env, int agent_idx) {
     }
 
     // Check for vehicle collisions
-    int car_collided_with_index = collision_check(env, agent_idx);
+    int car_collided_with_index =
+        collision_check_with_sources(env, agent_idx, &vehicle_agent_body_collided, &vehicle_trailer_body_collided);
     if (car_collided_with_index != -1)
         collided = VEHICLE_COLLISION;
 
     agent->collision_state = collided;
+    if (collided == VEHICLE_COLLISION) {
+        final_agent_body_collided = vehicle_agent_body_collided;
+        final_trailer_body_collided = vehicle_trailer_body_collided;
+    } else if (collided == OFFROAD) {
+        final_agent_body_collided = offroad_agent_body_collided;
+        final_trailer_body_collided = offroad_trailer_body_collided;
+    }
+    if (check_ego_trailer) {
+        agent->combo_collision_any = (collided > 0) ? 1 : 0;
+        agent->combo_collision_tractor_body = final_agent_body_collided;
+        agent->combo_collision_trailer_body = final_trailer_body_collided;
+    } else {
+        agent->combo_collision_any = (collided > 0) ? 1 : 0;
+        agent->combo_collision_tractor_body = (collided > 0) ? 1 : 0;
+        agent->combo_collision_trailer_body = 0;
+    }
 
     if (collided == VEHICLE_COLLISION) {
         if (env->collision_behavior == STOP_AGENT && !agent->stopped) {
@@ -1239,6 +1782,11 @@ bool should_control_agent(Drive *env, int agent_idx) {
     }
 
     Entity *entity = &env->entities[agent_idx];
+
+    // Keep ego trailer as a dependent body, never directly policy-controlled.
+    if (has_valid_ego_trailer_pair(env) && agent_idx == env->ego_trailer_track_index) {
+        return false;
+    }
 
     if (env->control_mode == CONTROL_SDC_ONLY) {
         return agent_idx == env->sdc_track_index;
@@ -1287,7 +1835,7 @@ void set_active_agents(Drive *env) {
     env->active_agent_count = 0;        // Policy-controlled agents
     env->static_agent_count = 0;        // Non-moving background agents
     env->expert_static_agent_count = 0; // Expert replay agents (non-controlled)
-    env->num_actors = 0;                // Total agents created (there is always the SDC)
+    env->num_actors = 0;                // Total agents created
 
     int active_agent_indices[MAX_AGENTS];
     int static_agent_indices[MAX_AGENTS];
@@ -1297,23 +1845,8 @@ void set_active_agents(Drive *env) {
         env->num_agents = MAX_AGENTS;
     }
 
-    // If we have a SDC index (WOMD), initialize it first:
-    int sdc_index = env->sdc_track_index;
-
-    if (sdc_index >= 0) {
-        active_agent_indices[0] = sdc_index;
-        env->num_actors++;
-        env->active_agent_count++;
-        env->entities[sdc_index].active_agent = 1;
-    }
-
     // Iterate through entities to find agents to create and/or control
     for (int i = 0; i < env->num_objects && env->num_actors < MAX_AGENTS; i++) {
-
-        // Skip if its the SDC
-        if (i == sdc_index) {
-            continue;
-        }
 
         Entity *entity = &env->entities[i];
 
@@ -1330,6 +1863,10 @@ void set_active_agents(Drive *env) {
             should_create = (entity->type == VEHICLE);
         } else { // Control all agents
             should_create = (entity->type == VEHICLE || entity->type == PEDESTRIAN || entity->type == CYCLIST);
+        }
+        // Ensure ego trailer is spawned for collision/offroad checks even when not controlled.
+        if (has_valid_ego_trailer_pair(env) && i == env->ego_trailer_track_index) {
+            should_create = true;
         }
 
         if (!should_create)
@@ -1449,6 +1986,11 @@ void init(Drive *env) {
     env->logs_capacity = env->active_agent_count;
     remove_bad_trajectories(env);
     set_start_position(env);
+    env->invalid_initial_trailer_state = has_invalid_initial_sdc_trailer_collision(env);
+    if (env->invalid_initial_trailer_state) {
+        raise_error_with_message(ERROR_INITIALIZATION_FAILED,
+                                 "Invalid initial state: SDC trailer collision/off-road at scenario start");
+    }
     init_goal_positions(env);
     env->logs = (Log *)calloc(env->active_agent_count, sizeof(Log));
 }
@@ -1477,12 +2019,14 @@ void c_close(Drive *env) {
     free(env->grid_map);
     free(env->static_agent_indices);
     free(env->expert_static_agent_indices);
+    free(env->tracks_to_predict_indices);
     free(env->ini_file);
 }
 
 void allocate(Drive *env) {
     init(env);
-    int max_obs = get_max_obs_dim(env);
+    int ego_dim = (env->dynamics_model == JERK) ? EGO_FEATURES_JERK : EGO_FEATURES_CLASSIC;
+    int max_obs = ego_dim + PARTNER_FEATURES * (MAX_AGENTS - 1) + ROAD_FEATURES * MAX_ROAD_SEGMENT_OBSERVATIONS;
     env->observations = (float *)calloc(env->active_agent_count * max_obs, sizeof(float));
     env->actions = (float *)calloc(env->active_agent_count * 2, sizeof(float));
     env->rewards = (float *)calloc(env->active_agent_count, sizeof(float));
@@ -1703,19 +2247,6 @@ static inline int get_track_id_or_placeholder(Drive *env, int agent_idx) {
     return -1;
 }
 
-static inline int map_entity_to_policy_type(const Entity *entity) {
-    if (entity->type == VEHICLE) {
-        return POLICY_TYPE_VEHICLE_SINGLE;
-    }
-    if (entity->type == PEDESTRIAN) {
-        return POLICY_TYPE_PEDESTRIAN;
-    }
-    if (entity->type == CYCLIST) {
-        return POLICY_TYPE_CYCLIST;
-    }
-    return POLICY_TYPE_PADDED;
-}
-
 void c_get_global_agent_state(Drive *env, float *x_out, float *y_out, float *z_out, float *heading_out, int *id_out,
                               float *length_out, float *width_out) {
     for (int i = 0; i < env->active_agent_count; i++) {
@@ -1737,13 +2268,13 @@ void c_get_global_agent_types(Drive *env, int *type_out) {
     for (int i = 0; i < env->active_agent_count; i++) {
         int agent_idx = env->active_agent_indices[i];
         Entity *agent = &env->entities[agent_idx];
-        type_out[i] = map_entity_to_policy_type(agent);
+        type_out[i] = agent->type;
     }
 }
 
 void c_get_partner_types(Drive *env, int *type_out) {
     memset(type_out, 0, env->active_agent_count * (MAX_AGENTS - 1) * sizeof(int));
-    int(*types)[MAX_AGENTS - 1] = (int(*)[MAX_AGENTS - 1])type_out;
+    int (*types)[MAX_AGENTS - 1] = (int (*)[MAX_AGENTS - 1])type_out;
     for (int i = 0; i < env->active_agent_count; i++) {
         Entity *ego_entity = &env->entities[env->active_agent_indices[i]];
         if (ego_entity->type > 3) {
@@ -1755,7 +2286,7 @@ void c_get_partner_types(Drive *env, int *type_out) {
             int index = -1;
             if (j < env->active_agent_count) {
                 index = env->active_agent_indices[j];
-            } else if (j < env->num_actors && env->static_agent_count > 0) {
+            } else if (j < env->num_actors) {
                 index = env->static_agent_indices[j - env->active_agent_count];
             }
             if (index == -1) {
@@ -1767,6 +2298,10 @@ void c_get_partner_types(Drive *env, int *type_out) {
             if (index == env->active_agent_indices[i]) {
                 continue;
             }
+            if (has_valid_ego_trailer_pair(env) && env->active_agent_indices[i] == env->sdc_track_index &&
+                index == env->ego_trailer_track_index) {
+                continue;
+            }
             Entity *other_entity = &env->entities[index];
             if (ego_entity->respawn_timestep != -1 || other_entity->respawn_timestep != -1) {
                 continue;
@@ -1774,16 +2309,41 @@ void c_get_partner_types(Drive *env, int *type_out) {
             float dx = other_entity->x - ego_entity->x;
             float dy = other_entity->y - ego_entity->y;
             float dist = (dx * dx + dy * dy);
-            if (dist > MAX_PARTNER_OBS_DIST2) {
+            if (dist > 2500.0f) {
                 continue;
             }
             if (partner_idx >= (MAX_AGENTS - 1)) {
                 break;
             }
-            types[i][partner_idx] = map_entity_to_policy_type(other_entity);
+            types[i][partner_idx] = other_entity->type;
             partner_idx++;
         }
     }
+}
+
+void c_get_sdc_trailer_state(Drive *env, int *has_trailer_out, float *x_out, float *y_out, float *z_out,
+                             float *heading_out, int *id_out, float *length_out, float *width_out) {
+    if (!has_valid_ego_trailer_pair(env)) {
+        *has_trailer_out = 0;
+        *x_out = NAN;
+        *y_out = NAN;
+        *z_out = NAN;
+        *heading_out = NAN;
+        *id_out = -1;
+        *length_out = 0.0f;
+        *width_out = 0.0f;
+        return;
+    }
+
+    Entity *trailer = &env->entities[env->ego_trailer_track_index];
+    *has_trailer_out = 1;
+    *x_out = trailer->x + env->world_mean_x;
+    *y_out = trailer->y + env->world_mean_y;
+    *z_out = trailer->z;
+    *heading_out = trailer->heading;
+    *id_out = trailer->id;
+    *length_out = trailer->length;
+    *width_out = trailer->width;
 }
 
 void c_get_global_ground_truth_trajectories(Drive *env, float *x_out, float *y_out, float *z_out, float *heading_out,
@@ -1837,10 +2397,8 @@ void c_get_road_edge_polylines(Drive *env, float *x_out, float *y_out, int *leng
 }
 
 void compute_observations(Drive *env) {
-    int ego_dim = get_raw_ego_obs_dim(env);
-    int base_ego_dim = get_base_ego_obs_dim(env);
-    int partner_obs_dim = get_raw_partner_obs_dim(env);
-    int max_obs = get_max_obs_dim(env);
+    int ego_dim = (env->dynamics_model == JERK) ? EGO_FEATURES_JERK : EGO_FEATURES_CLASSIC;
+    int max_obs = ego_dim + PARTNER_FEATURES * (MAX_AGENTS - 1) + ROAD_FEATURES * MAX_ROAD_SEGMENT_OBSERVATIONS;
     memset(env->observations, 0, max_obs * env->active_agent_count * sizeof(float));
     float (*observations)[max_obs] = (float (*)[max_obs])env->observations;
     for (int i = 0; i < env->active_agent_count; i++) {
@@ -1880,9 +2438,6 @@ void compute_observations(Drive *env) {
         } else {
             obs[6] = (ego_entity->respawn_timestep != -1) ? 1 : 0;
         }
-        if (env->observation_mode == 1) {
-            obs[base_ego_dim] = (float)map_entity_to_policy_type(ego_entity);
-        }
 
         // Relative Pos of other cars
         int obs_idx = ego_dim;
@@ -1891,7 +2446,7 @@ void compute_observations(Drive *env) {
             int index = -1;
             if (j < env->active_agent_count) {
                 index = env->active_agent_indices[j];
-            } else if (j < env->num_actors && env->static_agent_count > 0) {
+            } else if (j < env->num_actors) {
                 index = env->static_agent_indices[j - env->active_agent_count];
             }
             if (index == -1)
@@ -1900,6 +2455,10 @@ void compute_observations(Drive *env) {
                 break;
             if (index == env->active_agent_indices[i])
                 continue; // Skip self, but don't increment obs_idx
+            if (has_valid_ego_trailer_pair(env) && env->active_agent_indices[i] == env->sdc_track_index &&
+                index == env->ego_trailer_track_index) {
+                continue; // Keep ego policy unaware of its own dependent trailer.
+            }
             Entity *other_entity = &env->entities[index];
             if (ego_entity->respawn_timestep != -1)
                 continue;
@@ -1909,7 +2468,7 @@ void compute_observations(Drive *env) {
             float dx = other_entity->x - ego_entity->x;
             float dy = other_entity->y - ego_entity->y;
             float dist = (dx * dx + dy * dy);
-            if (dist > MAX_PARTNER_OBS_DIST2)
+            if (dist > 2500.0f)
                 continue;
             // Rotate to ego vehicle's frame
             float rel_x = dx * cos_heading + dy * sin_heading;
@@ -1937,13 +2496,10 @@ void compute_observations(Drive *env) {
                 other_entity->vx * other_entity->heading_x + other_entity->vy * other_entity->heading_y;
             float other_signed_speed = copysignf(other_speed_magnitude, other_v_dot_heading);
             obs[obs_idx + 6] = other_signed_speed / MAX_SPEED;
-            if (env->observation_mode == 1) {
-                obs[obs_idx + PARTNER_FEATURES] = (float)map_entity_to_policy_type(other_entity);
-            }
             cars_seen++;
-            obs_idx += partner_obs_dim;
+            obs_idx += 7; // Move to next observation slot
         }
-        int remaining_partner_obs = (MAX_AGENTS - 1 - cars_seen) * partner_obs_dim;
+        int remaining_partner_obs = (MAX_AGENTS - 1 - cars_seen) * 7;
         memset(&obs[obs_idx], 0, remaining_partner_obs * sizeof(float));
         obs_idx += remaining_partner_obs;
         // map observations
@@ -2066,6 +2622,7 @@ void sample_new_goal(Drive *env, int agent_idx) {
 void c_reset(Drive *env) {
     env->timestep = env->init_steps;
     set_start_position(env);
+    env->invalid_initial_trailer_state = has_invalid_initial_sdc_trailer_collision(env);
     for (int x = 0; x < env->active_agent_count; x++) {
         env->logs[x] = (Log){0};
         int agent_idx = env->active_agent_indices[x];
@@ -2080,6 +2637,9 @@ void c_reset(Drive *env) {
         env->entities[agent_idx].metrics_array[OFFROAD_IDX] = 0.0f;
         env->entities[agent_idx].metrics_array[REACHED_GOAL_IDX] = 0.0f;
         env->entities[agent_idx].metrics_array[LANE_ALIGNED_IDX] = 0.0f;
+        env->entities[agent_idx].combo_collision_any = 0;
+        env->entities[agent_idx].combo_collision_tractor_body = 0;
+        env->entities[agent_idx].combo_collision_trailer_body = 0;
         env->entities[agent_idx].stopped = 0;
         env->entities[agent_idx].removed = 0;
 
@@ -2105,6 +2665,9 @@ void respawn_agent(Drive *env, int agent_idx) {
     env->entities[agent_idx].metrics_array[OFFROAD_IDX] = 0.0f;
     env->entities[agent_idx].metrics_array[REACHED_GOAL_IDX] = 0.0f;
     env->entities[agent_idx].metrics_array[LANE_ALIGNED_IDX] = 0.0f;
+    env->entities[agent_idx].combo_collision_any = 0;
+    env->entities[agent_idx].combo_collision_tractor_body = 0;
+    env->entities[agent_idx].combo_collision_trailer_body = 0;
 
     env->entities[agent_idx].respawn_timestep = env->timestep;
     env->entities[agent_idx].collided_before_goal = 0;
@@ -2115,6 +2678,14 @@ void respawn_agent(Drive *env, int agent_idx) {
     env->entities[agent_idx].jerk_long = 0.0f;
     env->entities[agent_idx].jerk_lat = 0.0f;
     env->entities[agent_idx].steering_angle = 0.0f;
+
+    if (has_valid_ego_trailer_pair(env) && agent_idx == env->sdc_track_index) {
+        if (env->force_zero_trailer_articulation_at_init) {
+            force_zero_trailer_articulation_pose_from_params(env);
+        } else {
+            update_ego_trailer_pose(env);
+        }
+    }
 }
 
 void c_step(Drive *env) {
@@ -2155,6 +2726,9 @@ void c_step(Drive *env) {
         float prev_vy = env->entities[agent_idx].vy;
 
         move_dynamics(env, i, agent_idx);
+        if (has_valid_ego_trailer_pair(env) && agent_idx == env->sdc_track_index) {
+            update_ego_trailer_pose(env);
+        }
 
         // Tiny jerk penalty for smoothness
         if (env->dynamics_model == CLASSIC) {
@@ -2396,9 +2970,8 @@ void draw_agent_obs(Drive *env, int agent_index, int mode, int obs_only, int las
         return;
     }
 
-    int ego_dim = get_raw_ego_obs_dim(env);
-    int partner_obs_dim = get_raw_partner_obs_dim(env);
-    int max_obs = get_max_obs_dim(env);
+    int ego_dim = (env->dynamics_model == JERK) ? EGO_FEATURES_JERK : EGO_FEATURES_CLASSIC;
+    int max_obs = ego_dim + PARTNER_FEATURES * (MAX_AGENTS - 1) + ROAD_FEATURES * MAX_ROAD_SEGMENT_OBSERVATIONS;
     float (*observations)[max_obs] = (float (*)[max_obs])env->observations;
     float *agent_obs = &observations[agent_index][0];
     // self
@@ -2427,7 +3000,7 @@ void draw_agent_obs(Drive *env, int agent_index, int mode, int obs_only, int las
     int obs_idx = ego_dim; // Start after ego obs
     for (int j = 0; j < MAX_AGENTS - 1; j++) {
         if (agent_obs[obs_idx] == 0 || agent_obs[obs_idx + 1] == 0) {
-            obs_idx += partner_obs_dim;
+            obs_idx += 7; // Move to next agent observation
             continue;
         }
         // Draw position of other agents
@@ -2533,10 +3106,10 @@ void draw_agent_obs(Drive *env, int agent_index, int mode, int obs_only, int las
             }
         }
 
-        obs_idx += partner_obs_dim;
+        obs_idx += PARTNER_FEATURES; // Move to next agent observation (7 values per agent)
     }
     // Then draw map observations
-    int map_start_idx = ego_dim + partner_obs_dim * (MAX_AGENTS - 1);
+    int map_start_idx = ego_dim + PARTNER_FEATURES * (MAX_AGENTS - 1); // Start after agent observations
     for (int k = 0; k < MAX_ROAD_SEGMENT_OBSERVATIONS; k++) {          // Loop through potential map entities
         int entity_idx = map_start_idx + k * 7;
         if (agent_obs[entity_idx] == 0 && agent_obs[entity_idx + 1] == 0) {
@@ -2637,6 +3210,41 @@ void draw_road_edge(Drive *env, float start_x, float start_y, float end_x, float
     DrawTriangle3D(t4, t1, b1, CURB_SIDE);
 }
 
+static inline void draw_ego_trailer_linkage(Drive *env) {
+    if (!has_valid_ego_trailer_pair(env))
+        return;
+
+    Entity *tractor = &env->entities[env->sdc_track_index];
+    Entity *trailer = &env->entities[env->ego_trailer_track_index];
+
+    // Match visibility rules used for entities in draw_scene.
+    if (tractor->respawn_timestep != -1 || trailer->respawn_timestep != -1)
+        return;
+    if (tractor->x == INVALID_POSITION || trailer->x == INVALID_POSITION)
+        return;
+
+    // Use the same extension geometry used by update_ego_trailer_pose.
+    float tractor2hitch = env->non_kinematic_vehicle_params[6];
+    float trailer2hitch = env->non_kinematic_vehicle_params[7];
+
+    float theta_tractor = tractor->heading;
+    float theta_trailer = trailer->heading;
+
+    float tractor_hitch_x = tractor->x + (-tractor->length * 0.5f + tractor2hitch) * cosf(theta_tractor);
+    float tractor_hitch_y = tractor->y + (-tractor->length * 0.5f + tractor2hitch) * sinf(theta_tractor);
+
+    float trailer_hitch_x = trailer->x + (trailer->length * 0.5f - trailer2hitch) * cosf(theta_trailer);
+    float trailer_hitch_y = trailer->y + (trailer->length * 0.5f - trailer2hitch) * sinf(theta_trailer);
+
+    Vector3 tractor_hitch = {tractor_hitch_x, tractor_hitch_y, 1.2f};
+    Vector3 trailer_hitch = {trailer_hitch_x, trailer_hitch_y, 1.2f};
+
+    rlSetLineWidth(4.0f);
+    DrawLine3D(tractor_hitch, trailer_hitch, ORANGE);
+    DrawSphere(tractor_hitch, 0.18f, ORANGE);
+    DrawSphere(trailer_hitch, 0.18f, ORANGE);
+}
+
 void draw_scene(Drive *env, Client *client, int mode, int obs_only, int lasers, int show_grid) {
 
     if (show_grid) {
@@ -2660,6 +3268,9 @@ void draw_scene(Drive *env, Client *client, int mode, int obs_only, int lasers, 
             // Check if this vehicle is an active agent
             bool is_active_agent = false;
             bool is_static_agent = false;
+            bool is_ego_trailer_entity = has_valid_ego_trailer_pair(env) && i == env->ego_trailer_track_index;
+            bool is_ego_tractor_entity = has_valid_ego_trailer_pair(env) && i == env->sdc_track_index;
+            bool is_ego_combo_entity = is_ego_trailer_entity || is_ego_tractor_entity;
             int agent_index = -1;
             for (int j = 0; j < env->active_agent_count; j++) {
                 if (env->active_agent_indices[j] == i) {
@@ -2675,7 +3286,8 @@ void draw_scene(Drive *env, Client *client, int mode, int obs_only, int lasers, 
                 }
             }
             // HIDE CARS ON RESPAWN - IMPORTANT TO KNOW VISUAL SETTING
-            if ((!is_active_agent && !is_static_agent) || env->entities[i].respawn_timestep != -1) {
+            if ((!is_active_agent && !is_static_agent && !is_ego_trailer_entity) ||
+                env->entities[i].respawn_timestep != -1) {
                 continue;
             }
             Vector3 position;
@@ -2686,6 +3298,18 @@ void draw_scene(Drive *env, Client *client, int mode, int obs_only, int lasers, 
             Vector3 size = {env->entities[i].length, env->entities[i].width, env->entities[i].height};
 
             bool is_expert = (!is_active_agent) && (env->entities[i].mark_as_expert == 1);
+            bool combo_collision_any = false;
+            bool combo_body_triggered = false;
+            if (is_ego_combo_entity && has_valid_ego_trailer_pair(env)) {
+                Entity *tractor_entity = &env->entities[env->sdc_track_index];
+                combo_collision_any = (tractor_entity->combo_collision_any > 0);
+                combo_body_triggered =
+                    is_ego_trailer_entity ? (tractor_entity->combo_collision_trailer_body > 0)
+                                          : (tractor_entity->combo_collision_tractor_body > 0);
+            } else {
+                combo_collision_any = (env->entities[i].collision_state > 0);
+                combo_body_triggered = combo_collision_any;
+            }
 
             // Save current transform
             if (mode == 1) {
@@ -2724,9 +3348,18 @@ void draw_scene(Drive *env, Client *client, int mode, int obs_only, int lasers, 
                     car_color = GOLD; // expert replay
                 if (is_active_agent)
                     car_color = BLUE; // policy-controlled
-                if (is_active_agent && env->entities[i].collision_state > 0)
+                if ((is_active_agent && env->entities[i].collision_state > 0) || combo_collision_any)
                     car_color = RED;
-                rlSetLineWidth(3.0f);
+                if (combo_body_triggered) {
+                    // Draw a bright halo first so the triggering body is unambiguous.
+                    rlSetLineWidth(10.0f);
+                    for (int j = 0; j < 4; j++) {
+                        DrawLine3D(corners[j], corners[(j + 1) % 4], YELLOW);
+                    }
+                    DrawLine3D(corners[0], corners[2], RED);
+                    DrawLine3D(corners[1], corners[3], RED);
+                }
+                rlSetLineWidth(combo_body_triggered ? 6.0f : 3.0f);
                 for (int j = 0; j < 4; j++) {
                     DrawLine3D(corners[j], corners[(j + 1) % 4], car_color);
                 }
@@ -2753,7 +3386,7 @@ void draw_scene(Drive *env, Client *client, int mode, int obs_only, int lasers, 
 
                     car_model = client->cars[(i % 5) + 1];
 
-                    if (env->entities[i].collision_state > 0) {
+                    if ((env->entities[i].collision_state > 0) || combo_collision_any) {
                         car_model = client->cars[0]; // Collided agents use red
                     }
                 }
@@ -2797,9 +3430,17 @@ void draw_scene(Drive *env, Client *client, int mode, int obs_only, int lasers, 
                         wire_color = GOLD; // expert replay
                     if (is_active_agent)
                         wire_color = BLUE; // policy
-                    if (is_active_agent && env->entities[i].collision_state > 0)
+                    if ((is_active_agent && env->entities[i].collision_state > 0) || combo_collision_any)
                         wire_color = RED;
-                    rlSetLineWidth(2.0f);
+                    if (combo_body_triggered) {
+                        rlSetLineWidth(7.0f);
+                        for (int j = 0; j < 4; j++) {
+                            DrawLine3D(corners[j], corners[(j + 1) % 4], YELLOW);
+                        }
+                        DrawLine3D(corners[0], corners[2], RED);
+                        DrawLine3D(corners[1], corners[3], RED);
+                    }
+                    rlSetLineWidth(combo_body_triggered ? 5.0f : 2.0f);
                     for (int j = 0; j < 4; j++) {
                         DrawLine3D(corners[j], corners[(j + 1) % 4], wire_color);
                     }
@@ -2864,6 +3505,7 @@ void draw_scene(Drive *env, Client *client, int mode, int obs_only, int lasers, 
         }
     }
 
+    draw_ego_trailer_linkage(env);
     EndMode3D();
 
     // Draw track indices for the tracks to predict
@@ -2907,7 +3549,7 @@ void c_render(Drive *env) {
     handle_camera_controls(env->client);
     draw_scene(env, client, 0, 0, 0, 0);
 
-    if (IsKeyPressed(KEY_TAB) && env->active_agent_count > 0) {
+    if (IsKeyPressed(KEY_TAB)) {
         env->human_agent_idx = (env->human_agent_idx + 1) % env->active_agent_count;
     }
 

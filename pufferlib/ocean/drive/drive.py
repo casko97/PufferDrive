@@ -3,6 +3,7 @@ import gymnasium
 import json
 import struct
 import os
+import hashlib
 import pufferlib
 from pufferlib.ocean.drive import binding
 from multiprocessing import Pool, cpu_count
@@ -10,6 +11,87 @@ from tqdm import tqdm
 
 _POLICY_TYPE_PADDED = 0
 _EMPTY_PARTNER_EPS = 1e-8
+_NON_KINEMATIC_PARAM_ORDER = [
+    "tractor_length",
+    "trailer_length",
+    "width",
+    "trailer_width",
+    "vehicle_height",
+    "trailer_height",
+    "tractor2hitch",
+    "trailer2hitch",
+    "tractor_d_rear_axle2rear_bumper",
+    "tractor_d_rear_axle2front_axle",
+    "tractor_d_front_axle2front_bumper",
+    "trailer_d_rear_axel2_rear_bumper",
+    "trailer_d_real_axel2_front_bumper",
+]
+_NON_KINEMATIC_PARAM_CACHE = {}
+DEFAULT_SDC_RUNTIME_TRUCK_REF_BIN = (
+    "tests/artifacts/drive/traversing_traffic_light_intersection__97be27351e915863__97be27351e915863.bin"
+)
+
+
+def _as_bool(value):
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, np.integer)):
+        return bool(value)
+    if isinstance(value, str):
+        return value.strip().lower() in ("1", "true", "yes", "on")
+    return bool(value)
+
+
+def _load_non_kinematic_vehicle_params_from_bin(binary_path):
+    cached = _NON_KINEMATIC_PARAM_CACHE.get(binary_path)
+    if cached is not None:
+        return cached
+
+    with open(binary_path, "rb") as f:
+        _ = struct.unpack("<i", f.read(4))[0]
+        num_tracks_to_predict = struct.unpack("<i", f.read(4))[0]
+        f.seek(4 * num_tracks_to_predict, os.SEEK_CUR)
+        num_objects = struct.unpack("<i", f.read(4))[0]
+        num_roads = struct.unpack("<i", f.read(4))[0]
+
+        for _ in range(num_objects):
+            _ = struct.unpack("<i", f.read(4))[0]
+            _ = struct.unpack("<i", f.read(4))[0]
+            _ = struct.unpack("<i", f.read(4))[0]
+            trajectory_length = struct.unpack("<i", f.read(4))[0]
+            f.seek(4 * trajectory_length * 3, os.SEEK_CUR)
+            f.seek((4 * trajectory_length * 4) + (4 * trajectory_length), os.SEEK_CUR)
+            f.seek((6 * 4) + 4, os.SEEK_CUR)
+
+        for _ in range(num_roads):
+            _ = struct.unpack("<i", f.read(4))[0]
+            _ = struct.unpack("<i", f.read(4))[0]
+            _ = struct.unpack("<i", f.read(4))[0]
+            array_size = struct.unpack("<i", f.read(4))[0]
+            f.seek(4 * array_size * 3, os.SEEK_CUR)
+            f.seek((6 * 4) + 4, os.SEEK_CUR)
+
+        extension_magic = struct.unpack("<i", f.read(4))[0]
+        extension_version = struct.unpack("<i", f.read(4))[0]
+        if extension_magic != 0x54524C52:
+            raise ValueError(f"Extension magic mismatch in {binary_path}")
+        if extension_version != 2:
+            raise ValueError(f"Unsupported extension version {extension_version} in {binary_path}")
+
+        f.seek(4 * 2, os.SEEK_CUR)
+        object_meta_count = struct.unpack("<i", f.read(4))[0]
+        f.seek(object_meta_count * (8 + 4 + 4), os.SEEK_CUR)
+
+        vehicle_param_count = struct.unpack("<i", f.read(4))[0]
+        if vehicle_param_count != len(_NON_KINEMATIC_PARAM_ORDER):
+            raise ValueError(
+                f"Expected {len(_NON_KINEMATIC_PARAM_ORDER)} non-kinematic params in {binary_path}, got {vehicle_param_count}"
+            )
+        values = struct.unpack(f"<{vehicle_param_count}f", f.read(4 * vehicle_param_count))
+
+    params = tuple(float(v) for v in values)
+    _NON_KINEMATIC_PARAM_CACHE[binary_path] = params
+    return params
 
 
 class Drive(pufferlib.PufferEnv):
@@ -47,6 +129,10 @@ class Drive(pufferlib.PufferEnv):
         observation_mode="default",
         map_dir="resources/drive/binaries/training",
         sequential_map_sampling=False,
+        sdc_runtime_truck_override=False,
+        sdc_runtime_truck_ref_bin=None,
+        force_truck_params_from_ref_bin=None,
+        force_zero_trailer_articulation_at_init=False,
     ):
         # env
         self.dt = dt
@@ -93,6 +179,25 @@ class Drive(pufferlib.PufferEnv):
         self.control_mode_str = control_mode
         self.observation_mode_str = observation_mode
         self.map_dir = map_dir
+        self.force_zero_trailer_articulation_at_init = _as_bool(force_zero_trailer_articulation_at_init)
+        self.non_kinematic_vehicle_params_override = None
+        if isinstance(sdc_runtime_truck_ref_bin, str):
+            stripped_ref = sdc_runtime_truck_ref_bin.strip()
+            if stripped_ref == "" or stripped_ref.lower() == "none":
+                sdc_runtime_truck_ref_bin = None
+        if _as_bool(sdc_runtime_truck_override):
+            self.force_zero_trailer_articulation_at_init = True
+            if force_truck_params_from_ref_bin is None:
+                force_truck_params_from_ref_bin = (
+                    sdc_runtime_truck_ref_bin
+                    if sdc_runtime_truck_ref_bin is not None
+                    else DEFAULT_SDC_RUNTIME_TRUCK_REF_BIN
+                )
+        if force_truck_params_from_ref_bin is not None:
+            reference_bin = os.path.abspath(force_truck_params_from_ref_bin)
+            if not os.path.exists(reference_bin):
+                raise FileNotFoundError(f"Truck reference artifact not found: {reference_bin}")
+            self.non_kinematic_vehicle_params_override = _load_non_kinematic_vehicle_params_from_bin(reference_bin)
 
         if self.control_mode_str == "control_vehicles":
             self.control_mode = 0
@@ -181,6 +286,8 @@ class Drive(pufferlib.PufferEnv):
             goal_behavior=self.goal_behavior,
             goal_target_distance=self.goal_target_distance,
             sequential_map_sampling=sequential_map_sampling,
+            non_kinematic_vehicle_params_override=self.non_kinematic_vehicle_params_override,
+            force_zero_trailer_articulation_at_init=int(self.force_zero_trailer_articulation_at_init),
         )
 
         # agent_offsets[-1] works in both cases, just making it explicit that num_agents is ignored if sequential_map_sampling is True
@@ -226,13 +333,85 @@ class Drive(pufferlib.PufferEnv):
                 init_mode=self.init_mode,
                 control_mode=self.control_mode,
                 map_dir=map_dir,
+                non_kinematic_vehicle_params_override=self.non_kinematic_vehicle_params_override,
+                force_zero_trailer_articulation_at_init=int(self.force_zero_trailer_articulation_at_init),
             )
             env_ids.append(env_id)
 
         self.c_envs = binding.vectorize(*env_ids)
 
+    def _resample_vector_envs(self, seed):
+        binding.vec_close(self.c_envs)
+        agent_offsets, map_ids, num_envs = binding.shared(
+            num_agents=self.num_agents,
+            num_maps=self.num_maps,
+            init_mode=self.init_mode,
+            control_mode=self.control_mode,
+            init_steps=self.init_steps,
+            max_controlled_agents=self.max_controlled_agents,
+            goal_behavior=self.goal_behavior,
+            goal_target_distance=self.goal_target_distance,
+            goal_speed=self.goal_speed,
+            map_dir=self.map_dir,
+            sequential_map_sampling=False,
+            non_kinematic_vehicle_params_override=self.non_kinematic_vehicle_params_override,
+            force_zero_trailer_articulation_at_init=int(self.force_zero_trailer_articulation_at_init),
+        )
+        self.agent_offsets = agent_offsets
+        self.map_ids = map_ids
+        self.num_envs = num_envs
+        env_ids = []
+        for i in range(num_envs):
+            cur = agent_offsets[i]
+            nxt = agent_offsets[i + 1]
+            env_id = binding.env_init(
+                self._sim_observations[cur:nxt],
+                self.actions[cur:nxt],
+                self.rewards[cur:nxt],
+                self.terminals[cur:nxt],
+                self.truncations[cur:nxt],
+                seed,
+                action_type=self._action_type_flag,
+                human_agent_idx=self.human_agent_idx,
+                reward_vehicle_collision=self.reward_vehicle_collision,
+                reward_offroad_collision=self.reward_offroad_collision,
+                reward_goal=self.reward_goal,
+                reward_goal_post_respawn=self.reward_goal_post_respawn,
+                goal_radius=self.goal_radius,
+                goal_behavior=self.goal_behavior,
+                goal_target_distance=self.goal_target_distance,
+                goal_speed=self.goal_speed,
+                collision_behavior=self.collision_behavior,
+                offroad_behavior=self.offroad_behavior,
+                dt=self.dt,
+                episode_length=(int(self.episode_length) if self.episode_length is not None else None),
+                max_controlled_agents=self.max_controlled_agents,
+                map_id=map_ids[i],
+                max_agents=nxt - cur,
+                ini_file="pufferlib/config/ocean/drive.ini",
+                init_steps=self.init_steps,
+                init_mode=self.init_mode,
+                control_mode=self.control_mode,
+                map_dir=self.map_dir,
+                non_kinematic_vehicle_params_override=self.non_kinematic_vehicle_params_override,
+                force_zero_trailer_articulation_at_init=int(self.force_zero_trailer_articulation_at_init),
+            )
+            env_ids.append(env_id)
+
+        self.c_envs = binding.vectorize(*env_ids)
+        binding.vec_reset(self.c_envs, seed)
+
     def reset(self, seed=0):
         binding.vec_reset(self.c_envs, seed)
+        max_resample_attempts = 8
+        attempts = 0
+        while binding.vec_has_invalid_initial_trailer_state(self.c_envs):
+            attempts += 1
+            if attempts > max_resample_attempts:
+                raise RuntimeError(
+                    f"Exceeded {max_resample_attempts} resample attempts while rejecting invalid initial trailer states."
+                )
+            self._resample_vector_envs(np.random.randint(0, 2**32 - 1))
         self.tick = 0
         self._postprocess_observations()
         return self.observations, []
@@ -250,67 +429,13 @@ class Drive(pufferlib.PufferEnv):
                 # print(log)
         if self.tick > 0 and self.resample_frequency > 0 and self.tick % self.resample_frequency == 0:
             self.tick = 0
-            binding.vec_close(self.c_envs)
-            agent_offsets, map_ids, num_envs = binding.shared(
-                num_agents=self.num_agents,
-                num_maps=self.num_maps,
-                init_mode=self.init_mode,
-                control_mode=self.control_mode,
-                init_steps=self.init_steps,
-                max_controlled_agents=self.max_controlled_agents,
-                goal_behavior=self.goal_behavior,
-                goal_target_distance=self.goal_target_distance,
-                goal_speed=self.goal_speed,
-                map_dir=self.map_dir,
-                sequential_map_sampling=False,  # Always use random sampling with replacement
-            )
-            self.agent_offsets = agent_offsets
-            self.map_ids = map_ids
-            self.num_envs = num_envs
-            env_ids = []
             seed = np.random.randint(0, 2**32 - 1)
-            for i in range(num_envs):
-                cur = agent_offsets[i]
-                nxt = agent_offsets[i + 1]
-                env_id = binding.env_init(
-                    self._sim_observations[cur:nxt],
-                    self.actions[cur:nxt],
-                    self.rewards[cur:nxt],
-                    self.terminals[cur:nxt],
-                    self.truncations[cur:nxt],
-                    seed,
-                    action_type=self._action_type_flag,
-                    human_agent_idx=self.human_agent_idx,
-                    reward_vehicle_collision=self.reward_vehicle_collision,
-                    reward_offroad_collision=self.reward_offroad_collision,
-                    reward_goal=self.reward_goal,
-                    reward_goal_post_respawn=self.reward_goal_post_respawn,
-                    goal_radius=self.goal_radius,
-                    goal_behavior=self.goal_behavior,
-                    goal_target_distance=self.goal_target_distance,
-                    goal_speed=self.goal_speed,
-                    collision_behavior=self.collision_behavior,
-                    offroad_behavior=self.offroad_behavior,
-                    dt=self.dt,
-                    episode_length=(int(self.episode_length) if self.episode_length is not None else None),
-                    max_controlled_agents=self.max_controlled_agents,
-                    map_id=map_ids[i],
-                    max_agents=nxt - cur,
-                    ini_file="pufferlib/config/ocean/drive.ini",
-                    init_steps=self.init_steps,
-                    init_mode=self.init_mode,
-                    control_mode=self.control_mode,
-                    map_dir=self.map_dir,
-                )
-                env_ids.append(env_id)
-            self.c_envs = binding.vectorize(*env_ids)
-
-            binding.vec_reset(self.c_envs, seed)
+            self._resample_vector_envs(seed)
             self.terminals[:] = 1
         self._postprocess_observations()
         return (self.observations, self.rewards, self.terminals, self.truncations, info)
 
-    def get_global_agent_state(self):
+    def get_global_agent_state(self, include_sdc_trailer=False, include_types=False):
         """Get current global state of all active agents.
 
         Returns:
@@ -340,6 +465,11 @@ class Drive(pufferlib.PufferEnv):
             states["width"],
         )
 
+        if include_sdc_trailer:
+            states["sdc_trailer"] = self.get_sdc_trailer_state()
+        if include_types:
+            states["type"] = self.get_global_agent_types()
+
         return states
 
     def get_global_agent_types(self):
@@ -354,8 +484,33 @@ class Drive(pufferlib.PufferEnv):
         binding.vec_get_partner_types(self.c_envs, types)
         return types
 
+    def get_sdc_trailer_state(self):
+        trailer = {
+            "has_trailer": np.zeros(self.num_envs, dtype=np.int32),
+            "x": np.zeros(self.num_envs, dtype=np.float32),
+            "y": np.zeros(self.num_envs, dtype=np.float32),
+            "z": np.zeros(self.num_envs, dtype=np.float32),
+            "heading": np.zeros(self.num_envs, dtype=np.float32),
+            "id": np.zeros(self.num_envs, dtype=np.int32),
+            "length": np.zeros(self.num_envs, dtype=np.float32),
+            "width": np.zeros(self.num_envs, dtype=np.float32),
+        }
+
+        binding.vec_get_sdc_trailer_state(
+            self.c_envs,
+            trailer["has_trailer"],
+            trailer["x"],
+            trailer["y"],
+            trailer["z"],
+            trailer["heading"],
+            trailer["id"],
+            trailer["length"],
+            trailer["width"],
+        )
+        return trailer
+
     def _postprocess_observations(self):
-        if self.observation_mode != 1:
+        if getattr(self, "observation_mode", 0) != 1:
             return
 
         base_ego = self._base_ego_features
@@ -518,10 +673,52 @@ def save_map_binary(map_data, output_file, unique_map_id):
     trajectory_length = 91
     """Saves map data in a binary format readable by C"""
     with open(output_file, "wb") as f:
+        extension_magic = 0x54524C52
+        extension_version = 2
+
+        def stable_track_hash(value):
+            if value is None:
+                return 0
+            digest = hashlib.blake2b(str(value).encode("utf-8"), digest_size=8).digest()
+            return struct.unpack("<Q", digest)[0]
+
+        def normalize_int32_id(value):
+            int32_min = -(2**31)
+            int32_max = 2**31 - 1
+
+            if isinstance(value, bool):
+                value = int(value)
+
+            try:
+                intval = int(value)
+                if int32_min <= intval <= int32_max:
+                    return intval
+                return ((intval + 2**31) % 2**32) - 2**31
+            except (TypeError, ValueError):
+                digest = hashlib.blake2b(str(value).encode("utf-8"), digest_size=4).digest()
+                uint32 = struct.unpack("<I", digest)[0]
+                return uint32 - 2**32 if uint32 >= 2**31 else uint32
+
         # Get metadata
         metadata = map_data.get("metadata", {})
         sdc_track_index = metadata.get("sdc_track_index", -1)  # -1 as default if not found
         tracks_to_predict = metadata.get("tracks_to_predict", [])
+        has_ego_trailer = int(bool(metadata.get("has_ego_trailer", False)))
+        ego_trailer_track_index = int(metadata.get("ego_trailer_track_index", -1))
+        non_kinematic_vehicle_params = metadata.get("non_kinematic_vehicle_params", {})
+        if not isinstance(non_kinematic_vehicle_params, dict):
+            non_kinematic_vehicle_params = {}
+        non_kinematic_aliases = {
+            "trailer_d_rear_axel2_rear_bumper": [
+                "trailer_d_rear_axel2_rear_bumper",
+                "trailer_d_rear_axle2_rear_bumper",
+            ],
+            "trailer_d_real_axel2_front_bumper": [
+                "trailer_d_real_axel2_front_bumper",
+                "trailer_d_rear_axel2_front_bumper",
+                "trailer_d_rear_axle2_front_bumper",
+            ],
+        }
 
         # Write sdc_track_index
         f.write(struct.pack("i", sdc_track_index))
@@ -553,7 +750,7 @@ def save_map_binary(map_data, output_file, unique_map_id):
             elif obj_type == "cyclist":
                 obj_type = 3
             f.write(struct.pack("i", obj_type))  # type
-            f.write(struct.pack("i", obj.get("id", 0)))  # id
+            f.write(struct.pack("i", normalize_int32_id(obj.get("id", 0))))  # id
             f.write(struct.pack("i", trajectory_length))  # array_size
             # Write position arrays
             positions = obj.get("position", [])
@@ -633,7 +830,7 @@ def save_map_binary(map_data, output_file, unique_map_id):
                 road_type = 10
             # Write base entity data
             f.write(struct.pack("i", road_type))  # type
-            f.write(struct.pack("i", road.get("id", 0)))  # id
+            f.write(struct.pack("i", normalize_int32_id(road.get("id", 0))))  # id
             f.write(struct.pack("i", size))  # array_size
 
             # Write position arrays
@@ -650,6 +847,29 @@ def save_map_binary(map_data, output_file, unique_map_id):
             f.write(struct.pack("f", float(goal_pos.get("y", 0.0))))  # Get y value
             f.write(struct.pack("f", float(goal_pos.get("z", 0.0))))  # Get z value
             f.write(struct.pack("i", road.get("mark_as_expert", 0)))
+
+        objects = map_data.get("objects", [])
+        f.write(struct.pack("i", extension_magic))
+        f.write(struct.pack("i", extension_version))
+        f.write(struct.pack("i", has_ego_trailer))
+        f.write(struct.pack("i", ego_trailer_track_index))
+        f.write(struct.pack("i", len(objects)))
+        for obj_idx, obj in enumerate(objects):
+            source_track_id_hash = stable_track_hash(obj.get("source_track_id"))
+            is_trailer = int(has_ego_trailer and obj_idx == ego_trailer_track_index)
+            parent_track_index = int(sdc_track_index if is_trailer else -1)
+            f.write(struct.pack("Q", source_track_id_hash))
+            f.write(struct.pack("i", is_trailer))
+            f.write(struct.pack("i", parent_track_index))
+
+        f.write(struct.pack("i", len(_NON_KINEMATIC_PARAM_ORDER)))
+        for param_key in _NON_KINEMATIC_PARAM_ORDER:
+            value = None
+            for alias in non_kinematic_aliases.get(param_key, [param_key]):
+                if alias in non_kinematic_vehicle_params:
+                    value = non_kinematic_vehicle_params.get(alias)
+                    break
+            f.write(struct.pack("f", float(value if value is not None else 0.0)))
 
 
 def load_map(map_name, unique_map_id, binary_output=None):
