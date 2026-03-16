@@ -11,6 +11,7 @@ from pufferlib.models import Convolutional as Conv  # noqa: F401
 
 Recurrent = pufferlib.models.LSTMWrapper
 EMPTY_PARTNER_EPS = 1e-8
+DEBUG_TYPE_CHANNELS = 2
 
 
 class Drive(nn.Module):
@@ -28,14 +29,27 @@ class Drive(nn.Module):
         self.base_ego_dim = 10 if env.dynamics_model == "jerk" else 7
         self.ego_dim = env.ego_features
         self.base_partner_features = 7
-        self.type_classes = env.type_classes
-        self.real_type_classes = max(1, self.type_classes - 1)
         self.has_augmented_ego = self.ego_dim > self.base_ego_dim
         self.has_partner_type = self.partner_features > self.base_partner_features
-        self.ego_encoder_input_dim = self.base_ego_dim + (self.type_classes if self.has_augmented_ego else 0)
+        self.ego_encoder_input_dim = self.base_ego_dim + (DEBUG_TYPE_CHANNELS if self.has_augmented_ego else 0)
         self.partner_encoder_input_dim = self.base_partner_features + (
-            self.real_type_classes if self.has_partner_type else 0
+            DEBUG_TYPE_CHANNELS if self.has_partner_type else 0
         )
+        self._printed_encoder_dims = False
+        self._printed_debug_onehot = False
+
+        if not self._printed_encoder_dims:
+            print(
+                "[DriveDebug] "
+                f"base_ego_dim={self.base_ego_dim} "
+                f"ego_dim={self.ego_dim} "
+                f"ego_encoder_input_dim={self.ego_encoder_input_dim} "
+                f"base_partner_features={self.base_partner_features} "
+                f"partner_features={self.partner_features} "
+                f"partner_encoder_input_dim={self.partner_encoder_input_dim}",
+                flush=True,
+            )
+            self._printed_encoder_dims = True
 
         self.ego_encoder = nn.Sequential(
             pufferlib.pytorch.layer_init(nn.Linear(self.ego_encoder_input_dim, input_size)),
@@ -91,16 +105,14 @@ class Drive(nn.Module):
         partner_objects = partner_obs.view(-1, self.max_partner_objects, self.partner_features)
         if self.has_partner_type:
             partner_continuous = partner_objects[:, :, : self.base_partner_features]
-            partner_type = partner_objects[:, :, self.base_partner_features].long().clamp(
-                min=0, max=self.type_classes - 1
-            )
-            # Empty slots are zero-padded in width/length and must not emit type signal.
             occupied_partner_slots = partner_continuous.abs().amax(dim=2) > EMPTY_PARTNER_EPS
-            partner_type_idx = (partner_type - 1).clamp(min=0, max=self.real_type_classes - 1)
-            partner_type_onehot = F.one_hot(partner_type_idx, num_classes=self.real_type_classes).to(
-                partner_continuous.dtype
+            partner_type_onehot = torch.zeros(
+                (*partner_continuous.shape[:2], DEBUG_TYPE_CHANNELS),
+                dtype=partner_continuous.dtype,
+                device=partner_continuous.device,
             )
-            partner_type_onehot = partner_type_onehot * occupied_partner_slots.unsqueeze(-1).to(partner_continuous.dtype)
+            # Debug override: treat every occupied vehicle partner as a car.
+            partner_type_onehot[:, :, 0] = occupied_partner_slots.to(partner_continuous.dtype)
             partner_objects = torch.cat([partner_continuous, partner_type_onehot], dim=2)
 
         road_objects = road_obs.view(-1, self.max_road_objects, self.road_features)
@@ -111,9 +123,41 @@ class Drive(nn.Module):
 
         if self.has_augmented_ego:
             ego_core = ego_obs[:, : self.base_ego_dim]
-            ego_type = ego_obs[:, self.base_ego_dim].long().clamp(min=0, max=self.type_classes - 1)
-            ego_type_onehot = F.one_hot(ego_type, num_classes=self.type_classes).to(ego_core.dtype)
+            ego_type_onehot = torch.zeros(
+                (ego_core.shape[0], DEBUG_TYPE_CHANNELS),
+                dtype=ego_core.dtype,
+                device=ego_core.device,
+            )
+            # Debug override: treat every controlled vehicle as a car.
+            ego_type_onehot[:, 0] = 1.0
             ego_obs = torch.cat([ego_core, ego_type_onehot], dim=1)
+            if not self._printed_debug_onehot:
+                partner_preview = None
+                partner_occupied_preview = None
+                occupied_count = None
+                total_partner_slots = None
+                padded_index = None
+                padded_onehot = None
+                if self.has_partner_type:
+                    partner_preview = partner_type_onehot[0, : min(4, partner_type_onehot.shape[1])].detach().cpu()
+                    partner_occupied_preview = occupied_partner_slots[0, : min(8, occupied_partner_slots.shape[1])].detach().cpu()
+                    occupied_count = int(occupied_partner_slots.sum().item())
+                    total_partner_slots = int(occupied_partner_slots.numel())
+                    padded_positions = (~occupied_partner_slots[0]).nonzero(as_tuple=False)
+                    if len(padded_positions) > 0:
+                        padded_index = int(padded_positions[0].item())
+                        padded_onehot = partner_type_onehot[0, padded_index].detach().cpu()
+                print(
+                    "[DriveDebug] "
+                    f"ego_type_onehot_sample={ego_type_onehot[:4].detach().cpu()} "
+                    f"partner_occupied_sample={partner_occupied_preview} "
+                    f"partner_type_onehot_sample={partner_preview} "
+                    f"occupied_partner_slots={occupied_count}/{total_partner_slots} "
+                    f"first_padded_partner_index={padded_index} "
+                    f"first_padded_partner_onehot={padded_onehot}",
+                    flush=True,
+                )
+                self._printed_debug_onehot = True
         ego_features = self.ego_encoder(ego_obs)
         partner_features, _ = self.partner_encoder(partner_objects).max(dim=1)
         road_features, _ = self.road_encoder(road_objects).max(dim=1)

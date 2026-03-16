@@ -80,6 +80,8 @@
 #define ROAD_FEATURES 7
 #define ROAD_FEATURES_ONEHOT 13
 #define PARTNER_FEATURES 7
+#define PARTNER_TYPE_CHANNELS 1
+#define DEBUG_TYPE_CHANNELS 2
 
 // Ego features depend on dynamics model
 #define EGO_FEATURES_CLASSIC 7
@@ -339,7 +341,25 @@ struct Drive {
     int *tracks_to_predict_indices;
     int init_mode;
     int control_mode;
+    int observation_mode;
 };
+
+static inline int get_base_ego_obs_dim(const Drive *env) {
+    return (env->dynamics_model == JERK) ? EGO_FEATURES_JERK : EGO_FEATURES_CLASSIC;
+}
+
+static inline int get_raw_ego_obs_dim(const Drive *env) {
+    return get_base_ego_obs_dim(env) + (env->observation_mode == 1 ? PARTNER_TYPE_CHANNELS : 0);
+}
+
+static inline int get_raw_partner_obs_dim(const Drive *env) {
+    return PARTNER_FEATURES + (env->observation_mode == 1 ? PARTNER_TYPE_CHANNELS : 0);
+}
+
+static inline int get_max_obs_dim(const Drive *env) {
+    return get_raw_ego_obs_dim(env) + get_raw_partner_obs_dim(env) * (MAX_AGENTS - 1) +
+           ROAD_FEATURES * MAX_ROAD_SEGMENT_OBSERVATIONS;
+}
 
 void add_log(Drive *env) {
     for (int i = 0; i < env->active_agent_count; i++) {
@@ -1462,8 +1482,7 @@ void c_close(Drive *env) {
 
 void allocate(Drive *env) {
     init(env);
-    int ego_dim = (env->dynamics_model == JERK) ? EGO_FEATURES_JERK : EGO_FEATURES_CLASSIC;
-    int max_obs = ego_dim + PARTNER_FEATURES * (MAX_AGENTS - 1) + ROAD_FEATURES * MAX_ROAD_SEGMENT_OBSERVATIONS;
+    int max_obs = get_max_obs_dim(env);
     env->observations = (float *)calloc(env->active_agent_count * max_obs, sizeof(float));
     env->actions = (float *)calloc(env->active_agent_count * 2, sizeof(float));
     env->rewards = (float *)calloc(env->active_agent_count, sizeof(float));
@@ -1818,8 +1837,10 @@ void c_get_road_edge_polylines(Drive *env, float *x_out, float *y_out, int *leng
 }
 
 void compute_observations(Drive *env) {
-    int ego_dim = (env->dynamics_model == JERK) ? EGO_FEATURES_JERK : EGO_FEATURES_CLASSIC;
-    int max_obs = ego_dim + PARTNER_FEATURES * (MAX_AGENTS - 1) + ROAD_FEATURES * MAX_ROAD_SEGMENT_OBSERVATIONS;
+    int ego_dim = get_raw_ego_obs_dim(env);
+    int base_ego_dim = get_base_ego_obs_dim(env);
+    int partner_obs_dim = get_raw_partner_obs_dim(env);
+    int max_obs = get_max_obs_dim(env);
     memset(env->observations, 0, max_obs * env->active_agent_count * sizeof(float));
     float (*observations)[max_obs] = (float (*)[max_obs])env->observations;
     for (int i = 0; i < env->active_agent_count; i++) {
@@ -1858,6 +1879,9 @@ void compute_observations(Drive *env) {
             obs[9] = (ego_entity->respawn_timestep != -1) ? 1 : 0;
         } else {
             obs[6] = (ego_entity->respawn_timestep != -1) ? 1 : 0;
+        }
+        if (env->observation_mode == 1) {
+            obs[base_ego_dim] = (float)map_entity_to_policy_type(ego_entity);
         }
 
         // Relative Pos of other cars
@@ -1913,10 +1937,13 @@ void compute_observations(Drive *env) {
                 other_entity->vx * other_entity->heading_x + other_entity->vy * other_entity->heading_y;
             float other_signed_speed = copysignf(other_speed_magnitude, other_v_dot_heading);
             obs[obs_idx + 6] = other_signed_speed / MAX_SPEED;
+            if (env->observation_mode == 1) {
+                obs[obs_idx + PARTNER_FEATURES] = (float)map_entity_to_policy_type(other_entity);
+            }
             cars_seen++;
-            obs_idx += 7; // Move to next observation slot
+            obs_idx += partner_obs_dim;
         }
-        int remaining_partner_obs = (MAX_AGENTS - 1 - cars_seen) * 7;
+        int remaining_partner_obs = (MAX_AGENTS - 1 - cars_seen) * partner_obs_dim;
         memset(&obs[obs_idx], 0, remaining_partner_obs * sizeof(float));
         obs_idx += remaining_partner_obs;
         // map observations
@@ -2369,8 +2396,9 @@ void draw_agent_obs(Drive *env, int agent_index, int mode, int obs_only, int las
         return;
     }
 
-    int ego_dim = (env->dynamics_model == JERK) ? EGO_FEATURES_JERK : EGO_FEATURES_CLASSIC;
-    int max_obs = ego_dim + PARTNER_FEATURES * (MAX_AGENTS - 1) + ROAD_FEATURES * MAX_ROAD_SEGMENT_OBSERVATIONS;
+    int ego_dim = get_raw_ego_obs_dim(env);
+    int partner_obs_dim = get_raw_partner_obs_dim(env);
+    int max_obs = get_max_obs_dim(env);
     float (*observations)[max_obs] = (float (*)[max_obs])env->observations;
     float *agent_obs = &observations[agent_index][0];
     // self
@@ -2399,7 +2427,7 @@ void draw_agent_obs(Drive *env, int agent_index, int mode, int obs_only, int las
     int obs_idx = ego_dim; // Start after ego obs
     for (int j = 0; j < MAX_AGENTS - 1; j++) {
         if (agent_obs[obs_idx] == 0 || agent_obs[obs_idx + 1] == 0) {
-            obs_idx += 7; // Move to next agent observation
+            obs_idx += partner_obs_dim;
             continue;
         }
         // Draw position of other agents
@@ -2505,10 +2533,10 @@ void draw_agent_obs(Drive *env, int agent_index, int mode, int obs_only, int las
             }
         }
 
-        obs_idx += PARTNER_FEATURES; // Move to next agent observation (7 values per agent)
+        obs_idx += partner_obs_dim;
     }
     // Then draw map observations
-    int map_start_idx = ego_dim + PARTNER_FEATURES * (MAX_AGENTS - 1); // Start after agent observations
+    int map_start_idx = ego_dim + partner_obs_dim * (MAX_AGENTS - 1);
     for (int k = 0; k < MAX_ROAD_SEGMENT_OBSERVATIONS; k++) {          // Loop through potential map entities
         int entity_idx = map_start_idx + k * 7;
         if (agent_obs[entity_idx] == 0 && agent_obs[entity_idx + 1] == 0) {

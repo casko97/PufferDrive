@@ -10,6 +10,7 @@
 typedef struct {
     int action_type;
     int dynamics_model;
+    int observation_mode;
     float reward_vehicle_collision;
     float reward_offroad_collision;
     float reward_goal;
@@ -53,6 +54,15 @@ static int handler(void *config, const char *section, const char *name, const ch
         } else {
             printf("Warning: Unknown dynamics_model value '%s', defaulting to JERK\n", value);
             env_config->dynamics_model = 1; // Default to JERK
+        }
+    } else if (MATCH("env", "observation_mode")) {
+        if (strcmp(value, "\"default\"") == 0 || strcmp(value, "default") == 0) {
+            env_config->observation_mode = 0;
+        } else if (strcmp(value, "\"sdc_only_with_trailer\"") == 0 || strcmp(value, "sdc_only_with_trailer") == 0) {
+            env_config->observation_mode = 1;
+        } else {
+            printf("Warning: Unknown observation_mode value '%s', defaulting to default\n", value);
+            env_config->observation_mode = 0;
         }
     } else if (MATCH("env", "goal_behavior")) {
         env_config->goal_behavior = atoi(value);

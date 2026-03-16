@@ -191,7 +191,7 @@ static int make_gif_from_frames(const char *pattern, int fps, const char *palett
 
 int eval_gif(const char *map_name, const char *policy_name, int show_grid, int obs_only, int lasers,
              int show_human_logs, int frame_skip, const char *view_mode, const char *output_topdown,
-             const char *output_agent, int num_maps, int zoom_in) {
+             const char *output_agent, int num_maps, int zoom_in, int cli_observation_mode) {
 
     // Parse configuration from INI file
     env_init_config conf = {0};
@@ -230,6 +230,7 @@ int eval_gif(const char *map_name, const char *policy_name, int show_grid, int o
     Drive env = {
         .action_type = conf.action_type,
         .dynamics_model = conf.dynamics_model,
+        .observation_mode = cli_observation_mode >= 0 ? cli_observation_mode : conf.observation_mode,
         .reward_vehicle_collision = conf.reward_vehicle_collision,
         .reward_offroad_collision = conf.reward_offroad_collision,
         .reward_goal = conf.reward_goal,
@@ -296,7 +297,8 @@ int eval_gif(const char *map_name, const char *policy_name, int show_grid, int o
 
     Weights *weights = load_weights(policy_name);
     printf("Active agents in map: %d\n", env.active_agent_count);
-    DriveNet *net = init_drivenet(weights, env.active_agent_count, env.dynamics_model, env.action_type);
+    DriveNet *net = init_drivenet(weights, env.active_agent_count, env.dynamics_model, env.action_type,
+                                  env.observation_mode);
 
     int frame_count = env.episode_length > 0 ? env.episode_length : TRAJECTORY_LENGTH_DEFAULT;
     char filename_topdown[256];
@@ -412,6 +414,7 @@ int main(int argc, char *argv[]) {
     int show_human_logs = 0;
     int frame_skip = 1;
     int zoom_in = 0;
+    int cli_observation_mode = -1;
     const char *view_mode = "both";
 
     // File paths and num_maps (not in [env] section)
@@ -454,6 +457,22 @@ int main(int argc, char *argv[]) {
                 fprintf(stderr, "Error: --view option requires a value (both/topdown/agent)\n");
                 return 1;
             }
+        } else if (strcmp(argv[i], "--observation-mode") == 0) {
+            if (i + 1 < argc) {
+                const char *mode = argv[i + 1];
+                i++;
+                if (strcmp(mode, "default") == 0) {
+                    cli_observation_mode = 0;
+                } else if (strcmp(mode, "sdc_only_with_trailer") == 0) {
+                    cli_observation_mode = 1;
+                } else {
+                    fprintf(stderr, "Error: --observation-mode must be 'default' or 'sdc_only_with_trailer'\n");
+                    return 1;
+                }
+            } else {
+                fprintf(stderr, "Error: --observation-mode option requires a value\n");
+                return 1;
+            }
         } else if (strcmp(argv[i], "--map-name") == 0) {
             if (i + 1 < argc) {
                 map_name = argv[i + 1];
@@ -488,7 +507,7 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    eval_gif(map_name, policy_name, show_grid, obs_only, lasers, show_human_logs, frame_skip, view_mode, output_topdown,
-             output_agent, num_maps, zoom_in);
+    eval_gif(map_name, policy_name, show_grid, obs_only, lasers, show_human_logs, frame_skip, view_mode,
+             output_topdown, output_agent, num_maps, zoom_in, cli_observation_mode);
     return 0;
 }
