@@ -20,7 +20,7 @@ void test_drivenet() {
 
     // Weights* weights = load_weights("resources/drive/puffer_drive_weights.bin");
     Weights *weights = load_weights("puffer_drive_weights.bin");
-    DriveNet *net = init_drivenet(weights, num_agents, CLASSIC);
+    DriveNet *net = init_drivenet(weights, num_agents, CLASSIC, 0, 0);
 
     forward(net, observations, actions);
     for (int i = 0; i < num_agents * num_actions; i++) {
@@ -58,6 +58,7 @@ int demo(const char *map_name, const char *policy_name, int show_grid, int obs_o
     Drive env = {
         .action_type = conf.action_type,
         .dynamics_model = conf.dynamics_model,
+        .observation_mode = conf.observation_mode,
         .reward_vehicle_collision = conf.reward_vehicle_collision,
         .reward_offroad_collision = conf.reward_offroad_collision,
         .reward_goal = conf.reward_goal,
@@ -86,7 +87,8 @@ int demo(const char *map_name, const char *policy_name, int show_grid, int obs_o
     c_reset(&env);
     c_render(&env);
     Weights *weights = load_weights((char *)policy_name);
-    DriveNet *net = init_drivenet(weights, env.active_agent_count, env.dynamics_model);
+    DriveNet *net = init_drivenet(weights, env.active_agent_count, env.dynamics_model, env.action_type,
+                                  env.observation_mode);
 
     int accel_delta = 2;
     int steer_delta = 4;

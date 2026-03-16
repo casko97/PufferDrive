@@ -14,7 +14,11 @@
 typedef struct DriveNet DriveNet;
 struct DriveNet {
     int num_agents;
-    int ego_dim;
+    int raw_ego_dim;
+    int raw_partner_features;
+    int ego_encoder_input_dim;
+    int partner_encoder_input_dim;
+    int observation_mode;
     int action_type;  // 0 = discrete, 1 = continuous
     int action_dim;   // Number of action dimensions
     float *obs_self;
@@ -48,19 +52,22 @@ struct DriveNet {
     Multidiscrete *multidiscrete;
 };
 
-DriveNet *init_drivenet(Weights *weights, int num_agents, int dynamics_model, int action_type) {
+DriveNet *init_drivenet(Weights *weights, int num_agents, int dynamics_model, int action_type, int observation_mode) {
     DriveNet *net = calloc(1, sizeof(DriveNet));
-    // Use constants directly from drive.h
-    int ego_dim = (dynamics_model == JERK) ? EGO_FEATURES_JERK : EGO_FEATURES_CLASSIC;
+    int base_ego_dim = (dynamics_model == JERK) ? EGO_FEATURES_JERK : EGO_FEATURES_CLASSIC;
     int max_partners = MAX_AGENTS - 1;
     int max_road_obs = MAX_ROAD_SEGMENT_OBSERVATIONS;
-    int partner_features = PARTNER_FEATURES;
+    int raw_ego_dim = base_ego_dim + (observation_mode == 1 ? PARTNER_TYPE_CHANNELS : 0);
+    int raw_partner_features = PARTNER_FEATURES + (observation_mode == 1 ? PARTNER_TYPE_CHANNELS : 0);
+    int ego_encoder_input_dim = base_ego_dim + (observation_mode == 1 ? DEBUG_TYPE_CHANNELS : 0);
+    int partner_encoder_input_dim = PARTNER_FEATURES + (observation_mode == 1 ? DEBUG_TYPE_CHANNELS : 0);
     int road_features = ROAD_FEATURES;
     int input_size = NN_INPUT_SIZE;
     int hidden_size = NN_HIDDEN_SIZE;
     int road_feat_onehot = road_features + 6; // one-hot extra 6 features for road
 
     net->action_type = action_type;
+    net->observation_mode = observation_mode;
     
     // Determine action space size based on dynamics model and action type
     int action_size, logit_sizes[2];
@@ -82,9 +89,12 @@ DriveNet *init_drivenet(Weights *weights, int num_agents, int dynamics_model, in
     net->action_dim = action_dim;
 
     net->num_agents = num_agents;
-    net->ego_dim = ego_dim;
-    net->obs_self = calloc(num_agents * ego_dim, sizeof(float));
-    net->obs_partner = calloc(num_agents * max_partners * partner_features, sizeof(float));
+    net->raw_ego_dim = raw_ego_dim;
+    net->raw_partner_features = raw_partner_features;
+    net->ego_encoder_input_dim = ego_encoder_input_dim;
+    net->partner_encoder_input_dim = partner_encoder_input_dim;
+    net->obs_self = calloc(num_agents * ego_encoder_input_dim, sizeof(float));
+    net->obs_partner = calloc(num_agents * max_partners * partner_encoder_input_dim, sizeof(float));
     net->obs_road = calloc(num_agents * max_road_obs * road_feat_onehot, sizeof(float));
     net->partner_linear_output = calloc(num_agents * max_partners * input_size, sizeof(float));
     net->road_linear_output = calloc(num_agents * max_road_obs * input_size, sizeof(float));
@@ -93,13 +103,13 @@ DriveNet *init_drivenet(Weights *weights, int num_agents, int dynamics_model, in
     net->partner_layernorm_output = calloc(num_agents * max_partners * input_size, sizeof(float));
     net->road_layernorm_output = calloc(num_agents * max_road_obs * input_size, sizeof(float));
 
-    net->ego_encoder = make_linear(weights, num_agents, ego_dim, input_size);
+    net->ego_encoder = make_linear(weights, num_agents, ego_encoder_input_dim, input_size);
     net->ego_layernorm = make_layernorm(weights, num_agents, input_size);
     net->ego_encoder_two = make_linear(weights, num_agents, input_size, input_size);
     net->road_encoder = make_linear(weights, num_agents, road_feat_onehot, input_size);
     net->road_layernorm = make_layernorm(weights, num_agents, input_size);
     net->road_encoder_two = make_linear(weights, num_agents, input_size, input_size);
-    net->partner_encoder = make_linear(weights, num_agents, partner_features, input_size);
+    net->partner_encoder = make_linear(weights, num_agents, partner_encoder_input_dim, input_size);
     net->partner_layernorm = make_layernorm(weights, num_agents, input_size);
     net->partner_encoder_two = make_linear(weights, num_agents, input_size, input_size);
     net->partner_max = make_max_dim1(num_agents, max_partners, input_size);
@@ -121,9 +131,9 @@ DriveNet *init_drivenet(Weights *weights, int num_agents, int dynamics_model, in
         net->multidiscrete = NULL;
     }
     
-    printf("DriveNet initialized: action_type=%d (%s), action_dim=%d, dynamics_model=%d (%s)\n",
+    printf("DriveNet initialized: action_type=%d (%s), action_dim=%d, dynamics_model=%d (%s), observation_mode=%d\n",
            action_type, action_type == 0 ? "discrete" : "continuous", action_dim,
-           dynamics_model, dynamics_model == 0 ? "classic" : "jerk");
+           dynamics_model, dynamics_model == 0 ? "classic" : "jerk", observation_mode);
     
     return net;
 }
@@ -162,33 +172,51 @@ void free_drivenet(DriveNet *net) {
 }
 
 void forward(DriveNet *net, float *observations, void *actions) {
-    int ego_dim = net->ego_dim;
+    int raw_ego_dim = net->raw_ego_dim;
     int max_partners = MAX_AGENTS - 1;
     int max_road_obs = MAX_ROAD_SEGMENT_OBSERVATIONS;
-    int partner_features = PARTNER_FEATURES;
+    int base_ego_dim = raw_ego_dim - (net->observation_mode == 1 ? PARTNER_TYPE_CHANNELS : 0);
+    int raw_partner_features = net->raw_partner_features;
+    int partner_features = net->partner_encoder_input_dim;
     int road_features = ROAD_FEATURES;
     int road_feat_onehot = road_features + 6; // one-hot extra 6 features for road
 
     // Clear previous observations
-    memset(net->obs_self, 0, net->num_agents * ego_dim * sizeof(float));
+    memset(net->obs_self, 0, net->num_agents * net->ego_encoder_input_dim * sizeof(float));
     memset(net->obs_partner, 0, net->num_agents * max_partners * partner_features * sizeof(float));
     memset(net->obs_road, 0, net->num_agents * max_road_obs * road_feat_onehot * sizeof(float));
 
     for (int b = 0; b < net->num_agents; b++) {
-        int b_offset = b * (ego_dim + max_partners * partner_features + max_road_obs * road_features);
-        int partner_offset = b_offset + ego_dim;
-        int road_offset = b_offset + ego_dim + max_partners * partner_features;
+        int b_offset = b * (raw_ego_dim + max_partners * raw_partner_features + max_road_obs * road_features);
+        int partner_offset = b_offset + raw_ego_dim;
+        int road_offset = b_offset + raw_ego_dim + max_partners * raw_partner_features;
 
         // Process self observation
-        for (int i = 0; i < ego_dim; i++) {
-            net->obs_self[b * ego_dim + i] = observations[b_offset + i];
+        for (int i = 0; i < base_ego_dim; i++) {
+            net->obs_self[b * net->ego_encoder_input_dim + i] = observations[b_offset + i];
+        }
+        if (net->observation_mode == 1) {
+            net->obs_self[b * net->ego_encoder_input_dim + base_ego_dim] = 1.0f;
+            net->obs_self[b * net->ego_encoder_input_dim + base_ego_dim + 1] = 0.0f;
         }
 
         // Process partner observation
         for (int i = 0; i < max_partners; i++) {
-            for (int j = 0; j < partner_features; j++) {
-                net->obs_partner[b * max_partners * partner_features + i * partner_features + j] =
-                    observations[partner_offset + i * partner_features + j];
+            float *partner_dst = &net->obs_partner[b * max_partners * partner_features + i * partner_features];
+            const float *partner_src = &observations[partner_offset + i * raw_partner_features];
+            for (int j = 0; j < PARTNER_FEATURES; j++) {
+                partner_dst[j] = partner_src[j];
+            }
+            if (net->observation_mode == 1) {
+                int occupied = 0;
+                for (int j = 0; j < PARTNER_FEATURES; j++) {
+                    if (fabsf(partner_src[j]) > 1e-8f) {
+                        occupied = 1;
+                        break;
+                    }
+                }
+                partner_dst[PARTNER_FEATURES] = occupied ? 1.0f : 0.0f;
+                partner_dst[PARTNER_FEATURES + 1] = 0.0f;
             }
         }
 
