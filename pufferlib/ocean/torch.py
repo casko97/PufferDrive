@@ -11,6 +11,7 @@ from pufferlib.models import Convolutional as Conv  # noqa: F401
 
 Recurrent = pufferlib.models.LSTMWrapper
 EMPTY_PARTNER_EPS = 1e-8
+EGO_TRAILER_STATE_FEATURES = 4
 
 
 class Drive(nn.Module):
@@ -32,7 +33,10 @@ class Drive(nn.Module):
         self.real_type_classes = max(1, self.type_classes - 1)
         self.has_augmented_ego = self.ego_dim > self.base_ego_dim
         self.has_partner_type = self.partner_features > self.base_partner_features
-        self.ego_encoder_input_dim = self.base_ego_dim + (self.type_classes if self.has_augmented_ego else 0)
+        self.ego_trailer_state_features = EGO_TRAILER_STATE_FEATURES if self.has_augmented_ego else 0
+        self.ego_encoder_input_dim = self.base_ego_dim + self.ego_trailer_state_features + (
+            self.type_classes if self.has_augmented_ego else 0
+        )
         self.partner_encoder_input_dim = self.base_partner_features + (
             self.real_type_classes if self.has_partner_type else 0
         )
@@ -111,8 +115,11 @@ class Drive(nn.Module):
         if self.has_augmented_ego:
             ego_core = ego_obs[:, : self.base_ego_dim]
             ego_type = ego_obs[:, self.base_ego_dim].long().clamp(min=0, max=self.type_classes - 1)
+            ego_trailer_state = ego_obs[
+                :, self.base_ego_dim + 1 : self.base_ego_dim + 1 + self.ego_trailer_state_features
+            ]
             ego_type_onehot = F.one_hot(ego_type, num_classes=self.type_classes).to(ego_core.dtype)
-            ego_obs = torch.cat([ego_core, ego_type_onehot], dim=1)
+            ego_obs = torch.cat([ego_core, ego_trailer_state, ego_type_onehot], dim=1)
         ego_features = self.ego_encoder(ego_obs)
         partner_features, _ = self.partner_encoder(partner_objects).max(dim=1)
         road_features, _ = self.road_encoder(road_objects).max(dim=1)

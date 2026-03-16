@@ -806,6 +806,43 @@ static PyObject *vec_get_partner_types(PyObject *self, PyObject *args) {
     Py_RETURN_NONE;
 }
 
+static PyObject *vec_get_ego_trailer_obs_features(PyObject *self, PyObject *args) {
+    if (PyTuple_Size(args) != 5) {
+        PyErr_SetString(PyExc_TypeError, "vec_get_ego_trailer_obs_features requires 5 arguments");
+        return NULL;
+    }
+
+    VecEnv *vec = unpack_vecenv(args);
+    if (!vec) {
+        return NULL;
+    }
+
+    PyObject *rel_x_arr = PyTuple_GetItem(args, 1);
+    PyObject *rel_y_arr = PyTuple_GetItem(args, 2);
+    PyObject *rel_heading_x_arr = PyTuple_GetItem(args, 3);
+    PyObject *rel_heading_y_arr = PyTuple_GetItem(args, 4);
+    if (!PyArray_Check(rel_x_arr) || !PyArray_Check(rel_y_arr) || !PyArray_Check(rel_heading_x_arr) ||
+        !PyArray_Check(rel_heading_y_arr)) {
+        PyErr_SetString(PyExc_TypeError, "All output arrays must be NumPy arrays");
+        return NULL;
+    }
+
+    float *rel_x_base = (float *)PyArray_DATA((PyArrayObject *)rel_x_arr);
+    float *rel_y_base = (float *)PyArray_DATA((PyArrayObject *)rel_y_arr);
+    float *rel_heading_x_base = (float *)PyArray_DATA((PyArrayObject *)rel_heading_x_arr);
+    float *rel_heading_y_base = (float *)PyArray_DATA((PyArrayObject *)rel_heading_y_arr);
+
+    int offset = 0;
+    for (int i = 0; i < vec->num_envs; i++) {
+        Drive *drive = (Drive *)vec->envs[i];
+        c_get_ego_trailer_obs_features(drive, &rel_x_base[offset], &rel_y_base[offset], &rel_heading_x_base[offset],
+                                       &rel_heading_y_base[offset]);
+        offset += drive->active_agent_count;
+    }
+
+    Py_RETURN_NONE;
+}
+
 static PyObject *get_sdc_trailer_state(PyObject *self, PyObject *args) {
     if (PyTuple_Size(args) != 9) {
         PyErr_SetString(PyExc_TypeError, "get_sdc_trailer_state requires 9 arguments");
@@ -1144,6 +1181,8 @@ static PyMethodDef methods[] = {
     {"vec_get_global_agent_types", vec_get_global_agent_types, METH_VARARGS,
      "Get global agent types from vectorized env"},
     {"vec_get_partner_types", vec_get_partner_types, METH_VARARGS, "Get partner agent types from vectorized env"},
+    {"vec_get_ego_trailer_obs_features", vec_get_ego_trailer_obs_features, METH_VARARGS,
+     "Get ego trailer-relative observation features from vectorized env"},
     {"get_sdc_trailer_state", get_sdc_trailer_state, METH_VARARGS, "Get SDC trailer state"},
     {"vec_get_sdc_trailer_state", vec_get_sdc_trailer_state, METH_VARARGS, "Get SDC trailer state from vectorized env"},
     {"get_ground_truth_trajectories", get_ground_truth_trajectories, METH_VARARGS, "Get ground truth trajectories"},
