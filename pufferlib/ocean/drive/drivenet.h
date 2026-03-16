@@ -18,9 +18,12 @@ struct DriveNet {
     int raw_partner_features;
     int ego_encoder_input_dim;
     int partner_encoder_input_dim;
+    int sim_obs_dim;
+    int policy_obs_dim;
     int observation_mode;
     int action_type;  // 0 = discrete, 1 = continuous
     int action_dim;   // Number of action dimensions
+    float *policy_observations;
     float *obs_self;
     float *obs_partner;
     float *obs_road;
@@ -93,6 +96,11 @@ DriveNet *init_drivenet(Weights *weights, int num_agents, int dynamics_model, in
     net->raw_partner_features = raw_partner_features;
     net->ego_encoder_input_dim = ego_encoder_input_dim;
     net->partner_encoder_input_dim = partner_encoder_input_dim;
+    net->sim_obs_dim =
+        base_ego_dim + PARTNER_FEATURES * max_partners + ROAD_FEATURES * max_road_obs;
+    net->policy_obs_dim =
+        raw_ego_dim + raw_partner_features * max_partners + ROAD_FEATURES * max_road_obs;
+    net->policy_observations = calloc(num_agents * net->policy_obs_dim, sizeof(float));
     net->obs_self = calloc(num_agents * ego_encoder_input_dim, sizeof(float));
     net->obs_partner = calloc(num_agents * max_partners * partner_encoder_input_dim, sizeof(float));
     net->obs_road = calloc(num_agents * max_road_obs * road_feat_onehot, sizeof(float));
@@ -139,6 +147,7 @@ DriveNet *init_drivenet(Weights *weights, int num_agents, int dynamics_model, in
 }
 
 void free_drivenet(DriveNet *net) {
+    free(net->policy_observations);
     free(net->obs_self);
     free(net->obs_partner);
     free(net->obs_road);
@@ -169,6 +178,100 @@ void free_drivenet(DriveNet *net) {
     free(net->value_fn);
     free(net->lstm);
     free(net);
+}
+
+static inline float *prepare_policy_observations(DriveNet *net, Drive *env) {
+    if (net->observation_mode != 1) {
+        return env->observations;
+    }
+
+    int base_ego_dim = (env->dynamics_model == JERK) ? EGO_FEATURES_JERK : EGO_FEATURES_CLASSIC;
+    int max_partners = MAX_AGENTS - 1;
+    int max_road_obs = MAX_ROAD_SEGMENT_OBSERVATIONS;
+    int sim_partner_dim = max_partners * PARTNER_FEATURES;
+    int sim_road_offset = base_ego_dim + sim_partner_dim;
+    int sim_road_dim = max_road_obs * ROAD_FEATURES;
+    int aug_ego_dim = net->raw_ego_dim;
+    int aug_partner_dim = max_partners * net->raw_partner_features;
+    int aug_road_offset = aug_ego_dim + aug_partner_dim;
+    const float empty_partner_eps = 1e-8f;
+
+    memset(net->policy_observations, 0, net->num_agents * net->policy_obs_dim * sizeof(float));
+
+    for (int b = 0; b < env->active_agent_count; b++) {
+        const float *sim_obs = &env->observations[b * net->sim_obs_dim];
+        float *policy_obs = &net->policy_observations[b * net->policy_obs_dim];
+
+        memcpy(policy_obs, sim_obs, base_ego_dim * sizeof(float));
+        memcpy(&policy_obs[aug_road_offset], &sim_obs[sim_road_offset], sim_road_dim * sizeof(float));
+
+        Entity *ego_entity = &env->entities[env->active_agent_indices[b]];
+        int ego_type = ego_entity->type;
+        if (ego_type < 0) {
+            ego_type = 0;
+        } else if (ego_type >= POLICY_TYPE_CLASS_COUNT) {
+            ego_type = POLICY_TYPE_CLASS_COUNT - 1;
+        }
+        policy_obs[base_ego_dim] = (float)ego_type;
+
+        const float *sim_partner_obs = &sim_obs[base_ego_dim];
+        float *policy_partner_obs = &policy_obs[aug_ego_dim];
+        for (int i = 0; i < max_partners; i++) {
+            memcpy(&policy_partner_obs[i * net->raw_partner_features], &sim_partner_obs[i * PARTNER_FEATURES],
+                   PARTNER_FEATURES * sizeof(float));
+        }
+
+        int partner_slot = 0;
+        for (int j = 0; j < MAX_AGENTS && partner_slot < max_partners; j++) {
+            int index = -1;
+            if (j < env->active_agent_count) {
+                index = env->active_agent_indices[j];
+            } else if (j < env->num_actors) {
+                index = env->static_agent_indices[j - env->active_agent_count];
+            }
+            if (index == -1)
+                continue;
+            if (env->entities[index].type > 3)
+                break;
+            if (index == env->active_agent_indices[b])
+                continue;
+            if (has_valid_ego_trailer_pair(env) && env->active_agent_indices[b] == env->sdc_track_index &&
+                index == env->ego_trailer_track_index) {
+                continue;
+            }
+
+            Entity *other_entity = &env->entities[index];
+            if (ego_entity->respawn_timestep != -1 || other_entity->respawn_timestep != -1)
+                continue;
+
+            float dx = other_entity->x - ego_entity->x;
+            float dy = other_entity->y - ego_entity->y;
+            float dist = (dx * dx + dy * dy);
+            if (dist > 2500.0f)
+                continue;
+
+            const float *partner_src = &sim_partner_obs[partner_slot * PARTNER_FEATURES];
+            int occupied = 0;
+            for (int k = 0; k < PARTNER_FEATURES; k++) {
+                if (fabsf(partner_src[k]) > empty_partner_eps) {
+                    occupied = 1;
+                    break;
+                }
+            }
+            if (occupied) {
+                int partner_type = other_entity->type;
+                if (partner_type < 0) {
+                    partner_type = 0;
+                } else if (partner_type >= POLICY_TYPE_CLASS_COUNT) {
+                    partner_type = POLICY_TYPE_CLASS_COUNT - 1;
+                }
+                policy_partner_obs[partner_slot * net->raw_partner_features + PARTNER_FEATURES] = (float)partner_type;
+            }
+            partner_slot++;
+        }
+    }
+
+    return net->policy_observations;
 }
 
 void forward(DriveNet *net, float *observations, void *actions) {
@@ -337,4 +440,9 @@ void forward(DriveNet *net, float *observations, void *actions) {
             continuous_actions[i] = tanhf(net->actor->output[i]);
         }
     }
+}
+
+static inline void forward_drive_env(DriveNet *net, Drive *env, void *actions) {
+    float *policy_observations = prepare_policy_observations(net, env);
+    forward(net, policy_observations, actions);
 }
