@@ -953,6 +953,7 @@ def build_bc_dataset(args=None, output_dir=None):
             trunc_buf,
             0,
             human_agent_idx=0,
+            observation_mode=0 if env_cfg["observation_mode"] == "default" else 1,
             reward_vehicle_collision=env_cfg["reward_vehicle_collision"],
             reward_offroad_collision=env_cfg["reward_offroad_collision"],
             reward_goal=env_cfg["reward_goal"],
@@ -1126,6 +1127,7 @@ def build_bc_dataset(args=None, output_dir=None):
                     "source_map": f"map_{map_id:03d}.bin",
                     "sample_count": len(sample_actions),
                     "observation_dim": int(obs_tensor.shape[1]),
+                    "observation_mode": env_cfg["observation_mode"],
                     "action_space_size": (
                         _CLASSIC_DISCRETE_ACTIONS
                         if _as_bool(env_cfg.get("extend_classic_action_space", True))
@@ -1402,6 +1404,7 @@ class Drive(pufferlib.PufferEnv):
                 seed,
                 action_type=self._action_type_flag,
                 human_agent_idx=human_agent_idx,
+                observation_mode=self.observation_mode,
                 reward_vehicle_collision=reward_vehicle_collision,
                 reward_offroad_collision=reward_offroad_collision,
                 reward_goal=reward_goal,
@@ -1491,6 +1494,7 @@ class Drive(pufferlib.PufferEnv):
                 seed,
                 action_type=self._action_type_flag,
                 human_agent_idx=self.human_agent_idx,
+                observation_mode=self.observation_mode,
                 reward_vehicle_collision=self.reward_vehicle_collision,
                 reward_offroad_collision=self.reward_offroad_collision,
                 reward_goal=self.reward_goal,
