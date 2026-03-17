@@ -189,6 +189,11 @@ def _resolve_bc_config(args, output_dir=None):
     bc.setdefault("match_weight_speed", 0.02)
     bc.setdefault("match_weight_steer_change", 0.15)
     bc.setdefault("match_weight_accel_change", 0.02)
+    bc.setdefault("match_weight_reverse", 1.0)
+    bc.setdefault("match_weight_progress", 4.0)
+    bc.setdefault("match_weight_steer_flip", 0.5)
+    bc.setdefault("match_weight_ref_accel", 0.01)
+    bc.setdefault("match_weight_ref_steer", 0.1)
     bc.setdefault("skip_existing_shards", True)
     bc.setdefault("max_maps", -1)
     return bc
@@ -371,13 +376,18 @@ def build_bc_dataset(args=None, output_dir=None):
                     int(bc_cfg["planning_horizon"]),
                     float(bc_cfg["match_weight_lateral"]),
                     float(bc_cfg["match_weight_longitudinal"]),
-                    float(bc_cfg["match_weight_heading"]),
-                    float(bc_cfg["match_weight_speed"]),
-                    float(bc_cfg["match_weight_steer_change"]),
-                    float(bc_cfg["match_weight_accel_change"]),
-                    agent_actions[agent_slot],
-                    agent_step_costs[agent_slot],
-                    agent_step_lat_costs[agent_slot],
+                float(bc_cfg["match_weight_heading"]),
+                float(bc_cfg["match_weight_speed"]),
+                float(bc_cfg["match_weight_steer_change"]),
+                float(bc_cfg["match_weight_accel_change"]),
+                float(bc_cfg["match_weight_reverse"]),
+                float(bc_cfg["match_weight_progress"]),
+                float(bc_cfg["match_weight_steer_flip"]),
+                float(bc_cfg["match_weight_ref_accel"]),
+                float(bc_cfg["match_weight_ref_steer"]),
+                agent_actions[agent_slot],
+                agent_step_costs[agent_slot],
+                agent_step_lat_costs[agent_slot],
                     agent_step_lon_costs[agent_slot],
                 )
                 agent_num_steps[agent_slot] = num_steps
@@ -468,6 +478,11 @@ def build_bc_dataset(args=None, output_dir=None):
                         "match_weight_speed": float(bc_cfg["match_weight_speed"]),
                         "match_weight_steer_change": float(bc_cfg["match_weight_steer_change"]),
                         "match_weight_accel_change": float(bc_cfg["match_weight_accel_change"]),
+                        "match_weight_reverse": float(bc_cfg["match_weight_reverse"]),
+                        "match_weight_progress": float(bc_cfg["match_weight_progress"]),
+                        "match_weight_steer_flip": float(bc_cfg["match_weight_steer_flip"]),
+                        "match_weight_ref_accel": float(bc_cfg["match_weight_ref_accel"]),
+                        "match_weight_ref_steer": float(bc_cfg["match_weight_ref_steer"]),
                         "init_steps": int(env_cfg["init_steps"]),
                     },
                 },

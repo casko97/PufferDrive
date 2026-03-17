@@ -8,6 +8,7 @@ static PyObject *env_get_active_agent_count(PyObject *self, PyObject *args);
 static PyObject *env_get_active_agent_info(PyObject *self, PyObject *args);
 static PyObject *env_get_partner_types(PyObject *self, PyObject *args);
 static PyObject *env_get_ego_trailer_obs_features(PyObject *self, PyObject *args);
+static PyObject *env_get_config(PyObject *self, PyObject *args);
 static PyObject *env_set_logged_timestep(PyObject *self, PyObject *args);
 static PyObject *env_copy_observations(PyObject *self, PyObject *args);
 static PyObject *env_fit_discrete_action_sequence(PyObject *self, PyObject *args);
@@ -19,6 +20,7 @@ static PyObject *env_fit_discrete_action_sequence(PyObject *self, PyObject *args
     {"env_get_partner_types", env_get_partner_types, METH_VARARGS, "Get partner type ids"},                          \
     {"env_get_ego_trailer_obs_features", env_get_ego_trailer_obs_features, METH_VARARGS,                             \
      "Get ego trailer-relative observation features"},                                                                 \
+    {"env_get_config", env_get_config, METH_VARARGS, "Get resolved environment config values"},                      \
     {"env_set_logged_timestep", env_set_logged_timestep, METH_VARARGS, "Set env state to a logged timestep"},        \
     {"env_copy_observations", env_copy_observations, METH_VARARGS, "Copy current observation buffer"},               \
     {"env_fit_discrete_action_sequence", env_fit_discrete_action_sequence, METH_VARARGS,                              \
@@ -58,6 +60,26 @@ static int unpack_non_kinematic_override(PyObject *kwargs, float *dst, int *enab
 
     *enabled = 1;
     return 0;
+}
+
+static int has_kwarg(PyObject *kwargs, const char *key) {
+    return kwargs && PyDict_GetItemString(kwargs, key) != NULL;
+}
+
+static int override_int(PyObject *kwargs, const char *key, int *dst) {
+    if (!has_kwarg(kwargs, key)) {
+        return 0;
+    }
+    *dst = (int)unpack(kwargs, key);
+    return PyErr_Occurred() ? -1 : 0;
+}
+
+static int override_float(PyObject *kwargs, const char *key, float *dst) {
+    if (!has_kwarg(kwargs, key)) {
+        return 0;
+    }
+    *dst = (float)unpack(kwargs, key);
+    return PyErr_Occurred() ? -1 : 0;
 }
 
 static int my_put(Env *env, PyObject *args, PyObject *kwargs) {
@@ -264,6 +286,7 @@ static int my_init(Env *env, PyObject *args, PyObject *kwargs) {
     }
     env->action_type = conf.action_type;
     env->dynamics_model = conf.dynamics_model;
+    env->observation_mode = conf.observation_mode;
     env->extend_classic_action_space = conf.extend_classic_action_space;
     env->reward_vehicle_collision = conf.reward_vehicle_collision;
     env->reward_offroad_collision = conf.reward_offroad_collision;
@@ -281,6 +304,27 @@ static int my_init(Env *env, PyObject *args, PyObject *kwargs) {
     env->goal_target_distance = (float)unpack(kwargs, "goal_target_distance");
     env->goal_radius = (float)unpack(kwargs, "goal_radius");
     env->goal_speed = (float)unpack(kwargs, "goal_speed");
+    if (override_int(kwargs, "action_type", &env->action_type) != 0 ||
+        override_int(kwargs, "dynamics_model", &env->dynamics_model) != 0 ||
+        override_int(kwargs, "observation_mode", &env->observation_mode) != 0 ||
+        override_int(kwargs, "extend_classic_action_space", &env->extend_classic_action_space) != 0 ||
+        override_float(kwargs, "reward_vehicle_collision", &env->reward_vehicle_collision) != 0 ||
+        override_float(kwargs, "reward_offroad_collision", &env->reward_offroad_collision) != 0 ||
+        override_float(kwargs, "reward_goal", &env->reward_goal) != 0 ||
+        override_float(kwargs, "reward_goal_post_respawn", &env->reward_goal_post_respawn) != 0 ||
+        override_int(kwargs, "episode_length", &env->episode_length) != 0 ||
+        override_int(kwargs, "termination_mode", &env->termination_mode) != 0 ||
+        override_int(kwargs, "collision_behavior", &env->collision_behavior) != 0 ||
+        override_int(kwargs, "offroad_behavior", &env->offroad_behavior) != 0 ||
+        override_float(kwargs, "dt", &env->dt) != 0 ||
+        override_int(kwargs, "init_mode", &env->init_mode) != 0 ||
+        override_int(kwargs, "control_mode", &env->control_mode) != 0 ||
+        override_int(kwargs, "goal_behavior", &env->goal_behavior) != 0 ||
+        override_float(kwargs, "goal_target_distance", &env->goal_target_distance) != 0 ||
+        override_float(kwargs, "goal_radius", &env->goal_radius) != 0 ||
+        override_float(kwargs, "goal_speed", &env->goal_speed) != 0) {
+        return -1;
+    }
     if (kwargs && PyDict_GetItemString(kwargs, "extend_classic_action_space")) {
         env->extend_classic_action_space = (int)unpack(kwargs, "extend_classic_action_space");
     }
@@ -419,6 +463,45 @@ static PyObject *env_get_ego_trailer_obs_features(PyObject *self, PyObject *args
     Py_RETURN_NONE;
 }
 
+static PyObject *env_get_config(PyObject *self, PyObject *args) {
+    if (PyTuple_Size(args) != 1) {
+        PyErr_SetString(PyExc_TypeError, "env_get_config requires 1 argument");
+        return NULL;
+    }
+
+    Env *env = unpack_env(args);
+    if (!env) {
+        return NULL;
+    }
+
+    PyObject *dict = PyDict_New();
+    if (!dict) {
+        return NULL;
+    }
+    assign_to_dict(dict, "action_type", env->action_type);
+    assign_to_dict(dict, "dynamics_model", env->dynamics_model);
+    assign_to_dict(dict, "observation_mode", env->observation_mode);
+    assign_to_dict(dict, "extend_classic_action_space", env->extend_classic_action_space);
+    assign_to_dict(dict, "reward_vehicle_collision", env->reward_vehicle_collision);
+    assign_to_dict(dict, "reward_offroad_collision", env->reward_offroad_collision);
+    assign_to_dict(dict, "reward_goal", env->reward_goal);
+    assign_to_dict(dict, "reward_goal_post_respawn", env->reward_goal_post_respawn);
+    assign_to_dict(dict, "goal_radius", env->goal_radius);
+    assign_to_dict(dict, "goal_speed", env->goal_speed);
+    assign_to_dict(dict, "goal_behavior", env->goal_behavior);
+    assign_to_dict(dict, "goal_target_distance", env->goal_target_distance);
+    assign_to_dict(dict, "collision_behavior", env->collision_behavior);
+    assign_to_dict(dict, "offroad_behavior", env->offroad_behavior);
+    assign_to_dict(dict, "dt", env->dt);
+    assign_to_dict(dict, "episode_length", env->episode_length);
+    assign_to_dict(dict, "termination_mode", env->termination_mode);
+    assign_to_dict(dict, "init_steps", env->init_steps);
+    assign_to_dict(dict, "init_mode", env->init_mode);
+    assign_to_dict(dict, "control_mode", env->control_mode);
+    assign_to_dict(dict, "max_controlled_agents", env->max_controlled_agents);
+    return dict;
+}
+
 static PyObject *env_set_logged_timestep(PyObject *self, PyObject *args) {
     if (PyTuple_Size(args) != 2) {
         PyErr_SetString(PyExc_TypeError, "env_set_logged_timestep requires 2 arguments");
@@ -462,8 +545,8 @@ static PyObject *env_copy_observations(PyObject *self, PyObject *args) {
 }
 
 static PyObject *env_fit_discrete_action_sequence(PyObject *self, PyObject *args) {
-    if (PyTuple_Size(args) != 14) {
-        PyErr_SetString(PyExc_TypeError, "env_fit_discrete_action_sequence requires 14 arguments");
+    if (PyTuple_Size(args) != 19) {
+        PyErr_SetString(PyExc_TypeError, "env_fit_discrete_action_sequence requires 19 arguments");
         return NULL;
     }
 
@@ -481,10 +564,15 @@ static PyObject *env_fit_discrete_action_sequence(PyObject *self, PyObject *args
     float w_speed = (float)PyFloat_AsDouble(PyTuple_GetItem(args, 7));
     float w_steer_change = (float)PyFloat_AsDouble(PyTuple_GetItem(args, 8));
     float w_accel_change = (float)PyFloat_AsDouble(PyTuple_GetItem(args, 9));
-    PyObject *actions_arr = PyTuple_GetItem(args, 10);
-    PyObject *step_costs_arr = PyTuple_GetItem(args, 11);
-    PyObject *step_lat_costs_arr = PyTuple_GetItem(args, 12);
-    PyObject *step_lon_costs_arr = PyTuple_GetItem(args, 13);
+    float w_reverse = (float)PyFloat_AsDouble(PyTuple_GetItem(args, 10));
+    float w_progress = (float)PyFloat_AsDouble(PyTuple_GetItem(args, 11));
+    float w_steer_flip = (float)PyFloat_AsDouble(PyTuple_GetItem(args, 12));
+    float w_ref_accel = (float)PyFloat_AsDouble(PyTuple_GetItem(args, 13));
+    float w_ref_steer = (float)PyFloat_AsDouble(PyTuple_GetItem(args, 14));
+    PyObject *actions_arr = PyTuple_GetItem(args, 15);
+    PyObject *step_costs_arr = PyTuple_GetItem(args, 16);
+    PyObject *step_lat_costs_arr = PyTuple_GetItem(args, 17);
+    PyObject *step_lon_costs_arr = PyTuple_GetItem(args, 18);
     if (!PyArray_Check(actions_arr) || !PyArray_Check(step_costs_arr) || !PyArray_Check(step_lat_costs_arr) ||
         !PyArray_Check(step_lon_costs_arr)) {
         PyErr_SetString(PyExc_TypeError, "Output arrays must be NumPy arrays");
@@ -496,7 +584,8 @@ static PyObject *env_fit_discrete_action_sequence(PyObject *self, PyObject *args
     float total_lon_cost = 0.0f;
     int num_steps = c_fit_discrete_action_sequence(
         env, agent_slot, beam_width, planning_horizon, w_lat, w_lon, w_heading, w_speed, w_steer_change,
-        w_accel_change, (int *)PyArray_DATA((PyArrayObject *)actions_arr),
+        w_accel_change, w_reverse, w_progress, w_steer_flip, w_ref_accel, w_ref_steer,
+        (int *)PyArray_DATA((PyArrayObject *)actions_arr),
         (float *)PyArray_DATA((PyArrayObject *)step_costs_arr),
         (float *)PyArray_DATA((PyArrayObject *)step_lat_costs_arr),
         (float *)PyArray_DATA((PyArrayObject *)step_lon_costs_arr), &total_cost, &total_lat_cost, &total_lon_cost);

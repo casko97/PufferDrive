@@ -2611,6 +2611,13 @@ static inline float bc_signed_speed(const BCState *state) {
     return copysignf(speed_magnitude, v_dot_heading);
 }
 
+static inline int bc_reached_goal(const Drive *env, const Entity *agent, const BCState *state) {
+    float distance_to_goal =
+        relative_distance_2d(state->x, state->y, agent->goal_position_x, agent->goal_position_y);
+    float current_speed = sqrtf(state->vx * state->vx + state->vy * state->vy);
+    return (distance_to_goal < env->goal_radius) && (current_speed <= env->goal_speed);
+}
+
 static inline float bc_compute_step_cost(const BCState *pred, const Entity *gt, float w_lat, float w_lon,
                                          float w_heading, float w_speed, float *lat_cost_out, float *lon_cost_out) {
     float dx = pred->x - gt->x;
@@ -2649,8 +2656,9 @@ static inline float bc_compute_step_cost(const BCState *pred, const Entity *gt, 
 }
 
 static inline float bc_compute_action_transition_cost(const Drive *env, int prev_action, int action, float w_steer_change,
-                                                      float w_accel_change) {
-    if ((w_steer_change <= 0.0f && w_accel_change <= 0.0f) || prev_action < 0 || action < 0) {
+                                                      float w_accel_change, float w_steer_flip) {
+    if ((w_steer_change <= 0.0f && w_accel_change <= 0.0f && w_steer_flip <= 0.0f) || prev_action < 0 ||
+        action < 0) {
         return 0.0f;
     }
 
@@ -2670,7 +2678,103 @@ static inline float bc_compute_action_transition_cost(const Drive *env, int prev
         float d_accel = acceleration_values[acceleration_index] - acceleration_values[prev_acceleration_index];
         transition_cost += w_accel_change * d_accel * d_accel;
     }
+    if (w_steer_flip > 0.0f) {
+        float prev_steer = STEERING_VALUES[prev_steering_index];
+        float steer = STEERING_VALUES[steering_index];
+        if (fabsf(prev_steer) > 1e-6f && fabsf(steer) > 1e-6f && (prev_steer * steer) < 0.0f) {
+            transition_cost += w_steer_flip;
+        }
+    }
     return transition_cost;
+}
+
+static inline float bc_compute_progress_cost(const BCState *prev, const BCState *pred, const Entity *gt_prev,
+                                             const Entity *gt_next, float w_progress, float w_reverse) {
+    float cost = 0.0f;
+    float gt_dx = gt_next->x - gt_prev->x;
+    float gt_dy = gt_next->y - gt_prev->y;
+    float gt_step_norm = sqrtf(gt_dx * gt_dx + gt_dy * gt_dy);
+    if (w_progress > 0.0f && gt_step_norm > 1e-6f) {
+        float dir_x = gt_dx / gt_step_norm;
+        float dir_y = gt_dy / gt_step_norm;
+        float pred_dx = pred->x - prev->x;
+        float pred_dy = pred->y - prev->y;
+        float pred_progress = pred_dx * dir_x + pred_dy * dir_y;
+        float progress_gap = pred_progress - gt_step_norm;
+        cost += w_progress * progress_gap * progress_gap;
+    }
+    if (w_reverse > 0.0f) {
+        float signed_speed = bc_signed_speed(pred);
+        if (signed_speed < 0.0f) {
+            cost += w_reverse * signed_speed * signed_speed;
+        }
+    }
+    return cost;
+}
+
+static inline float bc_compute_reference_control_cost(const Drive *env, const BCState *prev, int action,
+                                                      const Entity *gt_prev, const Entity *gt_next,
+                                                      float w_ref_accel, float w_ref_steer) {
+    if (action < 0 || (w_ref_accel <= 0.0f && w_ref_steer <= 0.0f)) {
+        return 0.0f;
+    }
+
+    int num_steer = sizeof(STEERING_VALUES) / sizeof(STEERING_VALUES[0]);
+    const float *acceleration_values = classic_acceleration_values(env);
+    int acceleration_index = action / num_steer;
+    int steering_index = action % num_steer;
+    float action_accel = acceleration_values[acceleration_index];
+    float action_steer = STEERING_VALUES[steering_index];
+
+    float cost = 0.0f;
+    if (w_ref_accel > 0.0f) {
+        float gt_prev_cos = cosf(gt_prev->heading);
+        float gt_prev_sin = sinf(gt_prev->heading);
+        float gt_next_cos = cosf(gt_next->heading);
+        float gt_next_sin = sinf(gt_next->heading);
+        float gt_prev_speed = copysignf(sqrtf(gt_prev->vx * gt_prev->vx + gt_prev->vy * gt_prev->vy),
+                                        gt_prev->vx * gt_prev_cos + gt_prev->vy * gt_prev_sin);
+        float gt_next_speed = copysignf(sqrtf(gt_next->vx * gt_next->vx + gt_next->vy * gt_next->vy),
+                                        gt_next->vx * gt_next_cos + gt_next->vy * gt_next_sin);
+        float ref_accel = (gt_next_speed - gt_prev_speed) / fmaxf(env->dt, 1e-5f);
+        ref_accel = clip(ref_accel, acceleration_values[0], acceleration_values[classic_acceleration_count(env) - 1]);
+        float d_accel = action_accel - ref_accel;
+        cost += w_ref_accel * d_accel * d_accel;
+    }
+
+    if (w_ref_steer > 0.0f) {
+        float gt_prev_cos = cosf(gt_prev->heading);
+        float gt_prev_sin = sinf(gt_prev->heading);
+        float gt_prev_speed = copysignf(sqrtf(gt_prev->vx * gt_prev->vx + gt_prev->vy * gt_prev->vy),
+                                        gt_prev->vx * gt_prev_cos + gt_prev->vy * gt_prev_sin);
+        float gt_next_cos = cosf(gt_next->heading);
+        float gt_next_sin = sinf(gt_next->heading);
+        float gt_next_speed = copysignf(sqrtf(gt_next->vx * gt_next->vx + gt_next->vy * gt_next->vy),
+                                        gt_next->vx * gt_next_cos + gt_next->vy * gt_next_sin);
+        float signed_speed = 0.5f * (gt_prev_speed + gt_next_speed);
+        float d_heading = gt_next->heading - gt_prev->heading;
+        if (d_heading > M_PI)
+            d_heading -= 2.0f * M_PI;
+        if (d_heading < -M_PI)
+            d_heading += 2.0f * M_PI;
+        float gt_step_dx = gt_next->x - gt_prev->x;
+        float gt_step_dy = gt_next->y - gt_prev->y;
+        float gt_step_norm = sqrtf(gt_step_dx * gt_step_dx + gt_step_dy * gt_step_dy);
+
+        float ref_steer = 0.0f;
+        if (fabsf(signed_speed) > 1e-4f) {
+            float ref_yaw_rate = d_heading / fmaxf(env->dt, 1e-5f);
+            float steering_angle = atanf((ref_yaw_rate * fmaxf(prev->length, 1e-4f)) / signed_speed);
+            ref_steer = clip(steering_angle, STEERING_VALUES[0], STEERING_VALUES[num_steer - 1]);
+        }
+        float d_steer = action_steer - ref_steer;
+        cost += w_ref_steer * d_steer * d_steer;
+        // For nearly straight GT segments, strongly prefer near-zero steering to suppress left/right chatter.
+        if (gt_step_norm > 1e-3f && fabsf(d_heading) < 0.02f && fabsf(ref_steer) < 0.08f) {
+            cost += (4.0f * w_ref_steer) * action_steer * action_steer;
+        }
+    }
+    return cost;
 }
 
 typedef struct BCBeamNode {
@@ -2684,6 +2788,8 @@ typedef struct BCBeamNode {
     int parent;
     int action;
     int valid;
+    int terminal;
+    int depth;
 } BCBeamNode;
 
 static inline int compare_bc_beam_nodes(const void *a, const void *b) {
@@ -2698,7 +2804,8 @@ static inline int compare_bc_beam_nodes(const void *a, const void *b) {
 
 int c_fit_discrete_action_sequence(Drive *env, int agent_slot, int beam_width, int planning_horizon, float w_lat,
                                    float w_lon, float w_heading, float w_speed, float w_steer_change,
-                                   float w_accel_change, int *actions_out, float *step_costs_out,
+                                   float w_accel_change, float w_reverse, float w_progress, float w_steer_flip,
+                                   float w_ref_accel, float w_ref_steer, int *actions_out, float *step_costs_out,
                                    float *step_lat_costs_out, float *step_lon_costs_out, float *total_cost_out,
                                    float *total_lat_cost_out, float *total_lon_cost_out) {
     if (env->action_type != 0 || env->dynamics_model != CLASSIC) {
@@ -2727,6 +2834,7 @@ int c_fit_discrete_action_sequence(Drive *env, int agent_slot, int beam_width, i
     }
 
     int num_actions = classic_joint_action_count(env);
+    int num_steer = sizeof(STEERING_VALUES) / sizeof(STEERING_VALUES[0]);
     int max_beam = beam_width > 0 ? beam_width : 1;
 
     BCBeamNode *nodes = (BCBeamNode *)calloc((num_steps + 1) * max_beam, sizeof(BCBeamNode));
@@ -2747,11 +2855,21 @@ int c_fit_discrete_action_sequence(Drive *env, int agent_slot, int beam_width, i
     nodes[0].parent = -1;
     nodes[0].action = -1;
     nodes[0].valid = 1;
+    nodes[0].terminal = 0;
+    nodes[0].depth = 0;
 
     int prev_count = 1;
+    int final_step_count = num_steps;
+    int final_best_idx = -1;
     for (int step = 0; step < num_steps; step++) {
         int candidate_count = 0;
         Entity gt_step = {0};
+        Entity gt_prev = {0};
+        gt_prev.x = agent->traj_x[start_t + step];
+        gt_prev.y = agent->traj_y[start_t + step];
+        gt_prev.heading = agent->traj_heading[start_t + step];
+        gt_prev.vx = agent->traj_vx[start_t + step];
+        gt_prev.vy = agent->traj_vy[start_t + step];
         gt_step.x = agent->traj_x[start_t + step + 1];
         gt_step.y = agent->traj_y[start_t + step + 1];
         gt_step.heading = agent->traj_heading[start_t + step + 1];
@@ -2759,26 +2877,75 @@ int c_fit_discrete_action_sequence(Drive *env, int agent_slot, int beam_width, i
         gt_step.vy = agent->traj_vy[start_t + step + 1];
         gt_step.heading_x = cosf(gt_step.heading);
         gt_step.heading_y = sinf(gt_step.heading);
+        float gt_step_heading_delta = gt_step.heading - gt_prev.heading;
+        if (gt_step_heading_delta > M_PI)
+            gt_step_heading_delta -= 2.0f * M_PI;
+        if (gt_step_heading_delta < -M_PI)
+            gt_step_heading_delta += 2.0f * M_PI;
+        int lookahead_t = start_t + step + 4;
+        if (lookahead_t > end_t) {
+            lookahead_t = end_t;
+        }
+        float gt_window_heading_delta = agent->traj_heading[lookahead_t] - gt_prev.heading;
+        if (gt_window_heading_delta > M_PI)
+            gt_window_heading_delta -= 2.0f * M_PI;
+        if (gt_window_heading_delta < -M_PI)
+            gt_window_heading_delta += 2.0f * M_PI;
 
         for (int prev_idx = 0; prev_idx < prev_count; prev_idx++) {
             BCBeamNode *prev = &nodes[step * max_beam + prev_idx];
             if (!prev->valid) {
                 continue;
             }
+            float prev_dx = prev->state.x - gt_prev.x;
+            float prev_dy = prev->state.y - gt_prev.y;
+            float prev_cos_h = cosf(gt_prev.heading);
+            float prev_sin_h = sinf(gt_prev.heading);
+            float prev_lat_error = -prev_dx * prev_sin_h + prev_dy * prev_cos_h;
+            float prev_lat_abs = fabsf(prev_lat_error);
+            if (prev->terminal) {
+                BCBeamNode *cand = &candidates[candidate_count++];
+                *cand = *prev;
+                cand->parent = prev_idx;
+                cand->action = -1;
+                cand->step_cost = 0.0f;
+                cand->step_lat_cost = 0.0f;
+                cand->step_lon_cost = 0.0f;
+                cand->depth = prev->depth;
+                continue;
+            }
             for (int action = 0; action < num_actions; action++) {
+                int steering_index = action % num_steer;
+                float steering = STEERING_VALUES[steering_index];
+                int allow_large_correction = prev_lat_abs > 0.15f;
+                if (!allow_large_correction && fabsf(gt_window_heading_delta) < 0.04f && fabsf(steering) > 0.167f) {
+                    continue;
+                }
+                if (!allow_large_correction && fabsf(gt_window_heading_delta) < 0.08f && fabsf(steering) > 0.333f) {
+                    continue;
+                }
+                if (!allow_large_correction && fabsf(gt_step_heading_delta) < 0.01f && fabsf(steering) > 0.333f) {
+                    continue;
+                }
                 BCBeamNode *cand = &candidates[candidate_count++];
                 cand->state = prev->state;
                 bc_simulate_discrete_classic(env, &prev->state, action, &cand->state);
                 cand->step_cost = bc_compute_step_cost(&cand->state, &gt_step, w_lat, w_lon, w_heading, w_speed,
                                                        &cand->step_lat_cost, &cand->step_lon_cost);
                 cand->step_cost += bc_compute_action_transition_cost(env, prev->action, action, w_steer_change,
-                                                                     w_accel_change);
+                                                                     w_accel_change, w_steer_flip);
+                cand->step_cost +=
+                    bc_compute_progress_cost(&prev->state, &cand->state, &gt_prev, &gt_step, w_progress, w_reverse);
+                cand->step_cost += bc_compute_reference_control_cost(
+                    env, &prev->state, action, &gt_prev, &gt_step, w_ref_accel, w_ref_steer);
                 cand->cumulative_cost = prev->cumulative_cost + cand->step_cost;
                 cand->cumulative_lat_cost = prev->cumulative_lat_cost + cand->step_lat_cost;
                 cand->cumulative_lon_cost = prev->cumulative_lon_cost + cand->step_lon_cost;
                 cand->parent = prev_idx;
                 cand->action = action;
                 cand->valid = 1;
+                cand->terminal = bc_reached_goal(env, agent, &cand->state);
+                cand->depth = prev->depth + 1;
             }
         }
 
@@ -2791,12 +2958,21 @@ int c_fit_discrete_action_sequence(Drive *env, int agent_slot, int beam_width, i
             nodes[(step + 1) * max_beam + i].valid = 0;
         }
         prev_count = next_count;
+
+        for (int i = 0; i < prev_count; i++) {
+            if (nodes[(step + 1) * max_beam + i].valid && nodes[(step + 1) * max_beam + i].terminal) {
+                final_step_count = step + 1;
+                final_best_idx = i;
+                step = num_steps; // break outer loop
+                break;
+            }
+        }
     }
 
-    int best_idx = 0;
-    float best_cost = nodes[num_steps * max_beam].cumulative_cost;
-    for (int i = 1; i < prev_count; i++) {
-        float cost = nodes[num_steps * max_beam + i].cumulative_cost;
+    int best_idx = final_best_idx >= 0 ? final_best_idx : 0;
+    float best_cost = nodes[final_step_count * max_beam + best_idx].cumulative_cost;
+    for (int i = (final_best_idx >= 0 ? 0 : 1); i < prev_count; i++) {
+        float cost = nodes[final_step_count * max_beam + i].cumulative_cost;
         if (cost < best_cost) {
             best_cost = cost;
             best_idx = i;
@@ -2804,8 +2980,12 @@ int c_fit_discrete_action_sequence(Drive *env, int agent_slot, int beam_width, i
     }
 
     int current_idx = best_idx;
-    for (int step = num_steps; step > 0; step--) {
+    for (int step = final_step_count; step > 0; step--) {
         BCBeamNode *node = &nodes[step * max_beam + current_idx];
+        if (node->action < 0) {
+            current_idx = node->parent;
+            continue;
+        }
         actions_out[step - 1] = node->action;
         step_costs_out[step - 1] = node->step_cost;
         if (step_lat_costs_out != NULL) {
@@ -2824,14 +3004,14 @@ int c_fit_discrete_action_sequence(Drive *env, int agent_slot, int beam_width, i
 
     *total_cost_out = best_cost;
     if (total_lat_cost_out != NULL) {
-        *total_lat_cost_out = nodes[num_steps * max_beam + best_idx].cumulative_lat_cost;
+        *total_lat_cost_out = nodes[final_step_count * max_beam + best_idx].cumulative_lat_cost;
     }
     if (total_lon_cost_out != NULL) {
-        *total_lon_cost_out = nodes[num_steps * max_beam + best_idx].cumulative_lon_cost;
+        *total_lon_cost_out = nodes[final_step_count * max_beam + best_idx].cumulative_lon_cost;
     }
     free(nodes);
     free(candidates);
-    return num_steps;
+    return final_step_count;
 }
 
 void c_get_road_edge_counts(Drive *env, int *num_polylines_out, int *total_points_out) {
