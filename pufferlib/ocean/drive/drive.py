@@ -434,7 +434,9 @@ def _normalize_optional_name(value):
 def _get_discrete_action_size(env):
     action_space = env.single_action_space
     if not isinstance(action_space, gymnasium.spaces.MultiDiscrete) or len(action_space.nvec) != 1:
-        raise ValueError("Offline BC trainer currently supports only discrete Drive policies with a joint action head")
+        message = "Offline BC trainer currently supports only discrete Drive policies with a joint action head"
+        _print_mismatch(message)
+        raise ValueError(message)
     return int(action_space.nvec[0])
 
 
@@ -502,36 +504,48 @@ def _validate_bc_shard_payload(payload, obs_dim, action_space_size, shard_path):
     required = {"obs", "action", "map_id", "scenario_id", "agent_id", "timestep"}
     missing = required.difference(payload.keys())
     if missing:
-        raise ValueError(f"BC shard {shard_path} is missing required keys: {sorted(missing)}")
+        message = f"BC shard {shard_path} is missing required keys: {sorted(missing)}"
+        _print_mismatch(message)
+        raise ValueError(message)
 
     obs = payload["obs"]
     action = payload["action"]
     if obs.ndim != 2:
-        raise ValueError(f"BC shard {shard_path} obs must be rank-2, got shape {tuple(obs.shape)}")
+        message = f"BC shard {shard_path} obs must be rank-2, got shape {tuple(obs.shape)}"
+        _print_mismatch(message)
+        raise ValueError(message)
     if int(obs.shape[1]) != int(obs_dim):
-        raise ValueError(
-            f"BC shard {shard_path} observation width mismatch: expected {obs_dim}, got {int(obs.shape[1])}"
-        )
+        message = f"BC shard {shard_path} observation width mismatch: expected {obs_dim}, got {int(obs.shape[1])}"
+        _print_mismatch(message)
+        raise ValueError(message)
     if action.ndim != 1:
-        raise ValueError(f"BC shard {shard_path} action must be rank-1, got shape {tuple(action.shape)}")
+        message = f"BC shard {shard_path} action must be rank-1, got shape {tuple(action.shape)}"
+        _print_mismatch(message)
+        raise ValueError(message)
     if int(action.shape[0]) != int(obs.shape[0]):
-        raise ValueError(
-            f"BC shard {shard_path} obs/action sample count mismatch: {int(obs.shape[0])} vs {int(action.shape[0])}"
-        )
+        message = f"BC shard {shard_path} obs/action sample count mismatch: {int(obs.shape[0])} vs {int(action.shape[0])}"
+        _print_mismatch(message)
+        raise ValueError(message)
     if action.numel() > 0:
         min_action = int(action.min().item())
         max_action = int(action.max().item())
         if min_action < 0 or max_action >= int(action_space_size):
-            raise ValueError(
-                f"BC shard {shard_path} contains invalid action ids [{min_action}, {max_action}] for action space size {action_space_size}"
+            message = (
+                f"BC shard {shard_path} contains invalid action ids [{min_action}, {max_action}] "
+                f"for action space size {action_space_size}"
             )
+            _print_mismatch(message)
+            raise ValueError(message)
 
     metadata = payload.get("metadata", {})
     metadata_action_space = metadata.get("action_space_size")
     if metadata_action_space is not None and int(metadata_action_space) != int(action_space_size):
-        raise ValueError(
-            f"BC shard {shard_path} metadata action_space_size mismatch: expected {action_space_size}, got {metadata_action_space}"
+        message = (
+            f"BC shard {shard_path} metadata action_space_size mismatch: expected {action_space_size}, "
+            f"got {metadata_action_space}"
         )
+        _print_mismatch(message)
+        raise ValueError(message)
 
 
 def _load_bc_shards(shard_paths, obs_dim, action_space_size):
@@ -660,6 +674,7 @@ def _run_bc_epoch(model, dataloader, optimizer, device, recurrent):
 def _build_bc_policy(args, env, device):
     policy_name = _resolve_base_arg(args, "policy_name")
     if policy_name is None:
+        _print_mismatch("BC trainer could not resolve policy_name from config args")
         raise KeyError("policy_name")
     policy_cls = getattr(ocean_torch, policy_name)
     policy = policy_cls(env, **args["policy"])
@@ -683,12 +698,16 @@ def train_bc_policy(args=None, dataset_dir=None, output_dir=None):
     args = args or load_drive_builder_config()
     env_cfg = _normalize_env_config(args["env"])
     if env_cfg.get("action_type") != "discrete":
-        raise ValueError("Offline BC trainer currently supports only discrete action_type")
+        message = "Offline BC trainer currently supports only discrete action_type"
+        _print_mismatch(message)
+        raise ValueError(message)
 
     bc_train_cfg = _resolve_bc_train_config(args, dataset_dir=dataset_dir, output_dir=output_dir)
     dataset_dir = bc_train_cfg["dataset_dir"]
     if dataset_dir is None or not os.path.isdir(dataset_dir):
-        raise FileNotFoundError(f"BC dataset directory not found: {dataset_dir}")
+        message = f"BC dataset directory not found: {dataset_dir}"
+        _print_mismatch(message)
+        raise FileNotFoundError(message)
 
     seed = int(args.get("train", {}).get("seed", 0))
     torch.manual_seed(seed)
@@ -705,7 +724,9 @@ def train_bc_policy(args=None, dataset_dir=None, output_dir=None):
         action_space_size = _get_discrete_action_size(env)
         shard_paths = _list_bc_shards(dataset_dir, max_shards=bc_train_cfg["max_shards"])
         if not shard_paths:
-            raise FileNotFoundError(f"No BC shard files found in {dataset_dir}")
+            message = f"No BC shard files found in {dataset_dir}"
+            _print_mismatch(message)
+            raise FileNotFoundError(message)
 
         train_shards, val_shards = _split_shards(shard_paths, bc_train_cfg["val_fraction"], seed)
         train_payloads = _load_bc_shards(train_shards, obs_dim, action_space_size)
@@ -724,7 +745,9 @@ def train_bc_policy(args=None, dataset_dir=None, output_dir=None):
             val_dataset = _FlatBCDataset(val_payloads)
 
         if len(train_dataset) == 0:
-            raise ValueError("BC training dataset is empty after loading selected shards")
+            message = "BC training dataset is empty after loading selected shards"
+            _print_mismatch(message)
+            raise ValueError(message)
 
         train_loader = _make_bc_loader(
             train_dataset, batch_size=bc_train_cfg["batch_size"], shuffle=True, num_workers=bc_train_cfg["num_workers"]
