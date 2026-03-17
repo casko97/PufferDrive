@@ -4,9 +4,25 @@
 #define MY_SHARED
 #define MY_PUT
 static PyObject *vec_has_invalid_initial_trailer_state(PyObject *self, PyObject *args);
+static PyObject *env_get_active_agent_count(PyObject *self, PyObject *args);
+static PyObject *env_get_active_agent_info(PyObject *self, PyObject *args);
+static PyObject *env_get_partner_types(PyObject *self, PyObject *args);
+static PyObject *env_get_ego_trailer_obs_features(PyObject *self, PyObject *args);
+static PyObject *env_set_logged_timestep(PyObject *self, PyObject *args);
+static PyObject *env_copy_observations(PyObject *self, PyObject *args);
+static PyObject *env_fit_discrete_action_sequence(PyObject *self, PyObject *args);
 #define MY_METHODS                                                                                                     \
     {"vec_has_invalid_initial_trailer_state", vec_has_invalid_initial_trailer_state, METH_VARARGS,                   \
-     "Return True if any sub-environment has invalid initial trailer state"}
+     "Return True if any sub-environment has invalid initial trailer state"},                                          \
+    {"env_get_active_agent_count", env_get_active_agent_count, METH_VARARGS, "Get active agent count"},              \
+    {"env_get_active_agent_info", env_get_active_agent_info, METH_VARARGS, "Get active agent scenario/id info"},     \
+    {"env_get_partner_types", env_get_partner_types, METH_VARARGS, "Get partner type ids"},                          \
+    {"env_get_ego_trailer_obs_features", env_get_ego_trailer_obs_features, METH_VARARGS,                             \
+     "Get ego trailer-relative observation features"},                                                                 \
+    {"env_set_logged_timestep", env_set_logged_timestep, METH_VARARGS, "Set env state to a logged timestep"},        \
+    {"env_copy_observations", env_copy_observations, METH_VARARGS, "Copy current observation buffer"},               \
+    {"env_fit_discrete_action_sequence", env_fit_discrete_action_sequence, METH_VARARGS,                              \
+     "Fit a discrete action sequence against GT"}
 #include "../env_binding.h"
 
 static int unpack_non_kinematic_override(PyObject *kwargs, float *dst, int *enabled) {
@@ -248,6 +264,7 @@ static int my_init(Env *env, PyObject *args, PyObject *kwargs) {
     }
     env->action_type = conf.action_type;
     env->dynamics_model = conf.dynamics_model;
+    env->extend_classic_action_space = conf.extend_classic_action_space;
     env->reward_vehicle_collision = conf.reward_vehicle_collision;
     env->reward_offroad_collision = conf.reward_offroad_collision;
     env->reward_goal = conf.reward_goal;
@@ -264,6 +281,9 @@ static int my_init(Env *env, PyObject *args, PyObject *kwargs) {
     env->goal_target_distance = (float)unpack(kwargs, "goal_target_distance");
     env->goal_radius = (float)unpack(kwargs, "goal_radius");
     env->goal_speed = (float)unpack(kwargs, "goal_speed");
+    if (kwargs && PyDict_GetItemString(kwargs, "extend_classic_action_space")) {
+        env->extend_classic_action_space = (int)unpack(kwargs, "extend_classic_action_space");
+    }
     env->force_zero_trailer_articulation_at_init = (int)unpack(kwargs, "force_zero_trailer_articulation_at_init");
     env->override_non_kinematic_vehicle_params = 0;
     for (int i = 0; i < 13; i++) {
@@ -317,4 +337,174 @@ static PyObject *vec_has_invalid_initial_trailer_state(PyObject *self, PyObject 
         }
     }
     Py_RETURN_FALSE;
+}
+
+static PyObject *env_get_active_agent_count(PyObject *self, PyObject *args) {
+    Env *env = unpack_env(args);
+    if (!env) {
+        return NULL;
+    }
+    return PyLong_FromLong(env->active_agent_count);
+}
+
+static PyObject *env_get_active_agent_info(PyObject *self, PyObject *args) {
+    if (PyTuple_Size(args) != 3) {
+        PyErr_SetString(PyExc_TypeError, "env_get_active_agent_info requires 3 arguments");
+        return NULL;
+    }
+
+    Env *env = unpack_env(args);
+    if (!env) {
+        return NULL;
+    }
+
+    PyObject *scenario_id_arr = PyTuple_GetItem(args, 1);
+    PyObject *id_arr = PyTuple_GetItem(args, 2);
+    if (!PyArray_Check(scenario_id_arr) || !PyArray_Check(id_arr)) {
+        PyErr_SetString(PyExc_TypeError, "All output arrays must be NumPy arrays");
+        return NULL;
+    }
+
+    c_get_active_agent_info(env, (int *)PyArray_DATA((PyArrayObject *)scenario_id_arr),
+                            (int *)PyArray_DATA((PyArrayObject *)id_arr));
+    Py_RETURN_NONE;
+}
+
+static PyObject *env_get_partner_types(PyObject *self, PyObject *args) {
+    if (PyTuple_Size(args) != 2) {
+        PyErr_SetString(PyExc_TypeError, "env_get_partner_types requires 2 arguments");
+        return NULL;
+    }
+
+    Env *env = unpack_env(args);
+    if (!env) {
+        return NULL;
+    }
+
+    PyObject *types_arr = PyTuple_GetItem(args, 1);
+    if (!PyArray_Check(types_arr)) {
+        PyErr_SetString(PyExc_TypeError, "Output array must be a NumPy array");
+        return NULL;
+    }
+
+    c_get_partner_types(env, (int *)PyArray_DATA((PyArrayObject *)types_arr));
+    Py_RETURN_NONE;
+}
+
+static PyObject *env_get_ego_trailer_obs_features(PyObject *self, PyObject *args) {
+    if (PyTuple_Size(args) != 5) {
+        PyErr_SetString(PyExc_TypeError, "env_get_ego_trailer_obs_features requires 5 arguments");
+        return NULL;
+    }
+
+    Env *env = unpack_env(args);
+    if (!env) {
+        return NULL;
+    }
+
+    PyObject *rel_x_arr = PyTuple_GetItem(args, 1);
+    PyObject *rel_y_arr = PyTuple_GetItem(args, 2);
+    PyObject *rel_heading_x_arr = PyTuple_GetItem(args, 3);
+    PyObject *rel_heading_y_arr = PyTuple_GetItem(args, 4);
+    if (!PyArray_Check(rel_x_arr) || !PyArray_Check(rel_y_arr) || !PyArray_Check(rel_heading_x_arr) ||
+        !PyArray_Check(rel_heading_y_arr)) {
+        PyErr_SetString(PyExc_TypeError, "All output arrays must be NumPy arrays");
+        return NULL;
+    }
+
+    c_get_ego_trailer_obs_features(env, (float *)PyArray_DATA((PyArrayObject *)rel_x_arr),
+                                   (float *)PyArray_DATA((PyArrayObject *)rel_y_arr),
+                                   (float *)PyArray_DATA((PyArrayObject *)rel_heading_x_arr),
+                                   (float *)PyArray_DATA((PyArrayObject *)rel_heading_y_arr));
+    Py_RETURN_NONE;
+}
+
+static PyObject *env_set_logged_timestep(PyObject *self, PyObject *args) {
+    if (PyTuple_Size(args) != 2) {
+        PyErr_SetString(PyExc_TypeError, "env_set_logged_timestep requires 2 arguments");
+        return NULL;
+    }
+
+    Env *env = unpack_env(args);
+    if (!env) {
+        return NULL;
+    }
+
+    PyObject *timestep_obj = PyTuple_GetItem(args, 1);
+    if (!PyObject_TypeCheck(timestep_obj, &PyLong_Type)) {
+        PyErr_SetString(PyExc_TypeError, "timestep must be an integer");
+        return NULL;
+    }
+
+    c_set_logged_timestep(env, (int)PyLong_AsLong(timestep_obj));
+    Py_RETURN_NONE;
+}
+
+static PyObject *env_copy_observations(PyObject *self, PyObject *args) {
+    if (PyTuple_Size(args) != 2) {
+        PyErr_SetString(PyExc_TypeError, "env_copy_observations requires 2 arguments");
+        return NULL;
+    }
+
+    Env *env = unpack_env(args);
+    if (!env) {
+        return NULL;
+    }
+
+    PyObject *obs_arr = PyTuple_GetItem(args, 1);
+    if (!PyArray_Check(obs_arr)) {
+        PyErr_SetString(PyExc_TypeError, "Output array must be a NumPy array");
+        return NULL;
+    }
+
+    c_copy_observations(env, (float *)PyArray_DATA((PyArrayObject *)obs_arr));
+    Py_RETURN_NONE;
+}
+
+static PyObject *env_fit_discrete_action_sequence(PyObject *self, PyObject *args) {
+    if (PyTuple_Size(args) != 14) {
+        PyErr_SetString(PyExc_TypeError, "env_fit_discrete_action_sequence requires 14 arguments");
+        return NULL;
+    }
+
+    Env *env = unpack_env(args);
+    if (!env) {
+        return NULL;
+    }
+
+    int agent_slot = (int)PyLong_AsLong(PyTuple_GetItem(args, 1));
+    int beam_width = (int)PyLong_AsLong(PyTuple_GetItem(args, 2));
+    int planning_horizon = (int)PyLong_AsLong(PyTuple_GetItem(args, 3));
+    float w_lat = (float)PyFloat_AsDouble(PyTuple_GetItem(args, 4));
+    float w_lon = (float)PyFloat_AsDouble(PyTuple_GetItem(args, 5));
+    float w_heading = (float)PyFloat_AsDouble(PyTuple_GetItem(args, 6));
+    float w_speed = (float)PyFloat_AsDouble(PyTuple_GetItem(args, 7));
+    float w_steer_change = (float)PyFloat_AsDouble(PyTuple_GetItem(args, 8));
+    float w_accel_change = (float)PyFloat_AsDouble(PyTuple_GetItem(args, 9));
+    PyObject *actions_arr = PyTuple_GetItem(args, 10);
+    PyObject *step_costs_arr = PyTuple_GetItem(args, 11);
+    PyObject *step_lat_costs_arr = PyTuple_GetItem(args, 12);
+    PyObject *step_lon_costs_arr = PyTuple_GetItem(args, 13);
+    if (!PyArray_Check(actions_arr) || !PyArray_Check(step_costs_arr) || !PyArray_Check(step_lat_costs_arr) ||
+        !PyArray_Check(step_lon_costs_arr)) {
+        PyErr_SetString(PyExc_TypeError, "Output arrays must be NumPy arrays");
+        return NULL;
+    }
+
+    float total_cost = 0.0f;
+    float total_lat_cost = 0.0f;
+    float total_lon_cost = 0.0f;
+    int num_steps = c_fit_discrete_action_sequence(
+        env, agent_slot, beam_width, planning_horizon, w_lat, w_lon, w_heading, w_speed, w_steer_change,
+        w_accel_change, (int *)PyArray_DATA((PyArrayObject *)actions_arr),
+        (float *)PyArray_DATA((PyArrayObject *)step_costs_arr),
+        (float *)PyArray_DATA((PyArrayObject *)step_lat_costs_arr),
+        (float *)PyArray_DATA((PyArrayObject *)step_lon_costs_arr), &total_cost, &total_lat_cost, &total_lon_cost);
+
+    if (num_steps < 0) {
+        PyErr_SetString(PyExc_RuntimeError, "Failed to fit discrete action sequence");
+        return NULL;
+    }
+
+    return Py_BuildValue("(ifff)", num_steps, total_cost, total_lat_cost, total_lon_cost);
 }
