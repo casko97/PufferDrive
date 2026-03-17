@@ -552,7 +552,7 @@ def _split_shards(shard_paths, val_fraction, seed):
 
 
 def _validate_bc_shard_payload(payload, obs_dim, action_space_size, shard_path):
-    required = {"obs", "action", "map_id", "scenario_id", "agent_id", "timestep"}
+    required = {"obs", "action", "map_id", "timestep", "sequence_id"}
     missing = required.difference(payload.keys())
     if missing:
         message = f"BC shard {shard_path} is missing required keys: {sorted(missing)}"
@@ -561,6 +561,8 @@ def _validate_bc_shard_payload(payload, obs_dim, action_space_size, shard_path):
 
     obs = payload["obs"]
     action = payload["action"]
+    map_id = payload["map_id"]
+    timestep = payload["timestep"]
     if obs.ndim != 2:
         message = f"BC shard {shard_path} obs must be rank-2, got shape {tuple(obs.shape)}"
         _print_mismatch(message)
@@ -575,6 +577,26 @@ def _validate_bc_shard_payload(payload, obs_dim, action_space_size, shard_path):
         raise ValueError(message)
     if int(action.shape[0]) != int(obs.shape[0]):
         message = f"BC shard {shard_path} obs/action sample count mismatch: {int(obs.shape[0])} vs {int(action.shape[0])}"
+        _print_mismatch(message)
+        raise ValueError(message)
+    if map_id.ndim != 1 or int(map_id.shape[0]) != int(obs.shape[0]):
+        message = f"BC shard {shard_path} map_id must be rank-1 and match sample count"
+        _print_mismatch(message)
+        raise ValueError(message)
+    if timestep.ndim != 1 or int(timestep.shape[0]) != int(obs.shape[0]):
+        message = f"BC shard {shard_path} timestep must be rank-1 and match sample count"
+        _print_mismatch(message)
+        raise ValueError(message)
+    sequence_id = payload["sequence_id"]
+    if sequence_id.ndim != 1:
+        message = f"BC shard {shard_path} sequence_id must be rank-1, got shape {tuple(sequence_id.shape)}"
+        _print_mismatch(message)
+        raise ValueError(message)
+    if int(sequence_id.shape[0]) != int(obs.shape[0]):
+        message = (
+            f"BC shard {shard_path} obs/sequence_id sample count mismatch: "
+            f"{int(obs.shape[0])} vs {int(sequence_id.shape[0])}"
+        )
         _print_mismatch(message)
         raise ValueError(message)
     if action.numel() > 0:
@@ -613,14 +635,12 @@ def _build_sequence_samples_from_payload(payload, seq_len, stride):
     stride = max(1, int(stride))
     obs = payload["obs"].float()
     action = payload["action"].long()
-    map_id = payload["map_id"].int()
-    scenario_id = payload["scenario_id"].int()
-    agent_id = payload["agent_id"].int()
     timestep = payload["timestep"].int()
+    sequence_id = payload["sequence_id"].long()
 
     groups = {}
     for row_idx in range(obs.shape[0]):
-        key = (int(map_id[row_idx]), int(scenario_id[row_idx]), int(agent_id[row_idx]))
+        key = int(sequence_id[row_idx])
         groups.setdefault(key, []).append((int(timestep[row_idx]), row_idx))
 
     samples = []
@@ -1290,6 +1310,7 @@ def build_bc_dataset(args=None, output_dir=None):
             sample_actions = []
             sample_scenario_ids = []
             sample_agent_ids = []
+            sample_sequence_ids = []
             sample_timesteps = []
             sample_total_costs = []
             sample_step_costs = []
@@ -1323,6 +1344,7 @@ def build_bc_dataset(args=None, output_dir=None):
                     sample_actions.append(int(agent_actions[agent_slot, step_idx]))
                     sample_scenario_ids.append(int(scenario_ids[agent_slot]))
                     sample_agent_ids.append(int(agent_ids[agent_slot]))
+                    sample_sequence_ids.append(int(agent_slot))
                     sample_timesteps.append(int(env_cfg["init_steps"]) + step_idx)
                     sample_total_costs.append(float(agent_total_costs[agent_slot]))
                     sample_step_costs.append(float(agent_step_costs[agent_slot, step_idx]))
@@ -1342,6 +1364,7 @@ def build_bc_dataset(args=None, output_dir=None):
                 "action": torch.tensor(sample_actions, dtype=torch.int64),
                 "scenario_id": torch.tensor(sample_scenario_ids, dtype=torch.int32),
                 "agent_id": torch.tensor(sample_agent_ids, dtype=torch.int32),
+                "sequence_id": torch.tensor(sample_sequence_ids, dtype=torch.int64),
                 "timestep": torch.tensor(sample_timesteps, dtype=torch.int32),
                 "match_cost_total": torch.tensor(sample_total_costs, dtype=torch.float32),
                 "match_cost_step": torch.tensor(sample_step_costs, dtype=torch.float32),
@@ -1353,6 +1376,7 @@ def build_bc_dataset(args=None, output_dir=None):
                 "metadata": {
                     "source_map": f"map_{map_id:03d}.bin",
                     "sample_count": len(sample_actions),
+                    "sequence_count": int(active_count),
                     "observation_dim": int(obs_tensor.shape[1]),
                     "observation_mode": env_cfg["observation_mode"],
                     "action_space_size": (
