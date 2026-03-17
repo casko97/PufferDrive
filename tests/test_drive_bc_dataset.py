@@ -951,6 +951,89 @@ def test_bc_trainer_splits_train_val_by_shard(tmp_path):
     assert set(result["train_shards"]).isdisjoint(set(result["val_shards"]))
 
 
+def test_bc_trainer_logs_metrics_to_logger(tmp_path):
+    class FakeLogger:
+        def __init__(self):
+            self.logged = []
+            self.closed_with = None
+
+        def log(self, logs, step):
+            self.logged.append((dict(logs), step))
+
+        def close(self, model_path):
+            self.closed_with = model_path
+
+    map_dir = tmp_path / "maps"
+    map_dir.mkdir()
+    _write_bc_test_map(map_dir)
+    shard_paths = build_bc_dataset(_builder_args(map_dir))
+
+    args = _bc_train_args(map_dir, Path(shard_paths[0]).parent, rnn_name=None)
+    logger = FakeLogger()
+    result = train_bc_policy(args, logger=logger)
+
+    assert logger.logged
+    last_logs, last_step = logger.logged[-1]
+    assert last_step > 0
+    assert "bc/train_loss" in last_logs
+    assert "bc/train_accuracy" in last_logs
+    assert "bc/train_elapsed_sec" in last_logs
+    assert "bc/val_loss" in last_logs
+    assert "bc/val_accuracy" in last_logs
+    assert "bc/val_elapsed_sec" in last_logs
+    assert "bc/best_metric" in last_logs
+    assert logger.closed_with == result["best_path"]
+
+
+def test_bc_trainer_logs_batch_metrics_to_logger(tmp_path):
+    class FakeLogger:
+        def __init__(self):
+            self.logged = []
+            self.closed_with = None
+
+        def log(self, logs, step):
+            self.logged.append((dict(logs), step))
+
+        def close(self, model_path):
+            self.closed_with = model_path
+
+    map_dir = tmp_path / "maps"
+    map_dir.mkdir()
+    _write_bc_test_map(map_dir)
+    shard_paths = build_bc_dataset(_builder_args(map_dir))
+
+    args = _bc_train_args(map_dir, Path(shard_paths[0]).parent, rnn_name=None)
+    args["bc_train"]["log_interval"] = 1
+    logger = FakeLogger()
+    train_bc_policy(args, logger=logger)
+
+    batch_logs = [logs for logs, _ in logger.logged if "bc/train_loss_running" in logs]
+    assert batch_logs
+    last_batch_logs = batch_logs[-1]
+    assert "bc/train_accuracy_running" in last_batch_logs
+    assert "bc/train_batches_done" in last_batch_logs
+    assert "bc/train_samples_seen_epoch" in last_batch_logs
+    assert "bc/train_elapsed_sec_running" in last_batch_logs
+
+
+def test_bc_trainer_emits_console_progress_messages(tmp_path, capsys):
+    map_dir = tmp_path / "maps"
+    map_dir.mkdir()
+    _write_bc_test_map(map_dir)
+    shard_paths = build_bc_dataset(_builder_args(map_dir))
+
+    args = _bc_train_args(map_dir, Path(shard_paths[0]).parent, rnn_name=None)
+    args["bc_train"]["epochs"] = 1
+    train_bc_policy(args)
+
+    captured = capsys.readouterr()
+    assert "[BC] starting training" in captured.out
+    assert "[BC] using shard-streamed loading" in captured.out
+    assert "[BC] dataset ready" in captured.out
+    assert "[BC] epoch 1/1 starting" in captured.out
+    assert "[BC] epoch=1" in captured.out
+
+
 def test_binding_env_init_honors_python_config_overrides(tmp_path):
     map_dir = tmp_path / "maps"
     map_dir.mkdir()

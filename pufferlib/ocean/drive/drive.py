@@ -7,6 +7,7 @@ import hashlib
 import ast
 import configparser
 import random
+import time
 from pathlib import Path
 import pufferlib
 import torch
@@ -419,7 +420,7 @@ def _resolve_bc_train_config(args, dataset_dir=None, output_dir=None):
     bc_train.setdefault("sequence_stride", bc_train["seq_len"])
     bc_train.setdefault("max_shards", -1)
     bc_train.setdefault("save_best", True)
-    bc_train.setdefault("log_interval", 0)
+    bc_train.setdefault("log_interval", 25)
     return bc_train
 
 
@@ -676,17 +677,41 @@ def _extract_action_logits(logits):
     return logits
 
 
-def _run_bc_epoch(model, dataloader, optimizer, device, recurrent):
+def _run_bc_epoch(
+    model,
+    dataloader,
+    optimizer,
+    device,
+    recurrent,
+    desc=None,
+    log_interval=0,
+    batch_log_fn=None,
+):
     if dataloader is None:
-        return {"loss": 0.0, "accuracy": 0.0, "samples": 0}
+        return {"loss": 0.0, "accuracy": 0.0, "samples": 0, "elapsed_sec": 0.0}
 
     training = optimizer is not None
     model.train(training)
     total_loss = 0.0
     total_correct = 0
     total_samples = 0
+    start_time = time.time()
+    try:
+        total_batches = len(dataloader)
+    except TypeError:
+        total_batches = None
+    progress = tqdm(
+        dataloader,
+        desc=desc or ("BC train" if training else "BC val"),
+        unit="batch",
+        leave=False,
+        disable=False,
+        dynamic_ncols=True,
+        smoothing=0.05,
+        bar_format="{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}] {postfix}",
+    )
 
-    for batch in dataloader:
+    for batch_idx, batch in enumerate(progress, start=1):
         if recurrent:
             obs, action, mask = batch
             obs = obs.to(device)
@@ -724,13 +749,48 @@ def _run_bc_epoch(model, dataloader, optimizer, device, recurrent):
         total_loss += float(loss.item()) * batch_samples
         total_correct += int(batch_correct)
         total_samples += batch_samples
+        if total_samples > 0:
+            avg_loss = total_loss / total_samples
+            avg_accuracy = total_correct / total_samples
+            progress.set_postfix(
+                loss=f"{avg_loss:.3f}",
+                acc=f"{avg_accuracy:.3f}",
+                seen=f"{total_samples / 1000.0:.1f}k",
+                refresh=False,
+            )
+            if log_interval and batch_idx % int(log_interval) == 0:
+                progress_fraction = None
+                if total_batches is not None and total_batches > 0:
+                    progress_text = f"{batch_idx}/{total_batches} ({100.0 * batch_idx / total_batches:.1f}%)"
+                    progress_fraction = batch_idx / total_batches
+                else:
+                    progress_text = str(batch_idx)
+                print(
+                    f"[BC] {progress.desc} batch={progress_text} loss={avg_loss:.4f} "
+                    f"acc={avg_accuracy:.4f} seen={total_samples} elapsed={time.time() - start_time:.1f}s",
+                    flush=True,
+                )
+                if batch_log_fn is not None:
+                    batch_log_fn(
+                        {
+                            "batch": int(batch_idx),
+                            "progress": progress_fraction,
+                            "loss": float(avg_loss),
+                            "accuracy": float(avg_accuracy),
+                            "samples": int(total_samples),
+                            "elapsed_sec": float(time.time() - start_time),
+                        }
+                    )
+
+    progress.close()
 
     if total_samples == 0:
-        return {"loss": 0.0, "accuracy": 0.0, "samples": 0}
+        return {"loss": 0.0, "accuracy": 0.0, "samples": 0, "elapsed_sec": time.time() - start_time}
     return {
         "loss": total_loss / total_samples,
         "accuracy": total_correct / total_samples,
         "samples": total_samples,
+        "elapsed_sec": time.time() - start_time,
     }
 
 
@@ -757,7 +817,7 @@ def _make_bc_training_env(env_cfg):
     return Drive(**env_kwargs)
 
 
-def train_bc_policy(args=None, dataset_dir=None, output_dir=None):
+def train_bc_policy(args=None, dataset_dir=None, output_dir=None, logger=None):
     args = args or load_drive_builder_config()
     env_cfg = _normalize_env_config(args["env"])
     if env_cfg.get("action_type") != "discrete":
@@ -777,9 +837,22 @@ def train_bc_policy(args=None, dataset_dir=None, output_dir=None):
     np.random.seed(seed)
     random.seed(seed)
 
+    if logger is None:
+        from pufferlib.pufferl import NeptuneLogger, WandbLogger
+
+        if args.get("neptune"):
+            logger = NeptuneLogger(args)
+        elif args.get("wandb"):
+            logger = WandbLogger(args)
+
     device = torch.device(bc_train_cfg["device"])
     output_path = Path(bc_train_cfg["output_dir"])
     output_path.mkdir(parents=True, exist_ok=True)
+    print(
+        f"[BC] starting training dataset_dir={dataset_dir} output_dir={output_path} "
+        f"device={device} epochs={int(bc_train_cfg['epochs'])} batch_size={int(bc_train_cfg['batch_size'])}",
+        flush=True,
+    )
 
     env = _make_bc_training_env(env_cfg)
     try:
@@ -852,20 +925,66 @@ def train_bc_policy(args=None, dataset_dir=None, output_dir=None):
         best_metric = None
         latest_path = output_path / "latest.pt"
         best_path = output_path / "best.pt"
+        train_step = 0
 
         for epoch in range(int(bc_train_cfg["epochs"])):
-            train_metrics = _run_bc_epoch(policy, train_loader, optimizer, device, recurrent=recurrent)
+            if hasattr(train_dataset, "set_epoch"):
+                train_dataset.set_epoch(epoch)
+            if hasattr(val_dataset, "set_epoch"):
+                val_dataset.set_epoch(epoch)
+            print(
+                f"[BC] epoch {epoch + 1}/{int(bc_train_cfg['epochs'])} starting",
+                flush=True,
+            )
+            epoch_start_step = train_step
+
+            def _log_train_batch(batch_metrics):
+                if logger is None:
+                    return
+                batch_step = epoch_start_step + int(batch_metrics["samples"])
+                batch_logs = {
+                    "bc/train_loss_running": float(batch_metrics["loss"]),
+                    "bc/train_accuracy_running": float(batch_metrics["accuracy"]),
+                    "bc/train_batches_done": int(batch_metrics["batch"]),
+                    "bc/train_samples_seen_epoch": int(batch_metrics["samples"]),
+                    "bc/train_elapsed_sec_running": float(batch_metrics["elapsed_sec"]),
+                }
+                if batch_metrics["progress"] is not None:
+                    batch_logs["bc/train_epoch_progress"] = float(batch_metrics["progress"])
+                logger.log(batch_logs, batch_step)
+
+            train_metrics = _run_bc_epoch(
+                policy,
+                train_loader,
+                optimizer,
+                device,
+                recurrent=recurrent,
+                desc=f"BC train epoch {epoch + 1}/{int(bc_train_cfg['epochs'])}",
+                log_interval=bc_train_cfg["log_interval"],
+                batch_log_fn=_log_train_batch,
+            )
             with torch.no_grad():
-                val_metrics = _run_bc_epoch(policy, val_loader, None, device, recurrent=recurrent)
+                val_metrics = _run_bc_epoch(
+                    policy,
+                    val_loader,
+                    None,
+                    device,
+                    recurrent=recurrent,
+                    desc=f"BC val epoch {epoch + 1}/{int(bc_train_cfg['epochs'])}",
+                    log_interval=0,
+                )
 
             epoch_metrics = {
                 "epoch": epoch + 1,
                 "train_loss": float(train_metrics["loss"]),
                 "train_accuracy": float(train_metrics["accuracy"]),
                 "train_samples": int(train_metrics["samples"]),
+                "train_elapsed_sec": float(train_metrics["elapsed_sec"]),
                 "val_loss": float(val_metrics["loss"]),
                 "val_accuracy": float(val_metrics["accuracy"]),
                 "val_samples": int(val_metrics["samples"]),
+                "val_elapsed_sec": float(val_metrics["elapsed_sec"]),
+                "learning_rate": float(optimizer.param_groups[0]["lr"]),
             }
             history.append(epoch_metrics)
             torch.save(policy.state_dict(), latest_path)
@@ -876,10 +995,30 @@ def train_bc_policy(args=None, dataset_dir=None, output_dir=None):
                 if _as_bool(bc_train_cfg["save_best"]):
                     torch.save(policy.state_dict(), best_path)
 
+            train_step += epoch_metrics["train_samples"]
+            if logger is not None:
+                logger.log(
+                    {
+                        "bc/epoch": epoch_metrics["epoch"],
+                        "bc/train_loss": epoch_metrics["train_loss"],
+                        "bc/train_accuracy": epoch_metrics["train_accuracy"],
+                        "bc/train_samples": epoch_metrics["train_samples"],
+                        "bc/train_elapsed_sec": epoch_metrics["train_elapsed_sec"],
+                        "bc/val_loss": epoch_metrics["val_loss"],
+                        "bc/val_accuracy": epoch_metrics["val_accuracy"],
+                        "bc/val_samples": epoch_metrics["val_samples"],
+                        "bc/val_elapsed_sec": epoch_metrics["val_elapsed_sec"],
+                        "bc/learning_rate": epoch_metrics["learning_rate"],
+                        "bc/best_metric": float(best_metric),
+                    },
+                    train_step,
+                )
+
             print(
                 f"[BC] epoch={epoch_metrics['epoch']} train_loss={epoch_metrics['train_loss']:.4f} "
                 f"train_acc={epoch_metrics['train_accuracy']:.4f} val_loss={epoch_metrics['val_loss']:.4f} "
-                f"val_acc={epoch_metrics['val_accuracy']:.4f}"
+                f"val_acc={epoch_metrics['val_accuracy']:.4f} train_sec={epoch_metrics['train_elapsed_sec']:.1f} "
+                f"val_sec={epoch_metrics['val_elapsed_sec']:.1f}"
             )
 
         metadata = {
@@ -897,6 +1036,9 @@ def train_bc_policy(args=None, dataset_dir=None, output_dir=None):
         metadata_path = output_path / "metrics.json"
         with open(metadata_path, "w", encoding="utf-8") as f:
             json.dump(metadata, f, indent=2, default=str)
+
+        if logger is not None:
+            logger.close(str(best_path if best_path.exists() else latest_path))
 
         return {
             "latest_path": str(latest_path),
@@ -2249,6 +2391,14 @@ if __name__ == "__main__":
         default=None,
         help="Optional path to the drive config file used by the offline BC dataset builder",
     )
+    parser.add_argument("--wandb", action="store_true", help="Use wandb for BC training logging")
+    parser.add_argument("--wandb-project", type=str, default="pufferlib", help="wandb project name")
+    parser.add_argument("--wandb-group", type=str, default="debug", help="wandb group name")
+    parser.add_argument("--wandb-name", type=str, default=None, help="Optional wandb run name")
+    parser.add_argument("--tag", type=str, default=None, help="Optional run tag")
+    parser.add_argument("--neptune", action="store_true", help="Use neptune for BC training logging")
+    parser.add_argument("--neptune-name", type=str, default="pufferai", help="Neptune account/workspace name")
+    parser.add_argument("--neptune-project", type=str, default="ablations", help="Neptune project name")
 
     args = parser.parse_args()
 
@@ -2261,6 +2411,14 @@ if __name__ == "__main__":
         config = load_drive_builder_config(args.config_path)
         config.setdefault("bc_train", {})
         config["bc_train"]["max_shards"] = args.max_maps
+        config["wandb"] = args.wandb
+        config["wandb_project"] = args.wandb_project
+        config["wandb_group"] = args.wandb_group
+        config["wandb_name"] = args.wandb_name
+        config["tag"] = args.tag
+        config["neptune"] = args.neptune
+        config["neptune_name"] = args.neptune_name
+        config["neptune_project"] = args.neptune_project
         train_bc_policy(config, output_dir=args.output_folder)
     else:
         process_all_maps(
