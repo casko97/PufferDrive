@@ -385,6 +385,9 @@ def _resolve_bc_config(args, output_dir=None):
     bc = dict(args.get("bc", {}))
     env = args["env"]
     bc.setdefault("output_dir", output_dir or os.path.join(env["map_dir"], "..", "bc_dataset"))
+    bc.setdefault("export_windows", False)
+    bc.setdefault("window_seq_len", None)
+    bc.setdefault("window_stride", None)
     bc.setdefault("beam_width", 8)
     bc.setdefault("planning_horizon", -1)
     bc.setdefault("match_weight_lateral", 2.5)
@@ -410,6 +413,7 @@ def _resolve_bc_train_config(args, dataset_dir=None, output_dir=None):
     bc_train.setdefault("dataset_dir", dataset_dir or bc.get("output_dir"))
     bc_train.setdefault("output_dir", output_dir or os.path.join(bc_train["dataset_dir"], "checkpoints"))
     bc_train.setdefault("device", train.get("device", "cuda" if torch.cuda.is_available() else "cpu"))
+    bc_train.setdefault("use_embedded_windows", False)
     bc_train.setdefault("epochs", 10)
     bc_train.setdefault("batch_size", 256)
     bc_train.setdefault("learning_rate", train.get("learning_rate", 3e-4))
@@ -502,10 +506,11 @@ class _FlatBCDataset(_StreamingBCIterableDataset):
 
 
 class _SequenceBCDataset(_StreamingBCIterableDataset):
-    def __init__(self, shard_paths, obs_dim, action_space_size, *, seq_len, stride, shuffle, seed):
+    def __init__(self, shard_paths, obs_dim, action_space_size, *, seq_len, stride, shuffle, seed, require_embedded):
         super().__init__(shard_paths, obs_dim, action_space_size, shuffle=shuffle, seed=seed)
         self.seq_len = int(seq_len)
         self.stride = max(1, int(stride))
+        self.require_embedded = bool(require_embedded)
         self._manifest_cache = {}
         self._manifest_built = 0
         self._manifest_loaded = 0
@@ -538,6 +543,7 @@ class _SequenceBCDataset(_StreamingBCIterableDataset):
                 self.action_space_size,
                 seq_len=self.seq_len,
                 stride=self.stride,
+                require_embedded=self.require_embedded,
                 return_status=True,
             )
             self._manifest_cache[shard_path] = manifest
@@ -664,6 +670,9 @@ def _validate_bc_shard_payload(payload, obs_dim, action_space_size, shard_path):
         _print_mismatch(message)
         raise ValueError(message)
 
+    if "window_metadata" in payload:
+        _validate_sequence_manifest(payload["window_metadata"], shard_path=shard_path)
+
 
 def _peek_bc_shard(shard_paths, obs_dim, action_space_size):
     for shard_path in shard_paths:
@@ -680,28 +689,57 @@ def _sequence_manifest_path(shard_path, seq_len, stride):
     return manifest_dir / f"{shard_path.stem}.seq{int(seq_len)}.stride{int(stride)}.pt"
 
 
-def _build_sequence_manifest_from_payload(payload, seq_len, stride):
-    seq_len = int(seq_len)
-    stride = max(1, int(stride))
+def _sequence_spans_from_payload(payload):
     sequence_id = payload["sequence_id"].long()
+    sequence_row_index = payload.get("sequence_row_index")
+    sequence_length = payload.get("sequence_length")
+    metadata = payload.get("metadata", {})
+    metadata_sequence_ids = metadata.get("sequence_ids")
+    metadata_sequence_lengths = metadata.get("sequence_lengths")
+
+    if (
+        sequence_row_index is not None
+        and sequence_length is not None
+        and metadata_sequence_ids is not None
+        and metadata_sequence_lengths is not None
+    ):
+        spans = []
+        cursor = 0
+        for seq_id, seq_len in zip(metadata_sequence_ids, metadata_sequence_lengths):
+            seq_id = int(seq_id)
+            seq_len = int(seq_len)
+            if seq_len <= 0:
+                continue
+            end = cursor + seq_len
+            spans.append((seq_id, cursor, end))
+            cursor = end
+        return spans
 
     groups = {}
     for row_idx in range(int(sequence_id.shape[0])):
         key = int(sequence_id[row_idx])
         groups.setdefault(key, []).append(row_idx)
+    return [(seq_id, rows[0], rows[-1] + 1) for seq_id, rows in groups.items() if rows]
+
+
+def _build_sequence_manifest_from_payload(payload, seq_len, stride):
+    seq_len = int(seq_len)
+    stride = max(1, int(stride))
 
     window_indices = []
     valid_lengths = []
-    for ordered_indices in groups.values():
-        if not ordered_indices:
+    for _, start_row, end_row in _sequence_spans_from_payload(payload):
+        sequence_length = end_row - start_row
+        if sequence_length <= 0:
             continue
-        for start_idx in range(0, len(ordered_indices), stride):
-            row_indices = ordered_indices[start_idx : start_idx + seq_len]
-            if not row_indices:
+        for start_idx in range(0, sequence_length, stride):
+            start = start_row + start_idx
+            end = min(start + seq_len, end_row)
+            if end <= start:
                 continue
-            valid_len = len(row_indices)
+            valid_len = end - start
             padded_indices = torch.full((seq_len,), -1, dtype=torch.int64)
-            padded_indices[:valid_len] = torch.tensor(row_indices, dtype=torch.int64)
+            padded_indices[:valid_len] = torch.arange(start, end, dtype=torch.int64)
             window_indices.append(padded_indices)
             valid_lengths.append(valid_len)
 
@@ -722,7 +760,103 @@ def _build_sequence_manifest_from_payload(payload, seq_len, stride):
     }
 
 
-def _load_or_build_sequence_manifest(shard_path, obs_dim, action_space_size, *, seq_len, stride, return_status=False):
+def _validate_sequence_manifest(manifest, *, seq_len=None, stride=None, shard_path=None):
+    context = f"BC shard {shard_path}" if shard_path is not None else "BC sequence manifest"
+    if not isinstance(manifest, dict):
+        message = f"{context} window metadata must be a dict"
+        _print_mismatch(message)
+        raise ValueError(message)
+
+    required = {"version", "seq_len", "stride", "window_count", "window_indices", "valid_lengths"}
+    missing = required.difference(manifest.keys())
+    if missing:
+        message = f"{context} window metadata is missing required keys: {sorted(missing)}"
+        _print_mismatch(message)
+        raise ValueError(message)
+
+    manifest_seq_len = int(manifest["seq_len"])
+    manifest_stride = int(manifest["stride"])
+    if seq_len is not None and manifest_seq_len != int(seq_len):
+        message = (
+            f"{context} window metadata seq_len mismatch: expected {int(seq_len)}, got {manifest_seq_len}"
+        )
+        _print_mismatch(message)
+        raise ValueError(message)
+    if stride is not None and manifest_stride != int(stride):
+        message = (
+            f"{context} window metadata stride mismatch: expected {int(stride)}, got {manifest_stride}"
+        )
+        _print_mismatch(message)
+        raise ValueError(message)
+
+    window_indices = manifest["window_indices"]
+    valid_lengths = manifest["valid_lengths"]
+    if window_indices.ndim != 2:
+        message = f"{context} window_indices must be rank-2, got shape {tuple(window_indices.shape)}"
+        _print_mismatch(message)
+        raise ValueError(message)
+    if int(window_indices.shape[1]) != manifest_seq_len:
+        message = (
+            f"{context} window_indices width mismatch: expected {manifest_seq_len}, "
+            f"got {int(window_indices.shape[1])}"
+        )
+        _print_mismatch(message)
+        raise ValueError(message)
+    if valid_lengths.ndim != 1:
+        message = f"{context} valid_lengths must be rank-1, got shape {tuple(valid_lengths.shape)}"
+        _print_mismatch(message)
+        raise ValueError(message)
+    if int(valid_lengths.shape[0]) != int(window_indices.shape[0]):
+        message = (
+            f"{context} window_indices/valid_lengths count mismatch: "
+            f"{int(window_indices.shape[0])} vs {int(valid_lengths.shape[0])}"
+        )
+        _print_mismatch(message)
+        raise ValueError(message)
+    if int(manifest["window_count"]) != int(window_indices.shape[0]):
+        message = (
+            f"{context} window_count mismatch: expected {int(window_indices.shape[0])}, "
+            f"got {int(manifest['window_count'])}"
+        )
+        _print_mismatch(message)
+        raise ValueError(message)
+
+    for valid_len in valid_lengths.tolist():
+        valid_len = int(valid_len)
+        if valid_len < 0 or valid_len > manifest_seq_len:
+            message = (
+                f"{context} contains invalid valid_length={valid_len} for seq_len={manifest_seq_len}"
+            )
+            _print_mismatch(message)
+            raise ValueError(message)
+
+    return {
+        "version": int(manifest["version"]),
+        "seq_len": manifest_seq_len,
+        "stride": manifest_stride,
+        "window_count": int(manifest["window_count"]),
+        "window_indices": window_indices.long(),
+        "valid_lengths": valid_lengths.to(dtype=torch.int32),
+    }
+
+
+def _embedded_sequence_manifest(payload, *, seq_len=None, stride=None, shard_path=None):
+    manifest = payload.get("window_metadata")
+    if manifest is None:
+        return None
+    return _validate_sequence_manifest(manifest, seq_len=seq_len, stride=stride, shard_path=shard_path)
+
+
+def _load_or_build_sequence_manifest(
+    shard_path,
+    obs_dim,
+    action_space_size,
+    *,
+    seq_len,
+    stride,
+    require_embedded=False,
+    return_status=False,
+):
     shard_path = Path(shard_path)
     manifest_path = _sequence_manifest_path(shard_path, seq_len, stride)
     shard_stat = shard_path.stat()
@@ -741,6 +875,18 @@ def _load_or_build_sequence_manifest(shard_path, obs_dim, action_space_size, *, 
 
     payload = torch.load(shard_path, map_location="cpu")
     _validate_bc_shard_payload(payload, obs_dim, action_space_size, str(shard_path))
+    embedded_manifest = _embedded_sequence_manifest(payload, seq_len=seq_len, stride=stride, shard_path=str(shard_path))
+    if embedded_manifest is not None:
+        if return_status:
+            return embedded_manifest, False
+        return embedded_manifest
+    if require_embedded:
+        message = (
+            f"BC shard {shard_path} does not contain embedded window metadata matching "
+            f"seq_len={int(seq_len)} stride={int(stride)}"
+        )
+        _print_mismatch(message)
+        raise ValueError(message)
     manifest = _build_sequence_manifest_from_payload(payload, seq_len, stride)
     manifest["source_mtime_ns"] = int(shard_stat.st_mtime_ns)
     manifest["source_size"] = int(shard_stat.st_size)
@@ -772,7 +918,9 @@ def _build_sequence_samples_from_manifest(payload, manifest):
 
 
 def _build_sequence_samples_from_payload(payload, seq_len, stride):
-    manifest = _build_sequence_manifest_from_payload(payload, seq_len, stride)
+    manifest = _embedded_sequence_manifest(payload, seq_len=seq_len, stride=stride)
+    if manifest is None:
+        manifest = _build_sequence_manifest_from_payload(payload, seq_len, stride)
     return _build_sequence_samples_from_manifest(payload, manifest)
 
 
@@ -1007,6 +1155,16 @@ def train_bc_policy(args=None, dataset_dir=None, output_dir=None, logger=None):
 
         recurrent = _normalize_optional_name(_resolve_base_arg(args, "rnn_name")) is not None
         if recurrent:
+            expected_seq_len = int(args.get("train", {}).get("bptt_horizon", bc_train_cfg["seq_len"]))
+            actual_seq_len = int(bc_train_cfg["seq_len"])
+            if actual_seq_len != expected_seq_len:
+                message = (
+                    f"BC recurrent window size mismatch: bc_train.seq_len={actual_seq_len} "
+                    f"but model expects train.bptt_horizon={expected_seq_len}"
+                )
+                _print_mismatch(message)
+                raise ValueError(message)
+        if recurrent:
             train_dataset = _SequenceBCDataset(
                 train_shards,
                 obs_dim,
@@ -1015,6 +1173,7 @@ def train_bc_policy(args=None, dataset_dir=None, output_dir=None, logger=None):
                 stride=bc_train_cfg["sequence_stride"],
                 shuffle=True,
                 seed=seed,
+                require_embedded=_as_bool(bc_train_cfg.get("use_embedded_windows", False)),
             )
             val_dataset = _SequenceBCDataset(
                 val_shards,
@@ -1024,6 +1183,7 @@ def train_bc_policy(args=None, dataset_dir=None, output_dir=None, logger=None):
                 stride=bc_train_cfg["sequence_stride"],
                 shuffle=False,
                 seed=seed,
+                require_embedded=_as_bool(bc_train_cfg.get("use_embedded_windows", False)),
             )
         else:
             train_dataset = _FlatBCDataset(train_shards, obs_dim, action_space_size, shuffle=True, seed=seed)
@@ -1319,11 +1479,30 @@ def _validate_bc_builder_support(env_cfg):
         raise ValueError("Unsupported dynamics_model for offline BC dataset builder")
 
 
+def _resolve_bc_export_window_config(args, bc_cfg):
+    if not _as_bool(bc_cfg.get("export_windows", False)):
+        return None
+
+    bc_train_cfg = _resolve_bc_train_config(args)
+    seq_len = bc_cfg.get("window_seq_len")
+    if seq_len is None:
+        seq_len = bc_train_cfg["seq_len"]
+    stride = bc_cfg.get("window_stride")
+    if stride is None:
+        stride = bc_train_cfg.get("sequence_stride", seq_len)
+
+    return {
+        "seq_len": int(seq_len),
+        "stride": max(1, int(stride)),
+    }
+
+
 def build_bc_dataset(args=None, output_dir=None):
     args = args or load_drive_builder_config()
     env_cfg = _normalize_env_config(args["env"])
     bc_cfg = _resolve_bc_config(args, output_dir=output_dir)
     _validate_bc_builder_support(env_cfg)
+    export_window_cfg = _resolve_bc_export_window_config(args, bc_cfg)
 
     map_dir = env_cfg["map_dir"]
     if not os.path.isdir(map_dir):
@@ -1571,6 +1750,16 @@ def build_bc_dataset(args=None, output_dir=None):
                     },
                 },
             }
+            if export_window_cfg is not None:
+                window_manifest = _build_sequence_manifest_from_payload(
+                    payload,
+                    export_window_cfg["seq_len"],
+                    export_window_cfg["stride"],
+                )
+                payload["window_metadata"] = window_manifest
+                payload["metadata"]["window_count"] = int(window_manifest["window_count"])
+                payload["metadata"]["window_seq_len"] = int(window_manifest["seq_len"])
+                payload["metadata"]["window_stride"] = int(window_manifest["stride"])
             torch.save(payload, shard_path)
             shard_paths.append(str(shard_path))
         finally:
