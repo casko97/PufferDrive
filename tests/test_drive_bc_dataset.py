@@ -780,6 +780,27 @@ def test_bc_dataset_builder_writes_model_ready_shard(tmp_path):
         env.close()
 
 
+def test_bc_dataset_builder_augmented_observation_mode_writes_augmented_width(tmp_path):
+    map_dir = tmp_path / "maps"
+    map_dir.mkdir()
+    _write_bc_test_map(map_dir)
+
+    args = _builder_args(map_dir)
+    args["env"]["observation_mode"] = "sdc_only_with_trailer"
+    shard_paths = build_bc_dataset(args)
+
+    shard = torch.load(shard_paths[0])
+    expected_obs_dim = (
+        binding.EGO_FEATURES_CLASSIC
+        + 1
+        + 4
+        + (binding.MAX_AGENTS - 1) * (binding.PARTNER_FEATURES + 1)
+        + binding.MAX_ROAD_SEGMENT_OBSERVATIONS * binding.ROAD_FEATURES
+    )
+    assert shard["obs"].shape[1] == expected_obs_dim
+    assert shard["metadata"]["observation_mode"] == "sdc_only_with_trailer"
+
+
 def test_bc_trainer_recurrent_smoke(tmp_path):
     map_dir = tmp_path / "maps"
     map_dir.mkdir()
