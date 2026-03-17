@@ -3,9 +3,11 @@ import pytest
 import torch
 import shutil
 from pathlib import Path
+from types import SimpleNamespace
 
-from pufferlib.ocean.drive.drive import Drive, build_bc_dataset, binding, save_map_binary
+from pufferlib.ocean.drive.drive import Drive, build_bc_dataset, binding, save_map_binary, train_bc_policy
 from pufferlib.ocean.torch import Drive as DrivePolicy
+from pufferlib.pufferl import load_policy
 
 CLASSIC_ACTION_SPACE = 9 * 13
 CLASSIC_STEERING_VALUES = np.asarray(
@@ -207,6 +209,52 @@ def _builder_args(map_dir, action_type="discrete"):
             "match_weight_ref_steer": TEST_MATCH_WEIGHT_REF_STEER,
             "skip_existing_shards": False,
             "max_maps": 1,
+        },
+    }
+
+
+def _bc_train_args(map_dir, dataset_dir, rnn_name="Recurrent"):
+    builder_env = _builder_args(map_dir)["env"]
+    return {
+        "package": "ocean",
+        "env_name": "puffer_drive",
+        "policy_name": "Drive",
+        "rnn_name": rnn_name,
+        "policy": {
+            "input_size": 32,
+            "hidden_size": 32,
+        },
+        "rnn": {
+            "input_size": 32,
+            "hidden_size": 32,
+        },
+        "train": {
+            "device": "cpu",
+            "seed": 7,
+            "learning_rate": 0.01,
+            "bptt_horizon": 4,
+        },
+        "env": {
+            **builder_env,
+            "num_maps": 1,
+            "num_agents": 1,
+            "max_controlled_agents": 1,
+        },
+        "bc_train": {
+            "dataset_dir": str(dataset_dir),
+            "output_dir": str(Path(dataset_dir) / "checkpoints"),
+            "device": "cpu",
+            "epochs": 4,
+            "batch_size": 4,
+            "learning_rate": 0.01,
+            "weight_decay": 0.0,
+            "num_workers": 0,
+            "val_fraction": 0.0,
+            "seq_len": 4,
+            "sequence_stride": 4,
+            "max_shards": -1,
+            "save_best": True,
+            "log_interval": 0,
         },
     }
 
@@ -728,5 +776,261 @@ def test_bc_dataset_builder_writes_model_ready_shard(tmp_path):
         assert len(logits) == 1
         assert logits[0].shape[0] == obs_batch.shape[0]
         assert value.shape[0] == obs_batch.shape[0]
+    finally:
+        env.close()
+
+
+def test_bc_trainer_recurrent_smoke(tmp_path):
+    map_dir = tmp_path / "maps"
+    map_dir.mkdir()
+    _write_bc_test_map(map_dir)
+    shard_paths = build_bc_dataset(_builder_args(map_dir))
+
+    args = _bc_train_args(map_dir, Path(shard_paths[0]).parent, rnn_name="Recurrent")
+    result = train_bc_policy(args)
+
+    assert Path(result["latest_path"]).exists()
+    assert Path(result["best_path"]).exists()
+    assert Path(result["metadata_path"]).exists()
+    assert len(result["history"]) == args["bc_train"]["epochs"]
+    assert result["history"][0]["train_samples"] > 0
+
+
+def test_bc_trainer_non_recurrent_smoke(tmp_path):
+    map_dir = tmp_path / "maps"
+    map_dir.mkdir()
+    _write_bc_test_map(map_dir)
+    shard_paths = build_bc_dataset(_builder_args(map_dir))
+
+    args = _bc_train_args(map_dir, Path(shard_paths[0]).parent, rnn_name=None)
+    result = train_bc_policy(args)
+
+    assert Path(result["latest_path"]).exists()
+    assert result["history"][0]["train_samples"] > 0
+
+
+def test_bc_trainer_rejects_mismatched_obs_width(tmp_path):
+    map_dir = tmp_path / "maps"
+    map_dir.mkdir()
+    _write_bc_test_map(map_dir)
+    shard_paths = build_bc_dataset(_builder_args(map_dir))
+    shard_path = Path(shard_paths[0])
+
+    shard = torch.load(shard_path)
+    shard["obs"] = torch.cat([shard["obs"], torch.zeros((shard["obs"].shape[0], 1), dtype=torch.float32)], dim=1)
+    torch.save(shard, shard_path)
+
+    args = _bc_train_args(map_dir, shard_path.parent, rnn_name="Recurrent")
+    with pytest.raises(ValueError, match="observation width mismatch"):
+        train_bc_policy(args)
+
+
+def test_bc_trainer_rejects_out_of_range_actions(tmp_path):
+    map_dir = tmp_path / "maps"
+    map_dir.mkdir()
+    _write_bc_test_map(map_dir)
+    shard_paths = build_bc_dataset(_builder_args(map_dir))
+    shard_path = Path(shard_paths[0])
+
+    shard = torch.load(shard_path)
+    shard["action"][0] = CLASSIC_ACTION_SPACE
+    torch.save(shard, shard_path)
+
+    args = _bc_train_args(map_dir, shard_path.parent, rnn_name=None)
+    with pytest.raises(ValueError, match="invalid action ids"):
+        train_bc_policy(args)
+
+
+def test_bc_trainer_checkpoint_loads_with_existing_policy_path(tmp_path):
+    map_dir = tmp_path / "maps"
+    map_dir.mkdir()
+    _write_bc_test_map(map_dir)
+    shard_paths = build_bc_dataset(_builder_args(map_dir))
+    args = _bc_train_args(map_dir, Path(shard_paths[0]).parent, rnn_name="Recurrent")
+    result = train_bc_policy(args)
+
+    env = Drive(
+        num_agents=1,
+        num_maps=1,
+        map_dir=str(map_dir),
+        episode_length=91,
+        init_steps=0,
+        control_mode="control_vehicles",
+        init_mode="create_all_valid",
+        resample_frequency=0,
+        observation_mode="default",
+        extend_classic_action_space=True,
+    )
+    try:
+        load_args = {
+            "package": "ocean",
+            "train": {"device": "cpu"},
+            "policy_name": "Drive",
+            "rnn_name": "Recurrent",
+            "policy": args["policy"],
+            "rnn": args["rnn"],
+            "load_id": None,
+            "load_model_path": result["best_path"],
+        }
+        policy = load_policy(load_args, SimpleNamespace(driver_env=env), env_name="puffer_drive")
+        shard = torch.load(shard_paths[0])
+        obs_batch = shard["obs"][:2]
+        state = {"lstm_h": None, "lstm_c": None, "hidden": None}
+        logits, values = policy(obs_batch, state)
+        assert len(logits) == 1
+        assert logits[0].shape[0] == obs_batch.shape[0]
+        assert values.shape[0] == obs_batch.shape[0]
+    finally:
+        env.close()
+
+
+def test_bc_trainer_can_overfit_tiny_shard(tmp_path):
+    map_dir = tmp_path / "maps"
+    map_dir.mkdir()
+    _write_bc_test_map(map_dir)
+    shard_paths = build_bc_dataset(_builder_args(map_dir))
+
+    args = _bc_train_args(map_dir, Path(shard_paths[0]).parent, rnn_name=None)
+    args["bc_train"].update(
+        {
+            "epochs": 12,
+            "batch_size": 64,
+            "learning_rate": 0.02,
+            "val_fraction": 0.0,
+        }
+    )
+    result = train_bc_policy(args)
+
+    assert result["history"][0]["train_loss"] > result["history"][-1]["train_loss"]
+    assert result["history"][-1]["train_accuracy"] >= result["history"][0]["train_accuracy"]
+
+
+def test_bc_trainer_splits_train_val_by_shard(tmp_path):
+    map_dir = tmp_path / "maps"
+    map_dir.mkdir()
+    _write_bc_test_map(map_dir, map_filename="map_000.bin", unique_map_id=123)
+    _write_bc_test_map(
+        map_dir,
+        ego_x=[0.0, 0.4, 0.9, 1.5, 2.2, 3.0],
+        ego_y=[0.0, -0.02, -0.05, -0.08, -0.1, -0.12],
+        map_filename="map_001.bin",
+        unique_map_id=124,
+    )
+    builder_args = _builder_args(map_dir)
+    builder_args["bc"]["max_maps"] = 2
+    shard_paths = build_bc_dataset(builder_args)
+    assert len(shard_paths) == 2
+
+    args = _bc_train_args(map_dir, Path(shard_paths[0]).parent, rnn_name=None)
+    args["bc_train"]["val_fraction"] = 0.5
+    result = train_bc_policy(args)
+
+    assert len(result["train_shards"]) == 1
+    assert len(result["val_shards"]) == 1
+    assert set(result["train_shards"]).isdisjoint(set(result["val_shards"]))
+
+
+def test_binding_env_init_honors_python_config_overrides(tmp_path):
+    map_dir = tmp_path / "maps"
+    map_dir.mkdir()
+    _write_bc_test_map(map_dir)
+
+    obs_dim = (
+        binding.EGO_FEATURES_JERK
+        + (binding.MAX_AGENTS - 1) * binding.PARTNER_FEATURES
+        + binding.MAX_ROAD_SEGMENT_OBSERVATIONS * binding.ROAD_FEATURES
+    )
+    observations = np.zeros((1, obs_dim), dtype=np.float32)
+    actions = np.zeros(1, dtype=np.int32)
+    rewards = np.zeros(1, dtype=np.float32)
+    terminals = np.zeros(1, dtype=np.uint8)
+    truncations = np.zeros(1, dtype=np.uint8)
+
+    env_handle = binding.env_init(
+        observations,
+        actions,
+        rewards,
+        terminals,
+        truncations,
+        0,
+        human_agent_idx=0,
+        action_type=1,
+        dynamics_model=1,
+        observation_mode=1,
+        extend_classic_action_space=0,
+        reward_vehicle_collision=-0.25,
+        reward_offroad_collision=-0.75,
+        reward_goal=2.0,
+        reward_goal_post_respawn=0.4,
+        goal_radius=3.5,
+        goal_speed=12.5,
+        goal_behavior=2,
+        goal_target_distance=44.0,
+        collision_behavior=2,
+        offroad_behavior=1,
+        dt=0.2,
+        episode_length=33,
+        termination_mode=0,
+        max_controlled_agents=1,
+        map_id=0,
+        max_agents=1,
+        ini_file="pufferlib/config/ocean/drive.ini",
+        init_steps=5,
+        init_mode=1,
+        control_mode=3,
+        map_dir=str(map_dir),
+        non_kinematic_vehicle_params_override=None,
+        force_zero_trailer_articulation_at_init=0,
+    )
+    try:
+        config = binding.env_get_config(env_handle)
+        assert config["action_type"] == 1
+        assert config["dynamics_model"] == 1
+        assert config["observation_mode"] == 1
+        assert config["extend_classic_action_space"] == 0
+        assert config["reward_vehicle_collision"] == pytest.approx(-0.25)
+        assert config["reward_offroad_collision"] == pytest.approx(-0.75)
+        assert config["reward_goal"] == pytest.approx(2.0)
+        assert config["reward_goal_post_respawn"] == pytest.approx(0.4)
+        assert config["goal_radius"] == pytest.approx(3.5)
+        assert config["goal_speed"] == pytest.approx(12.5)
+        assert config["goal_behavior"] == 2
+        assert config["goal_target_distance"] == pytest.approx(44.0)
+        assert config["collision_behavior"] == 2
+        assert config["offroad_behavior"] == 1
+        assert config["dt"] == pytest.approx(0.2)
+        assert config["episode_length"] == 33
+        assert config["termination_mode"] == 0
+        assert config["init_steps"] == 5
+        assert config["init_mode"] == 1
+        assert config["control_mode"] == 3
+    finally:
+        binding.env_close(env_handle)
+
+
+def test_drive_accepts_c_compatible_enum_aliases(tmp_path):
+    map_dir = tmp_path / "maps"
+    map_dir.mkdir()
+    _write_bc_test_map(map_dir)
+
+    env = Drive(
+        num_agents=1,
+        num_maps=1,
+        map_dir=str(map_dir),
+        episode_length=91,
+        init_steps=0,
+        control_mode=0,
+        init_mode="created_all_valid",
+        observation_mode=0,
+        action_type=0,
+        dynamics_model=0,
+        resample_frequency=0,
+    )
+    try:
+        assert env.control_mode == 0
+        assert env.init_mode == 0
+        assert env.observation_mode == 0
+        assert env.dynamics_model == "classic"
+        assert env._action_type_flag == 0
     finally:
         env.close()

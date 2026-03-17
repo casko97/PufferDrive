@@ -6,10 +6,13 @@ import os
 import hashlib
 import ast
 import configparser
+import random
 from pathlib import Path
 import pufferlib
 import torch
+from torch.utils.data import DataLoader, Dataset
 from pufferlib.ocean.drive import binding
+from pufferlib.ocean import torch as ocean_torch
 from multiprocessing import Pool, cpu_count
 from tqdm import tqdm
 
@@ -40,6 +43,101 @@ DEFAULT_SDC_RUNTIME_TRUCK_REF_BIN = (
 )
 
 
+def _print_mismatch(message):
+    print(f"[Drive mismatch] {message}")
+
+
+def _compare_c_python_env_config(env_handle, expected, context):
+    if not hasattr(binding, "env_get_config"):
+        return
+
+    actual = binding.env_get_config(env_handle)
+    mismatches = []
+    float_keys = {
+        "reward_vehicle_collision",
+        "reward_offroad_collision",
+        "reward_goal",
+        "reward_goal_post_respawn",
+        "goal_radius",
+        "goal_speed",
+        "goal_target_distance",
+        "dt",
+    }
+    for key, expected_value in expected.items():
+        if key not in actual:
+            continue
+        actual_value = actual[key]
+        if key in float_keys:
+            if not np.isclose(float(actual_value), float(expected_value), atol=1e-6, rtol=1e-6):
+                mismatches.append((key, expected_value, actual_value))
+        elif actual_value != expected_value:
+            mismatches.append((key, expected_value, actual_value))
+
+    for key, expected_value, actual_value in mismatches:
+        _print_mismatch(
+            f"{context}: Python expected {key}={expected_value!r}, but C resolved {key}={actual_value!r}"
+        )
+
+
+def _expected_c_env_config(
+    *,
+    action_type,
+    dynamics_model,
+    observation_mode,
+    extend_classic_action_space,
+    reward_vehicle_collision,
+    reward_offroad_collision,
+    reward_goal,
+    reward_goal_post_respawn,
+    goal_radius,
+    goal_speed,
+    goal_behavior,
+    goal_target_distance,
+    collision_behavior,
+    offroad_behavior,
+    dt,
+    episode_length,
+    termination_mode,
+    init_steps,
+    init_mode,
+    control_mode,
+    max_controlled_agents,
+):
+    action_type_flag = 0 if action_type == "discrete" else 1
+    dynamics_flag = 0 if dynamics_model == "classic" else 1
+    observation_flag = 0 if observation_mode == "default" else 1
+    control_flag = {
+        "control_vehicles": 0,
+        "control_agents": 1,
+        "control_wosac": 2,
+        "control_sdc_only": 3,
+    }[control_mode]
+    init_flag = 0 if init_mode == "create_all_valid" else 1
+    return {
+        "action_type": action_type_flag,
+        "dynamics_model": dynamics_flag,
+        "observation_mode": observation_flag,
+        "extend_classic_action_space": int(_as_bool(extend_classic_action_space)),
+        "reward_vehicle_collision": reward_vehicle_collision,
+        "reward_offroad_collision": reward_offroad_collision,
+        "reward_goal": reward_goal,
+        "reward_goal_post_respawn": reward_goal_post_respawn,
+        "goal_radius": goal_radius,
+        "goal_speed": goal_speed,
+        "goal_behavior": goal_behavior,
+        "goal_target_distance": goal_target_distance,
+        "collision_behavior": collision_behavior,
+        "offroad_behavior": offroad_behavior,
+        "dt": dt,
+        "episode_length": int(episode_length) if episode_length is not None else None,
+        "termination_mode": int(termination_mode) if termination_mode is not None else 0,
+        "init_steps": init_steps,
+        "init_mode": init_flag,
+        "control_mode": control_flag,
+        "max_controlled_agents": int(max_controlled_agents),
+    }
+
+
 def _as_bool(value):
     if isinstance(value, bool):
         return value
@@ -48,6 +146,104 @@ def _as_bool(value):
     if isinstance(value, str):
         return value.strip().lower() in ("1", "true", "yes", "on")
     return bool(value)
+
+
+def _normalize_action_type(value):
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in ("discrete", "continuous"):
+            return normalized
+    elif isinstance(value, (int, np.integer)):
+        if int(value) == 0:
+            return "discrete"
+        if int(value) == 1:
+            return "continuous"
+    raise ValueError(f"action_type must be 'discrete' or 'continuous'. Got: {value}")
+
+
+def _normalize_dynamics_model(value):
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in ("classic", "jerk"):
+            return normalized
+    elif isinstance(value, (int, np.integer)):
+        if int(value) == 0:
+            return "classic"
+        if int(value) == 1:
+            return "jerk"
+    raise ValueError(f"dynamics_model must be 'classic' or 'jerk'. Got: {value}")
+
+
+def _normalize_observation_mode(value):
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized == "default":
+            return "default"
+        if normalized == "sdc_only_with_trailer":
+            return "sdc_only_with_trailer"
+    elif isinstance(value, (int, np.integer)):
+        if int(value) == 0:
+            return "default"
+        if int(value) == 1:
+            return "sdc_only_with_trailer"
+    raise ValueError(f"observation_mode must be 'default' or 'sdc_only_with_trailer'. Got: {value}")
+
+
+def _normalize_init_mode(value):
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in ("create_all_valid", "created_all_valid"):
+            return "create_all_valid"
+        if normalized == "create_only_controlled":
+            return "create_only_controlled"
+    elif isinstance(value, (int, np.integer)):
+        if int(value) == 0:
+            return "create_all_valid"
+        if int(value) == 1:
+            return "create_only_controlled"
+    raise ValueError(
+        f"init_mode must be one of 'create_all_valid' or 'create_only_controlled'. Got: {value}"
+    )
+
+
+def _normalize_control_mode(value):
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in ("control_vehicles", "control_agents", "control_wosac", "control_sdc_only"):
+            return normalized
+    elif isinstance(value, (int, np.integer)):
+        mapping = {
+            0: "control_vehicles",
+            1: "control_agents",
+            2: "control_wosac",
+            3: "control_sdc_only",
+        }
+        if int(value) in mapping:
+            return mapping[int(value)]
+    raise ValueError(
+        f"control_mode must be one of 'control_vehicles', 'control_agents', 'control_wosac', or 'control_sdc_only'. Got: {value}"
+    )
+
+
+def _normalize_env_config(env_cfg):
+    normalized = dict(env_cfg)
+    if "action_type" in normalized:
+        normalized["action_type"] = _normalize_action_type(normalized["action_type"])
+    if "dynamics_model" in normalized:
+        normalized["dynamics_model"] = _normalize_dynamics_model(normalized["dynamics_model"])
+    if "observation_mode" in normalized:
+        normalized["observation_mode"] = _normalize_observation_mode(normalized["observation_mode"])
+    if "init_mode" in normalized:
+        normalized["init_mode"] = _normalize_init_mode(normalized["init_mode"])
+    if "control_mode" in normalized:
+        normalized["control_mode"] = _normalize_control_mode(normalized["control_mode"])
+    return normalized
+
+
+def _resolve_base_arg(args, key, default=None):
+    if key in args:
+        return args[key]
+    return args.get("base", {}).get(key, default)
 
 
 def _load_non_kinematic_vehicle_params_from_bin(binary_path):
@@ -82,9 +278,13 @@ def _load_non_kinematic_vehicle_params_from_bin(binary_path):
         extension_magic = struct.unpack("<i", f.read(4))[0]
         extension_version = struct.unpack("<i", f.read(4))[0]
         if extension_magic != 0x54524C52:
-            raise ValueError(f"Extension magic mismatch in {binary_path}")
+            message = f"Extension magic mismatch in {binary_path}"
+            _print_mismatch(message)
+            raise ValueError(message)
         if extension_version != 2:
-            raise ValueError(f"Unsupported extension version {extension_version} in {binary_path}")
+            message = f"Unsupported extension version {extension_version} in {binary_path}"
+            _print_mismatch(message)
+            raise ValueError(message)
 
         f.seek(4 * 2, os.SEEK_CUR)
         object_meta_count = struct.unpack("<i", f.read(4))[0]
@@ -92,9 +292,12 @@ def _load_non_kinematic_vehicle_params_from_bin(binary_path):
 
         vehicle_param_count = struct.unpack("<i", f.read(4))[0]
         if vehicle_param_count != len(_NON_KINEMATIC_PARAM_ORDER):
-            raise ValueError(
-                f"Expected {len(_NON_KINEMATIC_PARAM_ORDER)} non-kinematic params in {binary_path}, got {vehicle_param_count}"
+            message = (
+                f"Expected {len(_NON_KINEMATIC_PARAM_ORDER)} non-kinematic params in {binary_path}, "
+                f"got {vehicle_param_count}"
             )
+            _print_mismatch(message)
+            raise ValueError(message)
         values = struct.unpack(f"<{vehicle_param_count}f", f.read(4 * vehicle_param_count))
 
     params = tuple(float(v) for v in values)
@@ -199,6 +402,406 @@ def _resolve_bc_config(args, output_dir=None):
     return bc
 
 
+def _resolve_bc_train_config(args, dataset_dir=None, output_dir=None):
+    bc_train = dict(args.get("bc_train", {}))
+    bc = _resolve_bc_config(args)
+    train = dict(args.get("train", {}))
+    bc_train.setdefault("dataset_dir", dataset_dir or bc.get("output_dir"))
+    bc_train.setdefault("output_dir", output_dir or os.path.join(bc_train["dataset_dir"], "checkpoints"))
+    bc_train.setdefault("device", train.get("device", "cuda" if torch.cuda.is_available() else "cpu"))
+    bc_train.setdefault("epochs", 10)
+    bc_train.setdefault("batch_size", 256)
+    bc_train.setdefault("learning_rate", train.get("learning_rate", 3e-4))
+    bc_train.setdefault("weight_decay", 0.0)
+    bc_train.setdefault("num_workers", 0)
+    bc_train.setdefault("val_fraction", 0.1)
+    bc_train.setdefault("seq_len", train.get("bptt_horizon", 32))
+    bc_train.setdefault("sequence_stride", bc_train["seq_len"])
+    bc_train.setdefault("max_shards", -1)
+    bc_train.setdefault("save_best", True)
+    bc_train.setdefault("log_interval", 0)
+    return bc_train
+
+
+def _normalize_optional_name(value):
+    if value is None:
+        return None
+    if isinstance(value, str) and value.strip().lower() in ("", "none", "null"):
+        return None
+    return value
+
+
+def _get_discrete_action_size(env):
+    action_space = env.single_action_space
+    if not isinstance(action_space, gymnasium.spaces.MultiDiscrete) or len(action_space.nvec) != 1:
+        raise ValueError("Offline BC trainer currently supports only discrete Drive policies with a joint action head")
+    return int(action_space.nvec[0])
+
+
+class _FlatBCDataset(Dataset):
+    def __init__(self, payloads):
+        if payloads:
+            self.obs = torch.cat([payload["obs"].float() for payload in payloads], dim=0)
+            self.action = torch.cat([payload["action"].long() for payload in payloads], dim=0)
+        else:
+            self.obs = torch.zeros((0, 0), dtype=torch.float32)
+            self.action = torch.zeros((0,), dtype=torch.int64)
+
+    def __len__(self):
+        return int(self.action.shape[0])
+
+    def __getitem__(self, idx):
+        return self.obs[idx], self.action[idx]
+
+
+class _SequenceBCDataset(Dataset):
+    def __init__(self, payloads, seq_len, stride):
+        self.seq_len = int(seq_len)
+        self.stride = max(1, int(stride))
+        self.samples = []
+        for payload in payloads:
+            self.samples.extend(_build_sequence_samples_from_payload(payload, self.seq_len, self.stride))
+        if self.samples:
+            self.obs_dim = int(self.samples[0][0].shape[-1])
+        else:
+            self.obs_dim = 0
+
+    def __len__(self):
+        return len(self.samples)
+
+    def __getitem__(self, idx):
+        return self.samples[idx]
+
+
+def _list_bc_shards(dataset_dir, max_shards=-1):
+    shard_paths = sorted(Path(dataset_dir).glob("map_*.pt"))
+    if max_shards is not None and int(max_shards) > 0:
+        shard_paths = shard_paths[: int(max_shards)]
+    return [str(path) for path in shard_paths]
+
+
+def _split_shards(shard_paths, val_fraction, seed):
+    shard_paths = list(shard_paths)
+    rng = random.Random(int(seed))
+    rng.shuffle(shard_paths)
+    if not shard_paths:
+        return [], []
+    if val_fraction <= 0:
+        return shard_paths, []
+    val_count = int(round(len(shard_paths) * float(val_fraction)))
+    if len(shard_paths) > 1:
+        val_count = max(1, min(len(shard_paths) - 1, val_count))
+    else:
+        val_count = 0
+    if val_count == 0:
+        return shard_paths, []
+    return shard_paths[val_count:], shard_paths[:val_count]
+
+
+def _validate_bc_shard_payload(payload, obs_dim, action_space_size, shard_path):
+    required = {"obs", "action", "map_id", "scenario_id", "agent_id", "timestep"}
+    missing = required.difference(payload.keys())
+    if missing:
+        raise ValueError(f"BC shard {shard_path} is missing required keys: {sorted(missing)}")
+
+    obs = payload["obs"]
+    action = payload["action"]
+    if obs.ndim != 2:
+        raise ValueError(f"BC shard {shard_path} obs must be rank-2, got shape {tuple(obs.shape)}")
+    if int(obs.shape[1]) != int(obs_dim):
+        raise ValueError(
+            f"BC shard {shard_path} observation width mismatch: expected {obs_dim}, got {int(obs.shape[1])}"
+        )
+    if action.ndim != 1:
+        raise ValueError(f"BC shard {shard_path} action must be rank-1, got shape {tuple(action.shape)}")
+    if int(action.shape[0]) != int(obs.shape[0]):
+        raise ValueError(
+            f"BC shard {shard_path} obs/action sample count mismatch: {int(obs.shape[0])} vs {int(action.shape[0])}"
+        )
+    if action.numel() > 0:
+        min_action = int(action.min().item())
+        max_action = int(action.max().item())
+        if min_action < 0 or max_action >= int(action_space_size):
+            raise ValueError(
+                f"BC shard {shard_path} contains invalid action ids [{min_action}, {max_action}] for action space size {action_space_size}"
+            )
+
+    metadata = payload.get("metadata", {})
+    metadata_action_space = metadata.get("action_space_size")
+    if metadata_action_space is not None and int(metadata_action_space) != int(action_space_size):
+        raise ValueError(
+            f"BC shard {shard_path} metadata action_space_size mismatch: expected {action_space_size}, got {metadata_action_space}"
+        )
+
+
+def _load_bc_shards(shard_paths, obs_dim, action_space_size):
+    payloads = []
+    for shard_path in shard_paths:
+        payload = torch.load(shard_path, map_location="cpu")
+        _validate_bc_shard_payload(payload, obs_dim, action_space_size, shard_path)
+        payloads.append(payload)
+    return payloads
+
+
+def _build_sequence_samples_from_payload(payload, seq_len, stride):
+    seq_len = int(seq_len)
+    stride = max(1, int(stride))
+    obs = payload["obs"].float()
+    action = payload["action"].long()
+    map_id = payload["map_id"].int()
+    scenario_id = payload["scenario_id"].int()
+    agent_id = payload["agent_id"].int()
+    timestep = payload["timestep"].int()
+
+    groups = {}
+    for row_idx in range(obs.shape[0]):
+        key = (int(map_id[row_idx]), int(scenario_id[row_idx]), int(agent_id[row_idx]))
+        groups.setdefault(key, []).append((int(timestep[row_idx]), row_idx))
+
+    samples = []
+    for rows in groups.values():
+        rows.sort(key=lambda item: item[0])
+        ordered_indices = [row_idx for _, row_idx in rows]
+        if not ordered_indices:
+            continue
+        for start_idx in range(0, len(ordered_indices), stride):
+            window_indices = ordered_indices[start_idx : start_idx + seq_len]
+            if not window_indices:
+                continue
+            valid_len = len(window_indices)
+            obs_window = torch.zeros((seq_len, obs.shape[1]), dtype=torch.float32)
+            action_window = torch.zeros((seq_len,), dtype=torch.int64)
+            mask_window = torch.zeros((seq_len,), dtype=torch.bool)
+            obs_window[:valid_len] = obs[window_indices]
+            action_window[:valid_len] = action[window_indices]
+            mask_window[:valid_len] = True
+            samples.append((obs_window, action_window, mask_window))
+    return samples
+
+
+def _make_bc_loader(dataset, batch_size, shuffle, num_workers):
+    if len(dataset) == 0:
+        return None
+    return DataLoader(
+        dataset,
+        batch_size=int(batch_size),
+        shuffle=shuffle,
+        num_workers=int(num_workers),
+        pin_memory=torch.cuda.is_available(),
+    )
+
+
+def _extract_action_logits(logits):
+    if isinstance(logits, (tuple, list)):
+        if len(logits) != 1:
+            raise ValueError("Offline BC trainer expects a single discrete action head")
+        return logits[0]
+    return logits
+
+
+def _run_bc_epoch(model, dataloader, optimizer, device, recurrent):
+    if dataloader is None:
+        return {"loss": 0.0, "accuracy": 0.0, "samples": 0}
+
+    training = optimizer is not None
+    model.train(training)
+    total_loss = 0.0
+    total_correct = 0
+    total_samples = 0
+
+    for batch in dataloader:
+        if recurrent:
+            obs, action, mask = batch
+            obs = obs.to(device)
+            action = action.to(device)
+            mask = mask.to(device)
+            state = {"lstm_h": None, "lstm_c": None, "hidden": None}
+            logits, _ = model(obs, state)
+            logits = _extract_action_logits(logits)
+            flat_logits = logits.reshape(-1, logits.shape[-1])
+            flat_targets = action.reshape(-1)
+            flat_mask = mask.reshape(-1)
+            if not torch.any(flat_mask):
+                continue
+            losses = torch.nn.functional.cross_entropy(flat_logits, flat_targets, reduction="none")
+            loss = losses[flat_mask].mean()
+            predictions = flat_logits.argmax(dim=1)
+            batch_correct = (predictions[flat_mask] == flat_targets[flat_mask]).sum().item()
+            batch_samples = int(flat_mask.sum().item())
+        else:
+            obs, action = batch
+            obs = obs.to(device)
+            action = action.to(device)
+            logits, _ = model(obs)
+            logits = _extract_action_logits(logits)
+            loss = torch.nn.functional.cross_entropy(logits, action)
+            predictions = logits.argmax(dim=1)
+            batch_correct = (predictions == action).sum().item()
+            batch_samples = int(action.numel())
+
+        if training:
+            optimizer.zero_grad(set_to_none=True)
+            loss.backward()
+            optimizer.step()
+
+        total_loss += float(loss.item()) * batch_samples
+        total_correct += int(batch_correct)
+        total_samples += batch_samples
+
+    if total_samples == 0:
+        return {"loss": 0.0, "accuracy": 0.0, "samples": 0}
+    return {
+        "loss": total_loss / total_samples,
+        "accuracy": total_correct / total_samples,
+        "samples": total_samples,
+    }
+
+
+def _build_bc_policy(args, env, device):
+    policy_name = _resolve_base_arg(args, "policy_name")
+    if policy_name is None:
+        raise KeyError("policy_name")
+    policy_cls = getattr(ocean_torch, policy_name)
+    policy = policy_cls(env, **args["policy"])
+    rnn_name = _normalize_optional_name(_resolve_base_arg(args, "rnn_name"))
+    if rnn_name is not None:
+        rnn_cls = getattr(ocean_torch, rnn_name)
+        policy = rnn_cls(env, policy, **args["rnn"])
+    return policy.to(device)
+
+
+def _make_bc_training_env(env_cfg):
+    env_kwargs = dict(env_cfg)
+    env_kwargs["num_agents"] = 1
+    env_kwargs["num_maps"] = 1
+    env_kwargs["max_controlled_agents"] = 1
+    env_kwargs["render_mode"] = None
+    return Drive(**env_kwargs)
+
+
+def train_bc_policy(args=None, dataset_dir=None, output_dir=None):
+    args = args or load_drive_builder_config()
+    env_cfg = _normalize_env_config(args["env"])
+    if env_cfg.get("action_type") != "discrete":
+        raise ValueError("Offline BC trainer currently supports only discrete action_type")
+
+    bc_train_cfg = _resolve_bc_train_config(args, dataset_dir=dataset_dir, output_dir=output_dir)
+    dataset_dir = bc_train_cfg["dataset_dir"]
+    if dataset_dir is None or not os.path.isdir(dataset_dir):
+        raise FileNotFoundError(f"BC dataset directory not found: {dataset_dir}")
+
+    seed = int(args.get("train", {}).get("seed", 0))
+    torch.manual_seed(seed)
+    np.random.seed(seed)
+    random.seed(seed)
+
+    device = torch.device(bc_train_cfg["device"])
+    output_path = Path(bc_train_cfg["output_dir"])
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    env = _make_bc_training_env(env_cfg)
+    try:
+        obs_dim = int(env.single_observation_space.shape[0])
+        action_space_size = _get_discrete_action_size(env)
+        shard_paths = _list_bc_shards(dataset_dir, max_shards=bc_train_cfg["max_shards"])
+        if not shard_paths:
+            raise FileNotFoundError(f"No BC shard files found in {dataset_dir}")
+
+        train_shards, val_shards = _split_shards(shard_paths, bc_train_cfg["val_fraction"], seed)
+        train_payloads = _load_bc_shards(train_shards, obs_dim, action_space_size)
+        val_payloads = _load_bc_shards(val_shards, obs_dim, action_space_size)
+
+        recurrent = _normalize_optional_name(_resolve_base_arg(args, "rnn_name")) is not None
+        if recurrent:
+            train_dataset = _SequenceBCDataset(
+                train_payloads, seq_len=bc_train_cfg["seq_len"], stride=bc_train_cfg["sequence_stride"]
+            )
+            val_dataset = _SequenceBCDataset(
+                val_payloads, seq_len=bc_train_cfg["seq_len"], stride=bc_train_cfg["sequence_stride"]
+            )
+        else:
+            train_dataset = _FlatBCDataset(train_payloads)
+            val_dataset = _FlatBCDataset(val_payloads)
+
+        if len(train_dataset) == 0:
+            raise ValueError("BC training dataset is empty after loading selected shards")
+
+        train_loader = _make_bc_loader(
+            train_dataset, batch_size=bc_train_cfg["batch_size"], shuffle=True, num_workers=bc_train_cfg["num_workers"]
+        )
+        val_loader = _make_bc_loader(
+            val_dataset, batch_size=bc_train_cfg["batch_size"], shuffle=False, num_workers=bc_train_cfg["num_workers"]
+        )
+
+        policy = _build_bc_policy(args, env, device)
+        optimizer = torch.optim.Adam(
+            policy.parameters(),
+            lr=float(bc_train_cfg["learning_rate"]),
+            weight_decay=float(bc_train_cfg["weight_decay"]),
+        )
+
+        history = []
+        best_metric = None
+        latest_path = output_path / "latest.pt"
+        best_path = output_path / "best.pt"
+
+        for epoch in range(int(bc_train_cfg["epochs"])):
+            train_metrics = _run_bc_epoch(policy, train_loader, optimizer, device, recurrent=recurrent)
+            with torch.no_grad():
+                val_metrics = _run_bc_epoch(policy, val_loader, None, device, recurrent=recurrent)
+
+            epoch_metrics = {
+                "epoch": epoch + 1,
+                "train_loss": float(train_metrics["loss"]),
+                "train_accuracy": float(train_metrics["accuracy"]),
+                "train_samples": int(train_metrics["samples"]),
+                "val_loss": float(val_metrics["loss"]),
+                "val_accuracy": float(val_metrics["accuracy"]),
+                "val_samples": int(val_metrics["samples"]),
+            }
+            history.append(epoch_metrics)
+            torch.save(policy.state_dict(), latest_path)
+
+            selection_metric = epoch_metrics["val_loss"] if val_metrics["samples"] > 0 else epoch_metrics["train_loss"]
+            if best_metric is None or selection_metric < best_metric:
+                best_metric = selection_metric
+                if _as_bool(bc_train_cfg["save_best"]):
+                    torch.save(policy.state_dict(), best_path)
+
+            print(
+                f"[BC] epoch={epoch_metrics['epoch']} train_loss={epoch_metrics['train_loss']:.4f} "
+                f"train_acc={epoch_metrics['train_accuracy']:.4f} val_loss={epoch_metrics['val_loss']:.4f} "
+                f"val_acc={epoch_metrics['val_accuracy']:.4f}"
+            )
+
+        metadata = {
+            "config": args,
+            "bc_train": bc_train_cfg,
+            "history": history,
+            "train_shards": train_shards,
+            "val_shards": val_shards,
+            "observation_dim": obs_dim,
+            "action_space_size": action_space_size,
+            "recurrent": recurrent,
+            "latest_path": str(latest_path),
+            "best_path": str(best_path if best_path.exists() else latest_path),
+        }
+        metadata_path = output_path / "metrics.json"
+        with open(metadata_path, "w", encoding="utf-8") as f:
+            json.dump(metadata, f, indent=2, default=str)
+
+        return {
+            "latest_path": str(latest_path),
+            "best_path": str(best_path if best_path.exists() else latest_path),
+            "metadata_path": str(metadata_path),
+            "history": history,
+            "train_shards": train_shards,
+            "val_shards": val_shards,
+        }
+    finally:
+        env.close()
+
+
 def _create_builder_env_buffers(dynamics_model, max_agents):
     sim_obs_dim = _sim_obs_dim_for_dynamics(dynamics_model)
     observations = np.zeros((max_agents, sim_obs_dim), dtype=np.float32)
@@ -274,22 +877,32 @@ def _list_map_ids(map_dir, max_maps=-1):
 
 def _validate_bc_builder_support(env_cfg):
     if env_cfg["action_type"] != "discrete":
-        print("Warning: offline BC dataset builder currently supports only discrete action_type.")
+        message = (
+            "offline BC dataset builder currently supports only discrete action_type "
+            f"(got {env_cfg['action_type']!r})"
+        )
+        _print_mismatch(message)
         raise ValueError("Unsupported action_type for offline BC dataset builder")
     if env_cfg["dynamics_model"] != "classic":
-        print("Warning: offline BC dataset builder currently supports only classic dynamics_model.")
+        message = (
+            "offline BC dataset builder currently supports only classic dynamics_model "
+            f"(got {env_cfg['dynamics_model']!r})"
+        )
+        _print_mismatch(message)
         raise ValueError("Unsupported dynamics_model for offline BC dataset builder")
 
 
 def build_bc_dataset(args=None, output_dir=None):
     args = args or load_drive_builder_config()
-    env_cfg = dict(args["env"])
+    env_cfg = _normalize_env_config(args["env"])
     bc_cfg = _resolve_bc_config(args, output_dir=output_dir)
     _validate_bc_builder_support(env_cfg)
 
     map_dir = env_cfg["map_dir"]
     if not os.path.isdir(map_dir):
-        raise FileNotFoundError(f"Map directory not found: {map_dir}")
+        message = f"Map directory not found: {map_dir}"
+        _print_mismatch(message)
+        raise FileNotFoundError(message)
 
     shard_dir = Path(bc_cfg["output_dir"])
     shard_dir.mkdir(parents=True, exist_ok=True)
@@ -347,6 +960,33 @@ def build_bc_dataset(args=None, output_dir=None):
                 non_kinematic_vehicle_params_override=None,
                 force_zero_trailer_articulation_at_init=int(_as_bool(env_cfg.get("force_zero_trailer_articulation_at_init", False))),
             )
+        _compare_c_python_env_config(
+            env_handle,
+            _expected_c_env_config(
+                action_type=env_cfg["action_type"],
+                dynamics_model=env_cfg["dynamics_model"],
+                observation_mode=env_cfg.get("observation_mode", "default"),
+                extend_classic_action_space=env_cfg.get("extend_classic_action_space", True),
+                reward_vehicle_collision=env_cfg["reward_vehicle_collision"],
+                reward_offroad_collision=env_cfg["reward_offroad_collision"],
+                reward_goal=env_cfg["reward_goal"],
+                reward_goal_post_respawn=env_cfg["reward_goal_post_respawn"],
+                goal_radius=env_cfg["goal_radius"],
+                goal_speed=env_cfg["goal_speed"],
+                goal_behavior=env_cfg["goal_behavior"],
+                goal_target_distance=env_cfg["goal_target_distance"],
+                collision_behavior=env_cfg["collision_behavior"],
+                offroad_behavior=env_cfg["offroad_behavior"],
+                dt=env_cfg["dt"],
+                episode_length=env_cfg["episode_length"],
+                termination_mode=env_cfg["termination_mode"],
+                init_steps=env_cfg["init_steps"],
+                init_mode=env_cfg["init_mode"],
+                control_mode=env_cfg["control_mode"],
+                max_controlled_agents=max_agents,
+            ),
+            f"build_bc_dataset map_{map_id:03d}",
+        )
 
         try:
             binding.env_reset(env_handle, 0)
@@ -555,12 +1195,16 @@ class Drive(pufferlib.PufferEnv):
         self.episode_length = episode_length
         self.termination_mode = termination_mode
         self.resample_frequency = resample_frequency
-        self.dynamics_model = dynamics_model
+        action_type = _normalize_action_type(action_type)
+        self.dynamics_model = _normalize_dynamics_model(dynamics_model)
+        init_mode = _normalize_init_mode(init_mode)
+        control_mode = _normalize_control_mode(control_mode)
+        observation_mode = _normalize_observation_mode(observation_mode)
         self.type_classes = binding.POLICY_TYPE_CLASS_COUNT
 
         # Observation space calculation
         self._base_ego_features = {"classic": binding.EGO_FEATURES_CLASSIC, "jerk": binding.EGO_FEATURES_JERK}.get(
-            dynamics_model
+            self.dynamics_model
         )
 
         # Extract observation shapes from constants
@@ -599,7 +1243,9 @@ class Drive(pufferlib.PufferEnv):
         if force_truck_params_from_ref_bin is not None:
             reference_bin = os.path.abspath(force_truck_params_from_ref_bin)
             if not os.path.exists(reference_bin):
-                raise FileNotFoundError(f"Truck reference artifact not found: {reference_bin}")
+                message = f"Truck reference artifact not found: {reference_bin}"
+                _print_mismatch(message)
+                raise FileNotFoundError(message)
             self.non_kinematic_vehicle_params_override = _load_non_kinematic_vehicle_params_from_bin(reference_bin)
 
         if self.control_mode_str == "control_vehicles":
@@ -611,18 +1257,23 @@ class Drive(pufferlib.PufferEnv):
         elif self.control_mode_str == "control_sdc_only":
             self.control_mode = 3
         else:
-            raise ValueError(
-                f"control_mode must be one of 'control_vehicles', 'control_wosac', or 'control_agents'. Got: {self.control_mode_str}"
+            message = (
+                "control_mode must be one of 'control_vehicles', 'control_wosac', or 'control_agents'. "
+                f"Got: {self.control_mode_str}"
             )
+            _print_mismatch(message)
+            raise ValueError(message)
         if self.observation_mode_str == "default":
             self.observation_mode = 0
         elif self.observation_mode_str == "sdc_only_with_trailer":
             self.observation_mode = 1
         else:
-            raise ValueError(
+            message = (
                 "observation_mode must be one of 'default' or 'sdc_only_with_trailer'. "
                 f"Got: {self.observation_mode_str}"
             )
+            _print_mismatch(message)
+            raise ValueError(message)
         if self.observation_mode == 0:
             self.ego_features = self._base_ego_features
             self.partner_features = self._base_partner_features
@@ -640,42 +1291,54 @@ class Drive(pufferlib.PufferEnv):
         elif self.init_mode_str == "create_only_controlled":
             self.init_mode = 1
         else:
-            raise ValueError(
+            message = (
                 f"init_mode must be one of 'create_all_valid' or 'create_only_controlled'. Got: {self.init_mode_str}"
             )
+            _print_mismatch(message)
+            raise ValueError(message)
 
         if action_type == "discrete":
-            if dynamics_model == "classic":
+            if self.dynamics_model == "classic":
                 # Joint action space (assume dependence)
                 action_count = _CLASSIC_DISCRETE_ACTIONS if self.extend_classic_action_space else (7 * 13)
                 self.single_action_space = gymnasium.spaces.MultiDiscrete([action_count])
                 # Multi discrete (assume independence)
                 # self.single_action_space = gymnasium.spaces.MultiDiscrete([7, 13])
-            elif dynamics_model == "jerk":
+            elif self.dynamics_model == "jerk":
                 # Joint action space (assume dependence) - 4 longitudinal × 3 lateral = 12
                 self.single_action_space = gymnasium.spaces.MultiDiscrete([4 * 3])
             else:
-                raise ValueError(f"dynamics_model must be 'classic' or 'jerk'. Got: {dynamics_model}")
+                message = f"dynamics_model must be 'classic' or 'jerk'. Got: {self.dynamics_model}"
+                _print_mismatch(message)
+                raise ValueError(message)
         elif action_type == "continuous":
             self.single_action_space = gymnasium.spaces.Box(low=-1, high=1, shape=(2,), dtype=np.float32)
         else:
-            raise ValueError(f"action_space must be 'discrete' or 'continuous'. Got: {action_type}")
+            message = f"action_space must be 'discrete' or 'continuous'. Got: {action_type}"
+            _print_mismatch(message)
+            raise ValueError(message)
 
         self._action_type_flag = 0 if action_type == "discrete" else 1
 
         # Check if resources directory exists
         binary_path = f"{map_dir}/map_000.bin"
         if not os.path.exists(binary_path):
-            raise FileNotFoundError(
-                f"Required directory {binary_path} not found. Please ensure the Drive maps are downloaded and installed correctly per docs."
+            message = (
+                f"Required directory {binary_path} not found. Please ensure the Drive maps are downloaded "
+                "and installed correctly per docs."
             )
+            _print_mismatch(message)
+            raise FileNotFoundError(message)
 
         # Check maps availability
         available_maps = len([name for name in os.listdir(map_dir) if name.endswith(".bin")])
         if num_maps > available_maps:
-            raise ValueError(
-                f"num_maps ({num_maps}) exceeds available maps in directory ({available_maps}). Please reduce num_maps or add more maps to resources/drive/binaries."
+            message = (
+                f"num_maps ({num_maps}) exceeds available maps in directory ({available_maps}). "
+                "Please reduce num_maps or add more maps to resources/drive/binaries."
             )
+            _print_mismatch(message)
+            raise ValueError(message)
         self.max_controlled_agents = int(max_controlled_agents)
 
         # Iterate through all maps to count total agents that can be initialized for each map
@@ -741,6 +1404,33 @@ class Drive(pufferlib.PufferEnv):
                 non_kinematic_vehicle_params_override=self.non_kinematic_vehicle_params_override,
                 force_zero_trailer_articulation_at_init=int(self.force_zero_trailer_articulation_at_init),
             )
+            _compare_c_python_env_config(
+                env_id,
+                _expected_c_env_config(
+                    action_type=action_type,
+                    dynamics_model=dynamics_model,
+                    observation_mode=observation_mode,
+                    extend_classic_action_space=self.extend_classic_action_space,
+                    reward_vehicle_collision=reward_vehicle_collision,
+                    reward_offroad_collision=reward_offroad_collision,
+                    reward_goal=reward_goal,
+                    reward_goal_post_respawn=reward_goal_post_respawn,
+                    goal_radius=goal_radius,
+                    goal_speed=goal_speed,
+                    goal_behavior=self.goal_behavior,
+                    goal_target_distance=self.goal_target_distance,
+                    collision_behavior=self.collision_behavior,
+                    offroad_behavior=self.offroad_behavior,
+                    dt=dt,
+                    episode_length=episode_length,
+                    termination_mode=self.termination_mode,
+                    init_steps=init_steps,
+                    init_mode=init_mode,
+                    control_mode=control_mode,
+                    max_controlled_agents=self.max_controlled_agents,
+                ),
+                f"Drive.__init__ env_index={i} map_id={map_ids[i]}",
+            )
             env_ids.append(env_id)
 
         self.c_envs = binding.vectorize(*env_ids)
@@ -801,6 +1491,33 @@ class Drive(pufferlib.PufferEnv):
                 extend_classic_action_space=int(self.extend_classic_action_space),
                 non_kinematic_vehicle_params_override=self.non_kinematic_vehicle_params_override,
                 force_zero_trailer_articulation_at_init=int(self.force_zero_trailer_articulation_at_init),
+            )
+            _compare_c_python_env_config(
+                env_id,
+                _expected_c_env_config(
+                    action_type="discrete" if self._action_type_flag == 0 else "continuous",
+                    dynamics_model=self.dynamics_model,
+                    observation_mode=self.observation_mode_str,
+                    extend_classic_action_space=self.extend_classic_action_space,
+                    reward_vehicle_collision=self.reward_vehicle_collision,
+                    reward_offroad_collision=self.reward_offroad_collision,
+                    reward_goal=self.reward_goal,
+                    reward_goal_post_respawn=self.reward_goal_post_respawn,
+                    goal_radius=self.goal_radius,
+                    goal_speed=self.goal_speed,
+                    goal_behavior=self.goal_behavior,
+                    goal_target_distance=self.goal_target_distance,
+                    collision_behavior=self.collision_behavior,
+                    offroad_behavior=self.offroad_behavior,
+                    dt=self.dt,
+                    episode_length=self.episode_length,
+                    termination_mode=self.termination_mode,
+                    init_steps=self.init_steps,
+                    init_mode=self.init_mode_str,
+                    control_mode=self.control_mode_str,
+                    max_controlled_agents=self.max_controlled_agents,
+                ),
+                f"Drive._resample_vector_envs env_index={i} map_id={map_ids[i]}",
             )
             env_ids.append(env_id)
 
@@ -1394,12 +2111,12 @@ def test_performance(timeout=10, atn_cache=1024, num_agents=1024):
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(description="Convert Drive data or build offline BC datasets")
+    parser = argparse.ArgumentParser(description="Convert Drive data, build offline BC datasets, or train BC policies")
     parser.add_argument(
         "--mode",
-        choices=["convert", "build-bc"],
+        choices=["convert", "build-bc", "train-bc"],
         default="convert",
-        help="Whether to convert JSON maps or build offline BC dataset shards",
+        help="Whether to convert JSON maps, build offline BC dataset shards, or train a BC policy",
     )
     parser.add_argument(
         "--input-folder", type=str, default="data/processed/training", help="Path to folder containing JSON map files"
@@ -1428,6 +2145,11 @@ if __name__ == "__main__":
         config.setdefault("bc", {})
         config["bc"]["max_maps"] = args.max_maps
         build_bc_dataset(config, output_dir=args.output_folder)
+    elif args.mode == "train-bc":
+        config = load_drive_builder_config(args.config_path)
+        config.setdefault("bc_train", {})
+        config["bc_train"]["max_shards"] = args.max_maps
+        train_bc_policy(config, output_dir=args.output_folder)
     else:
         process_all_maps(
             data_folder=args.input_folder,
