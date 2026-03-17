@@ -742,6 +742,7 @@ def test_bc_dataset_builder_writes_model_ready_shard(tmp_path):
             "action",
             "scenario_id",
             "agent_id",
+            "sequence_id",
             "timestep",
             "match_cost_total",
             "match_cost_step",
@@ -754,8 +755,11 @@ def test_bc_dataset_builder_writes_model_ready_shard(tmp_path):
     ).issubset(shard.keys())
     assert shard["obs"].dtype == torch.float32
     assert shard["action"].dtype == torch.int64
+    assert shard["sequence_id"].dtype == torch.int64
     assert shard["obs"].shape[0] == shard["action"].shape[0]
     assert shard["obs"].shape[0] > 0
+    assert shard["sequence_id"].shape[0] == shard["obs"].shape[0]
+    assert torch.unique(shard["sequence_id"]).numel() >= 1
 
     env = Drive(
         num_agents=1,
@@ -815,6 +819,23 @@ def test_bc_trainer_recurrent_smoke(tmp_path):
     assert Path(result["metadata_path"]).exists()
     assert len(result["history"]) == args["bc_train"]["epochs"]
     assert result["history"][0]["train_samples"] > 0
+
+
+def test_bc_trainer_rejects_missing_sequence_id(tmp_path):
+    map_dir = tmp_path / "maps"
+    map_dir.mkdir()
+    _write_bc_test_map(map_dir)
+    shard_paths = build_bc_dataset(_builder_args(map_dir))
+    shard_path = Path(shard_paths[0])
+
+    shard = torch.load(shard_path)
+    if "sequence_id" in shard:
+        del shard["sequence_id"]
+    torch.save(shard, shard_path)
+
+    args = _bc_train_args(map_dir, shard_path.parent, rnn_name="Recurrent")
+    with pytest.raises(ValueError, match="missing required keys"):
+        train_bc_policy(args)
 
 
 def test_bc_trainer_non_recurrent_smoke(tmp_path):
@@ -983,6 +1004,26 @@ def test_bc_trainer_logs_metrics_to_logger(tmp_path):
     assert "bc/val_elapsed_sec" in last_logs
     assert "bc/best_metric" in last_logs
     assert logger.closed_with == result["best_path"]
+
+
+def test_bc_trainer_recurrent_accepts_sequence_id_without_legacy_ids(tmp_path):
+    map_dir = tmp_path / "maps"
+    map_dir.mkdir()
+    _write_bc_test_map(map_dir)
+    shard_paths = build_bc_dataset(_builder_args(map_dir))
+    shard_path = Path(shard_paths[0])
+
+    shard = torch.load(shard_path)
+    shard["sequence_id"] = torch.zeros_like(shard["action"], dtype=torch.int64)
+    del shard["scenario_id"]
+    del shard["agent_id"]
+    torch.save(shard, shard_path)
+
+    args = _bc_train_args(map_dir, shard_path.parent, rnn_name="Recurrent")
+    result = train_bc_policy(args)
+
+    assert Path(result["latest_path"]).exists()
+    assert result["history"][0]["train_samples"] > 0
 
 
 def test_bc_trainer_logs_batch_metrics_to_logger(tmp_path):
