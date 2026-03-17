@@ -165,7 +165,7 @@ REAL_TRAJECTORY_CASES = [
 ]
 
 
-def _builder_args(map_dir, action_type="discrete"):
+def _builder_args(map_dir, action_type="discrete", *, export_windows=False, window_seq_len=32, window_stride=32):
     return {
         "env": {
             "map_dir": str(map_dir),
@@ -195,6 +195,9 @@ def _builder_args(map_dir, action_type="discrete"):
         },
         "bc": {
             "output_dir": str(map_dir / "bc"),
+            "export_windows": bool(export_windows),
+            "window_seq_len": int(window_seq_len),
+            "window_stride": int(window_stride),
             "beam_width": 4,
             "planning_horizon": 5,
             "match_weight_lateral": TEST_MATCH_WEIGHT_LATERAL,
@@ -245,6 +248,7 @@ def _bc_train_args(map_dir, dataset_dir, rnn_name="Recurrent"):
             "dataset_dir": str(dataset_dir),
             "output_dir": str(Path(dataset_dir) / "checkpoints"),
             "device": "cpu",
+            "use_embedded_windows": False,
             "epochs": 4,
             "batch_size": 4,
             "learning_rate": 0.01,
@@ -839,6 +843,49 @@ def test_bc_trainer_recurrent_smoke(tmp_path):
     assert result["history"][0]["train_samples"] > 0
 
 
+def test_bc_trainer_recurrent_uses_embedded_windows(tmp_path, monkeypatch):
+    map_dir = tmp_path / "maps"
+    map_dir.mkdir()
+    _write_bc_test_map(map_dir)
+    seq_len = 4
+    stride = 4
+    shard_paths = build_bc_dataset(
+        _builder_args(map_dir, export_windows=True, window_seq_len=seq_len, window_stride=stride)
+    )
+    shard_path = Path(shard_paths[0])
+    manifest_path = drive_module._sequence_manifest_path(shard_path, seq_len, stride)
+    assert not manifest_path.exists()
+
+    args = _bc_train_args(map_dir, shard_path.parent, rnn_name="Recurrent")
+    args["bc_train"]["use_embedded_windows"] = True
+    args["bc_train"]["seq_len"] = seq_len
+    args["bc_train"]["sequence_stride"] = stride
+    args["train"]["bptt_horizon"] = seq_len
+
+    def _should_not_rebuild(*args, **kwargs):
+        raise AssertionError("embedded window metadata should be used by the recurrent BC trainer")
+
+    monkeypatch.setattr(drive_module, "_build_sequence_manifest_from_payload", _should_not_rebuild)
+    result = train_bc_policy(args)
+
+    assert Path(result["latest_path"]).exists()
+    assert result["history"][0]["train_samples"] > 0
+    assert not manifest_path.exists()
+
+
+def test_bc_trainer_recurrent_rejects_missing_embedded_windows(tmp_path):
+    map_dir = tmp_path / "maps"
+    map_dir.mkdir()
+    _write_bc_test_map(map_dir)
+    shard_paths = build_bc_dataset(_builder_args(map_dir))
+    shard_path = Path(shard_paths[0])
+
+    args = _bc_train_args(map_dir, shard_path.parent, rnn_name="Recurrent")
+    args["bc_train"]["use_embedded_windows"] = True
+    with pytest.raises(ValueError, match="does not contain embedded window metadata"):
+        train_bc_policy(args)
+
+
 def test_bc_trainer_rejects_missing_sequence_id(tmp_path):
     map_dir = tmp_path / "maps"
     map_dir.mkdir()
@@ -914,6 +961,20 @@ def test_bc_trainer_rejects_unexpected_timestep_spacing(tmp_path):
 
     args = _bc_train_args(map_dir, shard_path.parent, rnn_name="Recurrent")
     with pytest.raises(ValueError, match="unexpected timestep spacing"):
+        train_bc_policy(args)
+
+
+def test_bc_trainer_recurrent_rejects_seq_len_mismatch_with_model(tmp_path):
+    map_dir = tmp_path / "maps"
+    map_dir.mkdir()
+    _write_bc_test_map(map_dir)
+    shard_paths = build_bc_dataset(_builder_args(map_dir))
+
+    args = _bc_train_args(map_dir, Path(shard_paths[0]).parent, rnn_name="Recurrent")
+    args["bc_train"]["seq_len"] = 5
+    args["bc_train"]["sequence_stride"] = 5
+    args["train"]["bptt_horizon"] = 4
+    with pytest.raises(ValueError, match="window size mismatch"):
         train_bc_policy(args)
 
 
@@ -1214,6 +1275,26 @@ def test_sequence_manifest_processes_file_data_correctly(tmp_path):
     assert torch.equal(mask3, torch.tensor([True, False, False]))
 
 
+def test_sequence_spans_use_exported_sequence_metadata():
+    payload = {
+        "obs": torch.zeros((7, 2), dtype=torch.float32),
+        "action": torch.zeros((7,), dtype=torch.int64),
+        "map_id": torch.zeros((7,), dtype=torch.int32),
+        "timestep": torch.tensor([0, 1, 2, 10, 11, 20, 21], dtype=torch.int32),
+        "sequence_id": torch.tensor([101, 101, 101, 202, 202, 303, 303], dtype=torch.int64),
+        "sequence_row_index": torch.tensor([0, 1, 2, 0, 1, 0, 1], dtype=torch.int32),
+        "sequence_length": torch.tensor([3, 3, 3, 2, 2, 2, 2], dtype=torch.int32),
+        "metadata": {
+            "sequence_ids": [101, 202, 303],
+            "sequence_lengths": [3, 2, 2],
+            "action_space_size": 10,
+        },
+    }
+
+    spans = drive_module._sequence_spans_from_payload(payload)
+    assert spans == [(101, 0, 3), (202, 3, 5), (303, 5, 7)]
+
+
 def test_bc_trainer_logs_batch_metrics_to_logger(tmp_path):
     class FakeLogger:
         def __init__(self):
@@ -1409,6 +1490,67 @@ def test_bc_dataset_export_writes_sequence_metadata(tmp_path):
             sequence_timesteps,
             sequence_timesteps[0] + torch.arange(int(sequence_length), dtype=sequence_timesteps.dtype),
         )
+
+
+def test_bc_dataset_export_can_embed_training_windows(tmp_path, monkeypatch):
+    map_dir = tmp_path / "maps"
+    map_dir.mkdir()
+    _write_bc_test_map(map_dir)
+
+    seq_len = 4
+    stride = 2
+    shard_paths = build_bc_dataset(
+        _builder_args(map_dir, export_windows=True, window_seq_len=seq_len, window_stride=stride)
+    )
+    shard_path = Path(shard_paths[0])
+    payload = torch.load(shard_path)
+
+    assert "window_metadata" in payload
+    window_metadata = payload["window_metadata"]
+    assert int(window_metadata["seq_len"]) == seq_len
+    assert int(window_metadata["stride"]) == stride
+    assert int(window_metadata["window_count"]) > 0
+    assert payload["metadata"]["window_count"] == int(window_metadata["window_count"])
+    assert payload["metadata"]["window_seq_len"] == seq_len
+    assert payload["metadata"]["window_stride"] == stride
+
+    direct_manifest = drive_module._build_sequence_manifest_from_payload(payload, seq_len, stride)
+    assert int(window_metadata["window_count"]) == int(direct_manifest["window_count"])
+    assert torch.equal(window_metadata["window_indices"], direct_manifest["window_indices"])
+    assert torch.equal(window_metadata["valid_lengths"], direct_manifest["valid_lengths"])
+
+    env = Drive(
+        num_agents=1,
+        num_maps=1,
+        map_dir=str(map_dir),
+        episode_length=91,
+        init_steps=0,
+        control_mode="control_vehicles",
+        init_mode="create_all_valid",
+        resample_frequency=0,
+        observation_mode="default",
+        extend_classic_action_space=True,
+    )
+    try:
+        obs_dim = int(env.single_observation_space.shape[0])
+        action_space_size = int(env.single_action_space.nvec[0])
+    finally:
+        env.close()
+
+    def _should_not_rebuild(*args, **kwargs):
+        raise AssertionError("embedded window metadata should have been reused from shard payload")
+
+    monkeypatch.setattr(drive_module, "_build_sequence_manifest_from_payload", _should_not_rebuild)
+    manifest = drive_module._load_or_build_sequence_manifest(
+        shard_path,
+        obs_dim,
+        action_space_size,
+        seq_len=seq_len,
+        stride=stride,
+    )
+
+    assert int(manifest["window_count"]) == int(window_metadata["window_count"])
+    assert not drive_module._sequence_manifest_path(shard_path, seq_len, stride).exists()
 
 
 def test_drive_accepts_c_compatible_enum_aliases(tmp_path):
