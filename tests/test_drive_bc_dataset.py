@@ -260,6 +260,8 @@ def _bc_train_args(map_dir, dataset_dir, rnn_name="Recurrent"):
             "max_shards": -1,
             "save_best": True,
             "log_interval": 0,
+            "early_stopping_patience": 0,
+            "early_stopping_min_delta": 0.0,
         },
     }
 
@@ -1342,6 +1344,46 @@ def test_bc_trainer_emits_console_progress_messages(tmp_path, capsys):
     assert "[BC] dataset ready" in captured.out
     assert "[BC] epoch 1/1 starting" in captured.out
     assert "[BC] epoch=1" in captured.out
+
+
+def test_bc_trainer_stops_early_when_validation_stalls(tmp_path, monkeypatch):
+    map_dir = tmp_path / "maps"
+    map_dir.mkdir()
+    _write_bc_test_map(map_dir)
+    shard_paths = build_bc_dataset(_builder_args(map_dir))
+
+    args = _bc_train_args(map_dir, Path(shard_paths[0]).parent, rnn_name=None)
+    args["bc_train"]["epochs"] = 6
+    args["bc_train"]["early_stopping_patience"] = 2
+    args["bc_train"]["early_stopping_min_delta"] = 0.0
+
+    epoch_counter = {"train": 0, "val": 0}
+    val_losses = [1.0, 1.2, 1.3, 1.4, 1.5, 1.6]
+    real_run_bc_epoch = drive_module._run_bc_epoch
+
+    def fake_run_bc_epoch(model, loader, optimizer, device, **kwargs):
+        if optimizer is not None:
+            epoch_counter["train"] += 1
+            idx = epoch_counter["train"] - 1
+            return {"loss": 2.0 - 0.1 * idx, "accuracy": 0.5, "samples": 8, "elapsed_sec": 0.01}
+
+        epoch_counter["val"] += 1
+        idx = epoch_counter["val"] - 1
+        return {"loss": val_losses[idx], "accuracy": 0.4, "samples": 8, "elapsed_sec": 0.01}
+
+    monkeypatch.setattr(drive_module, "_run_bc_epoch", fake_run_bc_epoch)
+    try:
+        result = train_bc_policy(args)
+    finally:
+        monkeypatch.setattr(drive_module, "_run_bc_epoch", real_run_bc_epoch)
+
+    assert len(result["history"]) == 3
+    assert result["history"][-1]["epoch"] == 3
+    metrics_path = Path(result["metadata_path"])
+    with metrics_path.open("r", encoding="utf-8") as f:
+        metrics = __import__("json").load(f)
+    assert metrics["stopped_early"] is True
+    assert metrics["best_epoch"] == 1
 
 
 def test_binding_env_init_honors_python_config_overrides(tmp_path):

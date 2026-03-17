@@ -425,6 +425,8 @@ def _resolve_bc_train_config(args, dataset_dir=None, output_dir=None):
     bc_train.setdefault("max_shards", -1)
     bc_train.setdefault("save_best", True)
     bc_train.setdefault("log_interval", 25)
+    bc_train.setdefault("early_stopping_patience", 0)
+    bc_train.setdefault("early_stopping_min_delta", 0.0)
     return bc_train
 
 
@@ -598,6 +600,8 @@ def _validate_bc_shard_payload(payload, obs_dim, action_space_size, shard_path):
     action = payload["action"]
     map_id = payload["map_id"]
     timestep = payload["timestep"]
+    sequence_row_index = payload.get("sequence_row_index")
+    sequence_length = payload.get("sequence_length")
     if obs.ndim != 2:
         message = f"BC shard {shard_path} obs must be rank-2, got shape {tuple(obs.shape)}"
         _print_mismatch(message)
@@ -634,10 +638,36 @@ def _validate_bc_shard_payload(payload, obs_dim, action_space_size, shard_path):
         )
         _print_mismatch(message)
         raise ValueError(message)
+    if sequence_row_index is not None:
+        if sequence_row_index.ndim != 1 or int(sequence_row_index.shape[0]) != int(obs.shape[0]):
+            message = f"BC shard {shard_path} sequence_row_index must be rank-1 and match sample count"
+            _print_mismatch(message)
+            raise ValueError(message)
+    if sequence_length is not None:
+        if sequence_length.ndim != 1 or int(sequence_length.shape[0]) != int(obs.shape[0]):
+            message = f"BC shard {shard_path} sequence_length must be rank-1 and match sample count"
+            _print_mismatch(message)
+            raise ValueError(message)
     sequence_timesteps = {}
+    sequence_counts = {}
+    sequence_expected_lengths = {}
+    sequence_row_indices = {}
     for row_idx in range(int(timestep.shape[0])):
         key = int(sequence_id[row_idx])
         sequence_timesteps.setdefault(key, []).append(int(timestep[row_idx]))
+        sequence_counts[key] = sequence_counts.get(key, 0) + 1
+        if sequence_length is not None:
+            expected_length = int(sequence_length[row_idx])
+            previous_length = sequence_expected_lengths.setdefault(key, expected_length)
+            if previous_length != expected_length:
+                message = (
+                    f"BC shard {shard_path} sequence_id={key} has inconsistent sequence_length values: "
+                    f"{previous_length} vs {expected_length}"
+                )
+                _print_mismatch(message)
+                raise ValueError(message)
+        if sequence_row_index is not None:
+            sequence_row_indices.setdefault(key, []).append(int(sequence_row_index[row_idx]))
     for key, sequence_steps in sequence_timesteps.items():
         if len(sequence_steps) < 2:
             continue
@@ -649,6 +679,58 @@ def _validate_bc_shard_payload(payload, obs_dim, action_space_size, shard_path):
             )
             _print_mismatch(message)
             raise ValueError(message)
+    if sequence_row_index is not None:
+        for key, row_indices in sequence_row_indices.items():
+            expected_indices = list(range(len(row_indices)))
+            if row_indices != expected_indices:
+                message = (
+                    f"BC shard {shard_path} sequence_id={key} has invalid sequence_row_index values: "
+                    f"expected {expected_indices}, got {row_indices}"
+                )
+                _print_mismatch(message)
+                raise ValueError(message)
+    if sequence_length is not None:
+        for key, expected_length in sequence_expected_lengths.items():
+            if sequence_counts.get(key, 0) != expected_length:
+                message = (
+                    f"BC shard {shard_path} sequence_id={key} length mismatch: "
+                    f"expected {expected_length}, got {sequence_counts.get(key, 0)}"
+                )
+                _print_mismatch(message)
+                raise ValueError(message)
+
+    metadata = payload.get("metadata", {})
+    metadata_sequence_ids = metadata.get("sequence_ids")
+    metadata_sequence_lengths = metadata.get("sequence_lengths")
+    if metadata_sequence_ids is not None or metadata_sequence_lengths is not None:
+        if metadata_sequence_ids is None or metadata_sequence_lengths is None:
+            message = f"BC shard {shard_path} metadata must include both sequence_ids and sequence_lengths together"
+            _print_mismatch(message)
+            raise ValueError(message)
+        if len(metadata_sequence_ids) != len(metadata_sequence_lengths):
+            message = (
+                f"BC shard {shard_path} metadata sequence_ids/sequence_lengths length mismatch: "
+                f"{len(metadata_sequence_ids)} vs {len(metadata_sequence_lengths)}"
+            )
+            _print_mismatch(message)
+            raise ValueError(message)
+        observed_ids = [int(v) for v in metadata_sequence_ids]
+        observed_lengths = [int(v) for v in metadata_sequence_lengths]
+        if set(observed_ids) != set(sequence_counts.keys()):
+            message = (
+                f"BC shard {shard_path} metadata sequence_ids do not match observed ids: "
+                f"metadata={observed_ids}, observed={sorted(sequence_counts.keys())}"
+            )
+            _print_mismatch(message)
+            raise ValueError(message)
+        for seq_id, seq_len in zip(observed_ids, observed_lengths):
+            if sequence_counts.get(seq_id, 0) != seq_len:
+                message = (
+                    f"BC shard {shard_path} metadata sequence_lengths mismatch for sequence_id={seq_id}: "
+                    f"expected {seq_len}, got {sequence_counts.get(seq_id, 0)}"
+                )
+                _print_mismatch(message)
+                raise ValueError(message)
     if action.numel() > 0:
         min_action = int(action.min().item())
         max_action = int(action.max().item())
@@ -659,8 +741,6 @@ def _validate_bc_shard_payload(payload, obs_dim, action_space_size, shard_path):
             )
             _print_mismatch(message)
             raise ValueError(message)
-
-    metadata = payload.get("metadata", {})
     metadata_action_space = metadata.get("action_space_size")
     if metadata_action_space is not None and int(metadata_action_space) != int(action_space_size):
         message = (
@@ -1260,6 +1340,13 @@ def train_bc_policy(args=None, dataset_dir=None, output_dir=None, logger=None):
 
         history = []
         best_metric = None
+        best_epoch = None
+        completed_epochs = 0
+        stopped_early = False
+        stop_reason = None
+        early_stopping_patience = max(0, int(bc_train_cfg.get("early_stopping_patience", 0)))
+        early_stopping_min_delta = max(0.0, float(bc_train_cfg.get("early_stopping_min_delta", 0.0)))
+        early_stopping_bad_epochs = 0
         latest_path = output_path / "latest.pt"
         best_path = output_path / "best.pt"
         train_step = 0
@@ -1324,13 +1411,19 @@ def train_bc_policy(args=None, dataset_dir=None, output_dir=None, logger=None):
                 "learning_rate": float(optimizer.param_groups[0]["lr"]),
             }
             history.append(epoch_metrics)
+            completed_epochs = epoch_metrics["epoch"]
             torch.save(policy.state_dict(), latest_path)
 
             selection_metric = epoch_metrics["val_loss"] if val_metrics["samples"] > 0 else epoch_metrics["train_loss"]
-            if best_metric is None or selection_metric < best_metric:
+            improved = best_metric is None or selection_metric < (best_metric - early_stopping_min_delta)
+            if improved:
                 best_metric = selection_metric
+                best_epoch = epoch_metrics["epoch"]
+                early_stopping_bad_epochs = 0
                 if _as_bool(bc_train_cfg["save_best"]):
                     torch.save(policy.state_dict(), best_path)
+            elif early_stopping_patience > 0:
+                early_stopping_bad_epochs += 1
 
             train_step += epoch_metrics["train_samples"]
             if logger is not None:
@@ -1347,6 +1440,7 @@ def train_bc_policy(args=None, dataset_dir=None, output_dir=None, logger=None):
                         "bc/val_elapsed_sec": epoch_metrics["val_elapsed_sec"],
                         "bc/learning_rate": epoch_metrics["learning_rate"],
                         "bc/best_metric": float(best_metric),
+                        "bc/best_epoch": int(best_epoch if best_epoch is not None else epoch_metrics["epoch"]),
                     },
                     train_step,
                 )
@@ -1358,6 +1452,20 @@ def train_bc_policy(args=None, dataset_dir=None, output_dir=None, logger=None):
                 f"val_sec={epoch_metrics['val_elapsed_sec']:.1f}"
             )
 
+            if early_stopping_patience > 0 and early_stopping_bad_epochs >= early_stopping_patience:
+                stopped_early = True
+                stop_reason = (
+                    f"no improvement in {'validation' if val_metrics['samples'] > 0 else 'training'} metric for "
+                    f"{early_stopping_bad_epochs} epoch(s)"
+                )
+                print(
+                    f"[BC] early stopping triggered at epoch {epoch_metrics['epoch']} "
+                    f"(best_epoch={best_epoch}, best_metric={best_metric:.4f}, "
+                    f"patience={early_stopping_patience}, min_delta={early_stopping_min_delta:.6f})",
+                    flush=True,
+                )
+                break
+
         metadata = {
             "config": args,
             "bc_train": bc_train_cfg,
@@ -1367,6 +1475,11 @@ def train_bc_policy(args=None, dataset_dir=None, output_dir=None, logger=None):
             "observation_dim": obs_dim,
             "action_space_size": action_space_size,
             "recurrent": recurrent,
+            "completed_epochs": completed_epochs,
+            "best_epoch": best_epoch,
+            "best_metric": best_metric,
+            "stopped_early": stopped_early,
+            "stop_reason": stop_reason,
             "latest_path": str(latest_path),
             "best_path": str(best_path if best_path.exists() else latest_path),
         }
