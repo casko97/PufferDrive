@@ -65,7 +65,7 @@ DriveNet *init_drivenet(Weights *weights, int num_agents, int dynamics_model, in
     int raw_partner_features = PARTNER_FEATURES + (observation_mode == 1 ? PARTNER_TYPE_CHANNELS : 0);
     int ego_encoder_input_dim =
         base_ego_dim + (observation_mode == 1 ? (EGO_TRAILER_STATE_FEATURES + POLICY_TYPE_CLASS_COUNT) : 0);
-    int partner_encoder_input_dim = PARTNER_FEATURES + (observation_mode == 1 ? (POLICY_TYPE_CLASS_COUNT - 1) : 0);
+    int partner_encoder_input_dim = PARTNER_FEATURES + (observation_mode == 1 ? POLICY_REAL_TYPE_CLASS_COUNT : 0);
     int road_features = ROAD_FEATURES;
     int input_size = NN_INPUT_SIZE;
     int hidden_size = NN_HIDDEN_SIZE;
@@ -342,12 +342,12 @@ void forward(DriveNet *net, float *observations, void *actions) {
                 }
                 if (occupied) {
                     int partner_type = (int)partner_src[PARTNER_FEATURES];
-                    if (partner_type < 1) {
-                        partner_type = 1;
+                    if (partner_type < POLICY_TYPE_VEHICLE_SINGLE) {
+                        partner_type = POLICY_TYPE_VEHICLE_SINGLE;
                     } else if (partner_type >= POLICY_TYPE_CLASS_COUNT) {
                         partner_type = POLICY_TYPE_CLASS_COUNT - 1;
                     }
-                    partner_dst[PARTNER_FEATURES + (partner_type - 1)] = 1.0f;
+                    partner_dst[PARTNER_FEATURES + (partner_type - POLICY_TYPE_VEHICLE_SINGLE)] = 1.0f;
                 }
             }
         }
