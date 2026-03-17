@@ -5,6 +5,7 @@ import shutil
 from pathlib import Path
 from types import SimpleNamespace
 
+from pufferlib.ocean.drive import drive as drive_module
 from pufferlib.ocean.drive.drive import Drive, build_bc_dataset, binding, save_map_binary, train_bc_policy
 from pufferlib.ocean.torch import Drive as DrivePolicy
 from pufferlib.pufferl import load_policy
@@ -743,6 +744,8 @@ def test_bc_dataset_builder_writes_model_ready_shard(tmp_path):
             "scenario_id",
             "agent_id",
             "sequence_id",
+            "sequence_row_index",
+            "sequence_length",
             "timestep",
             "match_cost_total",
             "match_cost_step",
@@ -756,10 +759,25 @@ def test_bc_dataset_builder_writes_model_ready_shard(tmp_path):
     assert shard["obs"].dtype == torch.float32
     assert shard["action"].dtype == torch.int64
     assert shard["sequence_id"].dtype == torch.int64
+    assert shard["sequence_row_index"].dtype == torch.int32
+    assert shard["sequence_length"].dtype == torch.int32
     assert shard["obs"].shape[0] == shard["action"].shape[0]
     assert shard["obs"].shape[0] > 0
     assert shard["sequence_id"].shape[0] == shard["obs"].shape[0]
+    assert shard["sequence_row_index"].shape[0] == shard["obs"].shape[0]
+    assert shard["sequence_length"].shape[0] == shard["obs"].shape[0]
     assert torch.unique(shard["sequence_id"]).numel() >= 1
+    assert "sequence_ids" in shard["metadata"]
+    assert "sequence_lengths" in shard["metadata"]
+    assert len(shard["metadata"]["sequence_ids"]) == len(shard["metadata"]["sequence_lengths"])
+
+    for sequence_id, sequence_length in zip(shard["metadata"]["sequence_ids"], shard["metadata"]["sequence_lengths"]):
+        sequence_mask = shard["sequence_id"] == int(sequence_id)
+        row_indices = shard["sequence_row_index"][sequence_mask]
+        row_lengths = shard["sequence_length"][sequence_mask]
+        assert int(sequence_mask.sum()) == int(sequence_length)
+        assert torch.equal(row_indices, torch.arange(int(sequence_length), dtype=torch.int32))
+        assert torch.equal(row_lengths, torch.full_like(row_lengths, int(sequence_length)))
 
     env = Drive(
         num_agents=1,
@@ -880,6 +898,22 @@ def test_bc_trainer_rejects_out_of_range_actions(tmp_path):
 
     args = _bc_train_args(map_dir, shard_path.parent, rnn_name=None)
     with pytest.raises(ValueError, match="invalid action ids"):
+        train_bc_policy(args)
+
+
+def test_bc_trainer_rejects_unexpected_timestep_spacing(tmp_path):
+    map_dir = tmp_path / "maps"
+    map_dir.mkdir()
+    _write_bc_test_map(map_dir)
+    shard_paths = build_bc_dataset(_builder_args(map_dir))
+    shard_path = Path(shard_paths[0])
+
+    shard = torch.load(shard_path)
+    shard["timestep"][1] = shard["timestep"][0] + 2
+    torch.save(shard, shard_path)
+
+    args = _bc_train_args(map_dir, shard_path.parent, rnn_name="Recurrent")
+    with pytest.raises(ValueError, match="unexpected timestep spacing"):
         train_bc_policy(args)
 
 
@@ -1026,6 +1060,160 @@ def test_bc_trainer_recurrent_accepts_sequence_id_without_legacy_ids(tmp_path):
     assert result["history"][0]["train_samples"] > 0
 
 
+def test_sequence_manifest_is_cached_per_shard(tmp_path, monkeypatch):
+    map_dir = tmp_path / "maps"
+    map_dir.mkdir()
+    _write_bc_test_map(map_dir)
+    shard_paths = build_bc_dataset(_builder_args(map_dir))
+    shard_path = Path(shard_paths[0])
+
+    env = Drive(
+        num_agents=1,
+        num_maps=1,
+        map_dir=str(map_dir),
+        episode_length=91,
+        init_steps=0,
+        control_mode="control_vehicles",
+        init_mode="create_all_valid",
+        resample_frequency=0,
+        observation_mode="default",
+        extend_classic_action_space=True,
+    )
+    try:
+        obs_dim = int(env.single_observation_space.shape[0])
+        action_space_size = int(env.single_action_space.nvec[0])
+    finally:
+        env.close()
+
+    manifest = drive_module._load_or_build_sequence_manifest(
+        shard_path,
+        obs_dim,
+        action_space_size,
+        seq_len=32,
+        stride=32,
+    )
+    manifest_path = drive_module._sequence_manifest_path(shard_path, 32, 32)
+    assert manifest_path.exists()
+    assert manifest["window_count"] > 0
+
+    def _should_not_rebuild(*args, **kwargs):
+        raise AssertionError("sequence manifest should have been reused from cache")
+
+    monkeypatch.setattr(drive_module, "_build_sequence_manifest_from_payload", _should_not_rebuild)
+    cached_manifest = drive_module._load_or_build_sequence_manifest(
+        shard_path,
+        obs_dim,
+        action_space_size,
+        seq_len=32,
+        stride=32,
+    )
+    assert cached_manifest["window_count"] == manifest["window_count"]
+
+
+def test_sequence_manifest_windows_match_payload_sequences(tmp_path):
+    map_dir = tmp_path / "maps"
+    map_dir.mkdir()
+    _write_bc_test_map(map_dir)
+    shard_paths = build_bc_dataset(_builder_args(map_dir))
+    shard_path = Path(shard_paths[0])
+    payload = torch.load(shard_path)
+
+    env = Drive(
+        num_agents=1,
+        num_maps=1,
+        map_dir=str(map_dir),
+        episode_length=91,
+        init_steps=0,
+        control_mode="control_vehicles",
+        init_mode="create_all_valid",
+        resample_frequency=0,
+        observation_mode="default",
+        extend_classic_action_space=True,
+    )
+    try:
+        obs_dim = int(env.single_observation_space.shape[0])
+        action_space_size = int(env.single_action_space.nvec[0])
+    finally:
+        env.close()
+
+    seq_len = 4
+    stride = 2
+    manifest = drive_module._load_or_build_sequence_manifest(
+        shard_path,
+        obs_dim,
+        action_space_size,
+        seq_len=seq_len,
+        stride=stride,
+    )
+    manifest_samples = drive_module._build_sequence_samples_from_manifest(payload, manifest)
+    direct_samples = drive_module._build_sequence_samples_from_payload(payload, seq_len, stride)
+
+    assert manifest["window_count"] == len(direct_samples)
+    assert len(manifest_samples) == len(direct_samples)
+    for manifest_sample, direct_sample in zip(manifest_samples, direct_samples):
+        manifest_obs, manifest_action, manifest_mask = manifest_sample
+        direct_obs, direct_action, direct_mask = direct_sample
+        assert torch.equal(manifest_mask, direct_mask)
+        assert torch.equal(manifest_action, direct_action)
+        assert torch.allclose(manifest_obs, direct_obs)
+
+
+def test_sequence_manifest_processes_file_data_correctly(tmp_path):
+    shard_path = tmp_path / "map_000.pt"
+    payload = {
+        "obs": torch.tensor(
+            [
+                [1.0, 10.0],
+                [2.0, 20.0],
+                [3.0, 30.0],
+                [4.0, 40.0],
+                [5.0, 50.0],
+                [6.0, 60.0],
+                [7.0, 70.0],
+            ],
+            dtype=torch.float32,
+        ),
+        "action": torch.tensor([0, 1, 2, 3, 4, 5, 6], dtype=torch.int64),
+        "map_id": torch.zeros(7, dtype=torch.int32),
+        "timestep": torch.tensor([0, 1, 2, 3, 10, 11, 12], dtype=torch.int32),
+        "sequence_id": torch.tensor([11, 11, 11, 11, 22, 22, 22], dtype=torch.int64),
+        "metadata": {"action_space_size": 10},
+    }
+    torch.save(payload, shard_path)
+
+    manifest = drive_module._load_or_build_sequence_manifest(
+        shard_path,
+        obs_dim=2,
+        action_space_size=10,
+        seq_len=3,
+        stride=2,
+    )
+    samples = drive_module._build_sequence_samples_from_manifest(payload, manifest)
+
+    assert manifest["window_count"] == 4
+    assert len(samples) == 4
+
+    obs0, action0, mask0 = samples[0]
+    assert torch.allclose(obs0, torch.tensor([[1.0, 10.0], [2.0, 20.0], [3.0, 30.0]]))
+    assert torch.equal(action0, torch.tensor([0, 1, 2]))
+    assert torch.equal(mask0, torch.tensor([True, True, True]))
+
+    obs1, action1, mask1 = samples[1]
+    assert torch.allclose(obs1, torch.tensor([[3.0, 30.0], [4.0, 40.0], [0.0, 0.0]]))
+    assert torch.equal(action1, torch.tensor([2, 3, 0]))
+    assert torch.equal(mask1, torch.tensor([True, True, False]))
+
+    obs2, action2, mask2 = samples[2]
+    assert torch.allclose(obs2, torch.tensor([[5.0, 50.0], [6.0, 60.0], [7.0, 70.0]]))
+    assert torch.equal(action2, torch.tensor([4, 5, 6]))
+    assert torch.equal(mask2, torch.tensor([True, True, True]))
+
+    obs3, action3, mask3 = samples[3]
+    assert torch.allclose(obs3, torch.tensor([[7.0, 70.0], [0.0, 0.0], [0.0, 0.0]]))
+    assert torch.equal(action3, torch.tensor([6, 0, 0]))
+    assert torch.equal(mask3, torch.tensor([True, False, False]))
+
+
 def test_bc_trainer_logs_batch_metrics_to_logger(tmp_path):
     class FakeLogger:
         def __init__(self):
@@ -1151,6 +1339,76 @@ def test_binding_env_init_honors_python_config_overrides(tmp_path):
         assert config["control_mode"] == 3
     finally:
         binding.env_close(env_handle)
+
+
+def test_bc_dataset_export_preserves_configured_dt(tmp_path):
+    map_dir = tmp_path / "maps"
+    map_dir.mkdir()
+    _write_bc_test_map(map_dir)
+
+    builder_args = _builder_args(map_dir)
+    builder_args["env"]["dt"] = 0.2
+    builder_args["env"]["init_steps"] = 3
+
+    shard_paths = build_bc_dataset(builder_args)
+    payload = torch.load(shard_paths[0])
+
+    assert payload["metadata"]["config"]["env"]["dt"] == pytest.approx(0.2)
+
+    sequence_id = payload["sequence_id"]
+    timestep = payload["timestep"]
+    first_sequence_mask = sequence_id == sequence_id[0]
+    first_sequence_timesteps = timestep[first_sequence_mask]
+
+    assert first_sequence_timesteps.numel() >= 2
+    assert int(first_sequence_timesteps[0]) == 3
+    assert torch.equal(
+        first_sequence_timesteps[1:] - first_sequence_timesteps[:-1],
+        torch.ones(first_sequence_timesteps.numel() - 1, dtype=first_sequence_timesteps.dtype),
+    )
+
+    exported_time_seconds = first_sequence_timesteps.to(torch.float32) * float(payload["metadata"]["config"]["env"]["dt"])
+    assert torch.allclose(
+        exported_time_seconds[1:] - exported_time_seconds[:-1],
+        torch.full((first_sequence_timesteps.numel() - 1,), 0.2, dtype=torch.float32),
+    )
+
+
+def test_bc_dataset_export_writes_sequence_metadata(tmp_path):
+    map_dir = tmp_path / "maps"
+    map_dir.mkdir()
+    _write_bc_test_map(map_dir)
+
+    shard_paths = build_bc_dataset(_builder_args(map_dir))
+    payload = torch.load(shard_paths[0])
+
+    assert "sequence_row_index" in payload
+    assert "sequence_length" in payload
+    assert payload["sequence_row_index"].dtype == torch.int32
+    assert payload["sequence_length"].dtype == torch.int32
+    assert payload["sequence_row_index"].shape == payload["sequence_id"].shape
+    assert payload["sequence_length"].shape == payload["sequence_id"].shape
+
+    metadata = payload["metadata"]
+    assert "sequence_ids" in metadata
+    assert "sequence_lengths" in metadata
+    assert len(metadata["sequence_ids"]) == len(metadata["sequence_lengths"])
+    assert metadata["sequence_count"] == len(metadata["sequence_ids"])
+
+    for sequence_id, sequence_length in zip(metadata["sequence_ids"], metadata["sequence_lengths"]):
+        sequence_mask = payload["sequence_id"] == int(sequence_id)
+        assert int(sequence_mask.sum()) == int(sequence_length)
+
+        sequence_row_index = payload["sequence_row_index"][sequence_mask]
+        sequence_lengths = payload["sequence_length"][sequence_mask]
+        sequence_timesteps = payload["timestep"][sequence_mask]
+
+        assert torch.equal(sequence_row_index, torch.arange(int(sequence_length), dtype=torch.int32))
+        assert torch.equal(sequence_lengths, torch.full_like(sequence_lengths, int(sequence_length)))
+        assert torch.equal(
+            sequence_timesteps,
+            sequence_timesteps[0] + torch.arange(int(sequence_length), dtype=sequence_timesteps.dtype),
+        )
 
 
 def test_drive_accepts_c_compatible_enum_aliases(tmp_path):

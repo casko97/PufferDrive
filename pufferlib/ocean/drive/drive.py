@@ -506,24 +506,53 @@ class _SequenceBCDataset(_StreamingBCIterableDataset):
         super().__init__(shard_paths, obs_dim, action_space_size, shuffle=shuffle, seed=seed)
         self.seq_len = int(seq_len)
         self.stride = max(1, int(stride))
+        self._manifest_cache = {}
+        self._manifest_built = 0
+        self._manifest_loaded = 0
 
     def _compute_length(self):
         total = 0
         for shard_path in self.shard_paths:
-            payload = self._load_shard(shard_path)
-            total += len(_build_sequence_samples_from_payload(payload, self.seq_len, self.stride))
+            manifest = self._load_sequence_manifest(shard_path)
+            total += int(manifest["window_count"])
         return total
 
     def __iter__(self):
         sample_seed = self.seed + self.epoch * 9973
         for shard_idx, shard_path in enumerate(self._iter_worker_shards()):
             payload = self._load_shard(shard_path)
-            samples = _build_sequence_samples_from_payload(payload, self.seq_len, self.stride)
+            manifest = self._load_sequence_manifest(shard_path)
+            samples = _build_sequence_samples_from_manifest(payload, manifest)
             if self.shuffle:
                 rng = random.Random(sample_seed + shard_idx)
                 rng.shuffle(samples)
             for sample in samples:
                 yield sample
+
+    def _load_sequence_manifest(self, shard_path):
+        manifest = self._manifest_cache.get(shard_path)
+        if manifest is None:
+            manifest, built_new = _load_or_build_sequence_manifest(
+                shard_path,
+                self.obs_dim,
+                self.action_space_size,
+                seq_len=self.seq_len,
+                stride=self.stride,
+                return_status=True,
+            )
+            self._manifest_cache[shard_path] = manifest
+            if built_new:
+                self._manifest_built += 1
+            else:
+                self._manifest_loaded += 1
+        return manifest
+
+    def manifest_stats(self):
+        return {
+            "built": int(self._manifest_built),
+            "loaded": int(self._manifest_loaded),
+            "cached": int(len(self._manifest_cache)),
+        }
 
 
 def _list_bc_shards(dataset_dir, max_shards=-1):
@@ -599,6 +628,21 @@ def _validate_bc_shard_payload(payload, obs_dim, action_space_size, shard_path):
         )
         _print_mismatch(message)
         raise ValueError(message)
+    sequence_timesteps = {}
+    for row_idx in range(int(timestep.shape[0])):
+        key = int(sequence_id[row_idx])
+        sequence_timesteps.setdefault(key, []).append(int(timestep[row_idx]))
+    for key, sequence_steps in sequence_timesteps.items():
+        if len(sequence_steps) < 2:
+            continue
+        deltas = np.diff(sequence_steps)
+        if np.any(deltas != 1):
+            message = (
+                f"BC shard {shard_path} sequence_id={key} has unexpected timestep spacing: "
+                f"expected consecutive deltas of 1, got {deltas.tolist()}"
+            )
+            _print_mismatch(message)
+            raise ValueError(message)
     if action.numel() > 0:
         min_action = int(action.min().item())
         max_action = int(action.max().item())
@@ -630,38 +674,106 @@ def _peek_bc_shard(shard_paths, obs_dim, action_space_size):
     return None
 
 
-def _build_sequence_samples_from_payload(payload, seq_len, stride):
+def _sequence_manifest_path(shard_path, seq_len, stride):
+    shard_path = Path(shard_path)
+    manifest_dir = shard_path.parent / ".bc_sequence_manifests"
+    return manifest_dir / f"{shard_path.stem}.seq{int(seq_len)}.stride{int(stride)}.pt"
+
+
+def _build_sequence_manifest_from_payload(payload, seq_len, stride):
     seq_len = int(seq_len)
     stride = max(1, int(stride))
-    obs = payload["obs"].float()
-    action = payload["action"].long()
-    timestep = payload["timestep"].int()
     sequence_id = payload["sequence_id"].long()
 
     groups = {}
-    for row_idx in range(obs.shape[0]):
+    for row_idx in range(int(sequence_id.shape[0])):
         key = int(sequence_id[row_idx])
-        groups.setdefault(key, []).append((int(timestep[row_idx]), row_idx))
+        groups.setdefault(key, []).append(row_idx)
 
-    samples = []
-    for rows in groups.values():
-        rows.sort(key=lambda item: item[0])
-        ordered_indices = [row_idx for _, row_idx in rows]
+    window_indices = []
+    valid_lengths = []
+    for ordered_indices in groups.values():
         if not ordered_indices:
             continue
         for start_idx in range(0, len(ordered_indices), stride):
-            window_indices = ordered_indices[start_idx : start_idx + seq_len]
-            if not window_indices:
+            row_indices = ordered_indices[start_idx : start_idx + seq_len]
+            if not row_indices:
                 continue
-            valid_len = len(window_indices)
-            obs_window = torch.zeros((seq_len, obs.shape[1]), dtype=torch.float32)
-            action_window = torch.zeros((seq_len,), dtype=torch.int64)
-            mask_window = torch.zeros((seq_len,), dtype=torch.bool)
-            obs_window[:valid_len] = obs[window_indices]
-            action_window[:valid_len] = action[window_indices]
-            mask_window[:valid_len] = True
-            samples.append((obs_window, action_window, mask_window))
+            valid_len = len(row_indices)
+            padded_indices = torch.full((seq_len,), -1, dtype=torch.int64)
+            padded_indices[:valid_len] = torch.tensor(row_indices, dtype=torch.int64)
+            window_indices.append(padded_indices)
+            valid_lengths.append(valid_len)
+
+    if window_indices:
+        window_index_tensor = torch.stack(window_indices, dim=0)
+        valid_length_tensor = torch.tensor(valid_lengths, dtype=torch.int32)
+    else:
+        window_index_tensor = torch.zeros((0, seq_len), dtype=torch.int64)
+        valid_length_tensor = torch.zeros((0,), dtype=torch.int32)
+
+    return {
+        "version": 1,
+        "seq_len": seq_len,
+        "stride": stride,
+        "window_count": int(window_index_tensor.shape[0]),
+        "window_indices": window_index_tensor,
+        "valid_lengths": valid_length_tensor,
+    }
+
+
+def _load_or_build_sequence_manifest(shard_path, obs_dim, action_space_size, *, seq_len, stride, return_status=False):
+    shard_path = Path(shard_path)
+    manifest_path = _sequence_manifest_path(shard_path, seq_len, stride)
+    shard_stat = shard_path.stat()
+    if manifest_path.exists():
+        manifest = torch.load(manifest_path, map_location="cpu")
+        if (
+            manifest.get("version") == 1
+            and int(manifest.get("seq_len", -1)) == int(seq_len)
+            and int(manifest.get("stride", -1)) == int(stride)
+            and int(manifest.get("source_mtime_ns", -1)) == int(shard_stat.st_mtime_ns)
+            and int(manifest.get("source_size", -1)) == int(shard_stat.st_size)
+        ):
+            if return_status:
+                return manifest, False
+            return manifest
+
+    payload = torch.load(shard_path, map_location="cpu")
+    _validate_bc_shard_payload(payload, obs_dim, action_space_size, str(shard_path))
+    manifest = _build_sequence_manifest_from_payload(payload, seq_len, stride)
+    manifest["source_mtime_ns"] = int(shard_stat.st_mtime_ns)
+    manifest["source_size"] = int(shard_stat.st_size)
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    torch.save(manifest, manifest_path)
+    if return_status:
+        return manifest, True
+    return manifest
+
+
+def _build_sequence_samples_from_manifest(payload, manifest):
+    obs = payload["obs"].float()
+    action = payload["action"].long()
+    seq_len = int(manifest["seq_len"])
+    samples = []
+    for window_indices, valid_len in zip(manifest["window_indices"], manifest["valid_lengths"]):
+        valid_len = int(valid_len.item())
+        if valid_len <= 0:
+            continue
+        row_indices = window_indices[:valid_len].long()
+        obs_window = torch.zeros((seq_len, obs.shape[1]), dtype=torch.float32)
+        action_window = torch.zeros((seq_len,), dtype=torch.int64)
+        mask_window = torch.zeros((seq_len,), dtype=torch.bool)
+        obs_window[:valid_len] = obs[row_indices]
+        action_window[:valid_len] = action[row_indices]
+        mask_window[:valid_len] = True
+        samples.append((obs_window, action_window, mask_window))
     return samples
+
+
+def _build_sequence_samples_from_payload(payload, seq_len, stride):
+    manifest = _build_sequence_manifest_from_payload(payload, seq_len, stride)
+    return _build_sequence_samples_from_manifest(payload, manifest)
 
 
 def _make_bc_loader(dataset, batch_size, shuffle, num_workers):
@@ -921,17 +1033,62 @@ def train_bc_policy(args=None, dataset_dir=None, output_dir=None, logger=None):
             message = "BC training dataset is empty after loading selected shards"
             _print_mismatch(message)
             raise ValueError(message)
+        if recurrent:
+            print(
+                f"[BC] indexing recurrent train windows seq_len={int(bc_train_cfg['seq_len'])} "
+                f"stride={int(bc_train_cfg['sequence_stride'])}",
+                flush=True,
+            )
+            train_index_start = time.time()
+            train_window_count = len(train_dataset)
+            train_index_sec = time.time() - train_index_start
+            train_manifest_stats = train_dataset.manifest_stats()
+            print(
+                f"[BC] indexed train windows={train_window_count} built_manifests={train_manifest_stats['built']} "
+                f"loaded_manifests={train_manifest_stats['loaded']} cached={train_manifest_stats['cached']} "
+                f"elapsed={train_index_sec:.1f}s",
+                flush=True,
+            )
+            val_window_count = 0
+            val_manifest_stats = {"built": 0, "loaded": 0, "cached": 0}
+            val_index_sec = 0.0
+            if val_shards:
+                print(
+                    f"[BC] indexing recurrent val windows seq_len={int(bc_train_cfg['seq_len'])} "
+                    f"stride={int(bc_train_cfg['sequence_stride'])}",
+                    flush=True,
+                )
+                val_index_start = time.time()
+                val_window_count = len(val_dataset)
+                val_index_sec = time.time() - val_index_start
+                val_manifest_stats = val_dataset.manifest_stats()
+                print(
+                    f"[BC] indexed val windows={val_window_count} built_manifests={val_manifest_stats['built']} "
+                    f"loaded_manifests={val_manifest_stats['loaded']} cached={val_manifest_stats['cached']} "
+                    f"elapsed={val_index_sec:.1f}s",
+                    flush=True,
+                )
+        else:
+            train_window_count = len(train_dataset)
+            val_window_count = len(val_dataset)
         print(
             f"[BC] dataset ready recurrent={recurrent} train_shards={len(train_shards)} "
-            f"val_shards={len(val_shards)} obs_dim={obs_dim} action_space={action_space_size}",
+            f"val_shards={len(val_shards)} train_items={train_window_count} val_items={val_window_count} "
+            f"obs_dim={obs_dim} action_space={action_space_size}",
             flush=True,
         )
 
+        loader_start = time.time()
         train_loader = _make_bc_loader(
             train_dataset, batch_size=bc_train_cfg["batch_size"], shuffle=True, num_workers=bc_train_cfg["num_workers"]
         )
         val_loader = _make_bc_loader(
             val_dataset, batch_size=bc_train_cfg["batch_size"], shuffle=False, num_workers=bc_train_cfg["num_workers"]
+        )
+        print(
+            f"[BC] dataloaders ready num_workers={int(bc_train_cfg['num_workers'])} "
+            f"elapsed={time.time() - loader_start:.1f}s",
+            flush=True,
         )
 
         policy = _build_bc_policy(args, env, device)
@@ -1311,6 +1468,8 @@ def build_bc_dataset(args=None, output_dir=None):
             sample_scenario_ids = []
             sample_agent_ids = []
             sample_sequence_ids = []
+            sample_sequence_row_indices = []
+            sample_sequence_lengths = []
             sample_timesteps = []
             sample_total_costs = []
             sample_step_costs = []
@@ -1345,6 +1504,8 @@ def build_bc_dataset(args=None, output_dir=None):
                     sample_scenario_ids.append(int(scenario_ids[agent_slot]))
                     sample_agent_ids.append(int(agent_ids[agent_slot]))
                     sample_sequence_ids.append(int(agent_slot))
+                    sample_sequence_row_indices.append(int(step_idx))
+                    sample_sequence_lengths.append(int(agent_num_steps[agent_slot]))
                     sample_timesteps.append(int(env_cfg["init_steps"]) + step_idx)
                     sample_total_costs.append(float(agent_total_costs[agent_slot]))
                     sample_step_costs.append(float(agent_step_costs[agent_slot, step_idx]))
@@ -1359,12 +1520,17 @@ def build_bc_dataset(args=None, output_dir=None):
             else:
                 obs_tensor = torch.zeros((0, policy_obs_dim), dtype=torch.float32)
 
+            exported_sequence_ids = [int(agent_slot) for agent_slot in range(active_count) if int(agent_num_steps[agent_slot]) > 0]
+            exported_sequence_lengths = [int(agent_num_steps[agent_slot]) for agent_slot in exported_sequence_ids]
+
             payload = {
                 "obs": obs_tensor,
                 "action": torch.tensor(sample_actions, dtype=torch.int64),
                 "scenario_id": torch.tensor(sample_scenario_ids, dtype=torch.int32),
                 "agent_id": torch.tensor(sample_agent_ids, dtype=torch.int32),
                 "sequence_id": torch.tensor(sample_sequence_ids, dtype=torch.int64),
+                "sequence_row_index": torch.tensor(sample_sequence_row_indices, dtype=torch.int32),
+                "sequence_length": torch.tensor(sample_sequence_lengths, dtype=torch.int32),
                 "timestep": torch.tensor(sample_timesteps, dtype=torch.int32),
                 "match_cost_total": torch.tensor(sample_total_costs, dtype=torch.float32),
                 "match_cost_step": torch.tensor(sample_step_costs, dtype=torch.float32),
@@ -1376,9 +1542,11 @@ def build_bc_dataset(args=None, output_dir=None):
                 "metadata": {
                     "source_map": f"map_{map_id:03d}.bin",
                     "sample_count": len(sample_actions),
-                    "sequence_count": int(active_count),
+                    "sequence_count": len(exported_sequence_ids),
                     "observation_dim": int(obs_tensor.shape[1]),
                     "observation_mode": env_cfg["observation_mode"],
+                    "sequence_ids": exported_sequence_ids,
+                    "sequence_lengths": exported_sequence_lengths,
                     "action_space_size": (
                         _CLASSIC_DISCRETE_ACTIONS
                         if _as_bool(env_cfg.get("extend_classic_action_space", True))
