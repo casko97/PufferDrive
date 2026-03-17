@@ -10,7 +10,7 @@ import random
 from pathlib import Path
 import pufferlib
 import torch
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, IterableDataset, get_worker_info
 from pufferlib.ocean.drive import binding
 from pufferlib.ocean import torch as ocean_torch
 from multiprocessing import Pool, cpu_count
@@ -440,39 +440,89 @@ def _get_discrete_action_size(env):
     return int(action_space.nvec[0])
 
 
-class _FlatBCDataset(Dataset):
-    def __init__(self, payloads):
-        if payloads:
-            self.obs = torch.cat([payload["obs"].float() for payload in payloads], dim=0)
-            self.action = torch.cat([payload["action"].long() for payload in payloads], dim=0)
-        else:
-            self.obs = torch.zeros((0, 0), dtype=torch.float32)
-            self.action = torch.zeros((0,), dtype=torch.int64)
+class _StreamingBCIterableDataset(IterableDataset):
+    def __init__(self, shard_paths, obs_dim, action_space_size, *, shuffle, seed):
+        super().__init__()
+        self.shard_paths = list(shard_paths)
+        self.obs_dim = int(obs_dim)
+        self.action_space_size = int(action_space_size)
+        self.shuffle = bool(shuffle)
+        self.seed = int(seed)
+        self.epoch = 0
+        self._length = None
+
+    def set_epoch(self, epoch):
+        self.epoch = int(epoch)
+
+    def _iter_worker_shards(self):
+        shard_paths = list(self.shard_paths)
+        if self.shuffle:
+            rng = random.Random(self.seed + self.epoch)
+            rng.shuffle(shard_paths)
+        worker = get_worker_info()
+        if worker is None:
+            return shard_paths
+        return shard_paths[worker.id :: worker.num_workers]
+
+    def _load_shard(self, shard_path):
+        payload = torch.load(shard_path, map_location="cpu")
+        _validate_bc_shard_payload(payload, self.obs_dim, self.action_space_size, shard_path)
+        return payload
 
     def __len__(self):
-        return int(self.action.shape[0])
+        if self._length is None:
+            self._length = int(self._compute_length())
+        return self._length
 
-    def __getitem__(self, idx):
-        return self.obs[idx], self.action[idx]
+    def _compute_length(self):
+        raise NotImplementedError
 
 
-class _SequenceBCDataset(Dataset):
-    def __init__(self, payloads, seq_len, stride):
+class _FlatBCDataset(_StreamingBCIterableDataset):
+    def _compute_length(self):
+        total = 0
+        for shard_path in self.shard_paths:
+            payload = self._load_shard(shard_path)
+            total += int(payload["action"].shape[0])
+        return total
+
+    def __iter__(self):
+        row_seed = self.seed + self.epoch * 9973
+        for shard_idx, shard_path in enumerate(self._iter_worker_shards()):
+            payload = self._load_shard(shard_path)
+            row_indices = list(range(int(payload["action"].shape[0])))
+            if self.shuffle:
+                rng = random.Random(row_seed + shard_idx)
+                rng.shuffle(row_indices)
+            obs = payload["obs"].float()
+            action = payload["action"].long()
+            for row_idx in row_indices:
+                yield obs[row_idx], action[row_idx]
+
+
+class _SequenceBCDataset(_StreamingBCIterableDataset):
+    def __init__(self, shard_paths, obs_dim, action_space_size, *, seq_len, stride, shuffle, seed):
+        super().__init__(shard_paths, obs_dim, action_space_size, shuffle=shuffle, seed=seed)
         self.seq_len = int(seq_len)
         self.stride = max(1, int(stride))
-        self.samples = []
-        for payload in payloads:
-            self.samples.extend(_build_sequence_samples_from_payload(payload, self.seq_len, self.stride))
-        if self.samples:
-            self.obs_dim = int(self.samples[0][0].shape[-1])
-        else:
-            self.obs_dim = 0
 
-    def __len__(self):
-        return len(self.samples)
+    def _compute_length(self):
+        total = 0
+        for shard_path in self.shard_paths:
+            payload = self._load_shard(shard_path)
+            total += len(_build_sequence_samples_from_payload(payload, self.seq_len, self.stride))
+        return total
 
-    def __getitem__(self, idx):
-        return self.samples[idx]
+    def __iter__(self):
+        sample_seed = self.seed + self.epoch * 9973
+        for shard_idx, shard_path in enumerate(self._iter_worker_shards()):
+            payload = self._load_shard(shard_path)
+            samples = _build_sequence_samples_from_payload(payload, self.seq_len, self.stride)
+            if self.shuffle:
+                rng = random.Random(sample_seed + shard_idx)
+                rng.shuffle(samples)
+            for sample in samples:
+                yield sample
 
 
 def _list_bc_shards(dataset_dir, max_shards=-1):
@@ -548,13 +598,13 @@ def _validate_bc_shard_payload(payload, obs_dim, action_space_size, shard_path):
         raise ValueError(message)
 
 
-def _load_bc_shards(shard_paths, obs_dim, action_space_size):
-    payloads = []
+def _peek_bc_shard(shard_paths, obs_dim, action_space_size):
     for shard_path in shard_paths:
         payload = torch.load(shard_path, map_location="cpu")
         _validate_bc_shard_payload(payload, obs_dim, action_space_size, shard_path)
-        payloads.append(payload)
-    return payloads
+        if int(payload["action"].shape[0]) > 0:
+            return payload
+    return None
 
 
 def _build_sequence_samples_from_payload(payload, seq_len, stride):
@@ -594,6 +644,19 @@ def _build_sequence_samples_from_payload(payload, seq_len, stride):
 
 
 def _make_bc_loader(dataset, batch_size, shuffle, num_workers):
+    if isinstance(dataset, IterableDataset):
+        if len(getattr(dataset, "shard_paths", [])) == 0:
+            return None
+        loader_kwargs = {
+            "dataset": dataset,
+            "batch_size": int(batch_size),
+            "num_workers": int(num_workers),
+            "pin_memory": torch.cuda.is_available(),
+        }
+        if int(num_workers) > 0:
+            loader_kwargs["prefetch_factor"] = 2
+        return DataLoader(**loader_kwargs)
+
     if len(dataset) == 0:
         return None
     return DataLoader(
@@ -729,25 +792,47 @@ def train_bc_policy(args=None, dataset_dir=None, output_dir=None):
             raise FileNotFoundError(message)
 
         train_shards, val_shards = _split_shards(shard_paths, bc_train_cfg["val_fraction"], seed)
-        train_payloads = _load_bc_shards(train_shards, obs_dim, action_space_size)
-        val_payloads = _load_bc_shards(val_shards, obs_dim, action_space_size)
+        print(
+            f"[BC] found {len(shard_paths)} shards total: train={len(train_shards)} val={len(val_shards)}",
+            flush=True,
+        )
+        print("[BC] using shard-streamed loading; training starts without full dataset preload", flush=True)
+
+        first_train_payload = _peek_bc_shard(train_shards, obs_dim, action_space_size)
 
         recurrent = _normalize_optional_name(_resolve_base_arg(args, "rnn_name")) is not None
         if recurrent:
             train_dataset = _SequenceBCDataset(
-                train_payloads, seq_len=bc_train_cfg["seq_len"], stride=bc_train_cfg["sequence_stride"]
+                train_shards,
+                obs_dim,
+                action_space_size,
+                seq_len=bc_train_cfg["seq_len"],
+                stride=bc_train_cfg["sequence_stride"],
+                shuffle=True,
+                seed=seed,
             )
             val_dataset = _SequenceBCDataset(
-                val_payloads, seq_len=bc_train_cfg["seq_len"], stride=bc_train_cfg["sequence_stride"]
+                val_shards,
+                obs_dim,
+                action_space_size,
+                seq_len=bc_train_cfg["seq_len"],
+                stride=bc_train_cfg["sequence_stride"],
+                shuffle=False,
+                seed=seed,
             )
         else:
-            train_dataset = _FlatBCDataset(train_payloads)
-            val_dataset = _FlatBCDataset(val_payloads)
+            train_dataset = _FlatBCDataset(train_shards, obs_dim, action_space_size, shuffle=True, seed=seed)
+            val_dataset = _FlatBCDataset(val_shards, obs_dim, action_space_size, shuffle=False, seed=seed)
 
-        if len(train_dataset) == 0:
+        if first_train_payload is None or int(first_train_payload["action"].shape[0]) == 0:
             message = "BC training dataset is empty after loading selected shards"
             _print_mismatch(message)
             raise ValueError(message)
+        print(
+            f"[BC] dataset ready recurrent={recurrent} train_shards={len(train_shards)} "
+            f"val_shards={len(val_shards)} obs_dim={obs_dim} action_space={action_space_size}",
+            flush=True,
+        )
 
         train_loader = _make_bc_loader(
             train_dataset, batch_size=bc_train_cfg["batch_size"], shuffle=True, num_workers=bc_train_cfg["num_workers"]
