@@ -4,7 +4,11 @@ import json
 import struct
 import os
 import hashlib
+import ast
+import configparser
+from pathlib import Path
 import pufferlib
+import torch
 from pufferlib.ocean.drive import binding
 from multiprocessing import Pool, cpu_count
 from tqdm import tqdm
@@ -12,6 +16,9 @@ from tqdm import tqdm
 _POLICY_TYPE_PADDED = 0
 _EMPTY_PARTNER_EPS = 1e-8
 _EGO_TRAILER_STATE_FEATURES = 4
+_CLASSIC_ACCELERATION_VALUES = (-6.0, -4.0, -2.0, -1.0, 0.0, 1.0, 2.0, 4.0, 6.0)
+_CLASSIC_STEERING_VALUES = (-1.0, -0.833, -0.667, -0.5, -0.333, -0.167, 0.0, 0.167, 0.333, 0.5, 0.667, 0.833, 1.0)
+_CLASSIC_DISCRETE_ACTIONS = len(_CLASSIC_ACCELERATION_VALUES) * len(_CLASSIC_STEERING_VALUES)
 _NON_KINEMATIC_PARAM_ORDER = [
     "tractor_length",
     "trailer_length",
@@ -95,6 +102,384 @@ def _load_non_kinematic_vehicle_params_from_bin(binary_path):
     return params
 
 
+def _sim_obs_dim_for_dynamics(dynamics_model):
+    base_ego = {"classic": binding.EGO_FEATURES_CLASSIC, "jerk": binding.EGO_FEATURES_JERK}[dynamics_model]
+    return base_ego + (binding.MAX_AGENTS - 1) * binding.PARTNER_FEATURES + binding.MAX_ROAD_SEGMENT_OBSERVATIONS * binding.ROAD_FEATURES
+
+
+def _postprocess_policy_observations(
+    output_observations,
+    sim_observations,
+    base_ego,
+    base_partner,
+    partner_count,
+    aug_ego,
+    aug_partner,
+    road_count,
+    road_features,
+    type_classes,
+    ego_types,
+    partner_types,
+    ego_trailer_features,
+):
+    base_partner_dim = partner_count * base_partner
+    base_road_start = base_ego + base_partner_dim
+    road_dim = road_count * road_features
+
+    aug_partner_dim = partner_count * aug_partner
+    aug_road_start = aug_ego + aug_partner_dim
+
+    output_observations.fill(0.0)
+    output_observations[:, :base_ego] = sim_observations[:, :base_ego]
+
+    sim_partner = sim_observations[:, base_ego:base_road_start].reshape(sim_observations.shape[0], partner_count, base_partner)
+    aug_partner_view = output_observations[:, aug_ego:aug_road_start].reshape(
+        output_observations.shape[0], partner_count, aug_partner
+    )
+    aug_partner_view[:, :, :base_partner] = sim_partner
+    output_observations[:, aug_road_start : aug_road_start + road_dim] = sim_observations[
+        :, base_road_start : base_road_start + road_dim
+    ]
+
+    policy_type_max = type_classes - 1
+    output_observations[:, base_ego] = np.clip(ego_types, _POLICY_TYPE_PADDED, policy_type_max).astype(np.float32)
+    trailer_feature_start = base_ego + 1
+    output_observations[:, trailer_feature_start] = ego_trailer_features["rel_x"]
+    output_observations[:, trailer_feature_start + 1] = ego_trailer_features["rel_y"]
+    output_observations[:, trailer_feature_start + 2] = ego_trailer_features["rel_heading_x"]
+    output_observations[:, trailer_feature_start + 3] = ego_trailer_features["rel_heading_y"]
+
+    occupied_partner_slots = np.any(np.abs(sim_partner) > _EMPTY_PARTNER_EPS, axis=2)
+    aug_partner_view[:, :, base_partner] = np.where(
+        occupied_partner_slots,
+        np.clip(partner_types, _POLICY_TYPE_PADDED, policy_type_max),
+        _POLICY_TYPE_PADDED,
+    ).astype(np.float32)
+
+
+def _parse_config_value(value):
+    try:
+        return ast.literal_eval(value)
+    except Exception:
+        return value
+
+
+def load_drive_builder_config(config_path=None):
+    puffer_root = Path(__file__).resolve().parents[2]
+    default_ini = puffer_root / "config" / "default.ini"
+    if config_path is None:
+        config_path = puffer_root / "config" / "ocean" / "drive.ini"
+    parser = configparser.ConfigParser()
+    parser.read([str(default_ini), str(config_path)])
+    args = {}
+    for section in parser.sections():
+        args[section] = {key: _parse_config_value(parser[section][key]) for key in parser[section]}
+    return args
+
+
+def _resolve_bc_config(args, output_dir=None):
+    bc = dict(args.get("bc", {}))
+    env = args["env"]
+    bc.setdefault("output_dir", output_dir or os.path.join(env["map_dir"], "..", "bc_dataset"))
+    bc.setdefault("beam_width", 8)
+    bc.setdefault("planning_horizon", -1)
+    bc.setdefault("match_weight_lateral", 2.5)
+    bc.setdefault("match_weight_longitudinal", 1.5)
+    bc.setdefault("match_weight_heading", 0.1)
+    bc.setdefault("match_weight_speed", 0.02)
+    bc.setdefault("match_weight_steer_change", 0.15)
+    bc.setdefault("match_weight_accel_change", 0.02)
+    bc.setdefault("skip_existing_shards", True)
+    bc.setdefault("max_maps", -1)
+    return bc
+
+
+def _create_builder_env_buffers(dynamics_model, max_agents):
+    sim_obs_dim = _sim_obs_dim_for_dynamics(dynamics_model)
+    observations = np.zeros((max_agents, sim_obs_dim), dtype=np.float32)
+    actions = np.zeros(max_agents, dtype=np.int32)
+    rewards = np.zeros(max_agents, dtype=np.float32)
+    terminals = np.zeros(max_agents, dtype=np.uint8)
+    truncations = np.zeros(max_agents, dtype=np.uint8)
+    return observations, actions, rewards, terminals, truncations, sim_obs_dim
+
+
+def _build_policy_observation_batch(env_cfg, active_count, sim_observations, env_handle):
+    if env_cfg["observation_mode"] != "sdc_only_with_trailer":
+        return sim_observations[:active_count].copy()
+
+    base_ego = {"classic": binding.EGO_FEATURES_CLASSIC, "jerk": binding.EGO_FEATURES_JERK}[env_cfg["dynamics_model"]]
+    partner_count = binding.MAX_AGENTS - 1
+    base_partner = binding.PARTNER_FEATURES
+    aug_ego = base_ego + 1 + _EGO_TRAILER_STATE_FEATURES
+    aug_partner = base_partner + 1
+    road_count = binding.MAX_ROAD_SEGMENT_OBSERVATIONS
+    road_features = binding.ROAD_FEATURES
+    num_obs = aug_ego + partner_count * aug_partner + road_count * road_features
+
+    policy_observations = np.zeros((active_count, num_obs), dtype=np.float32)
+    ego_types = np.zeros(active_count, dtype=np.int32)
+    partner_types = np.zeros((active_count, partner_count), dtype=np.int32)
+    trailer_features = {
+        "rel_x": np.zeros(active_count, dtype=np.float32),
+        "rel_y": np.zeros(active_count, dtype=np.float32),
+        "rel_heading_x": np.zeros(active_count, dtype=np.float32),
+        "rel_heading_y": np.zeros(active_count, dtype=np.float32),
+    }
+
+    binding.get_global_agent_types(env_handle, ego_types)
+    binding.env_get_partner_types(env_handle, partner_types)
+    binding.env_get_ego_trailer_obs_features(
+        env_handle,
+        trailer_features["rel_x"],
+        trailer_features["rel_y"],
+        trailer_features["rel_heading_x"],
+        trailer_features["rel_heading_y"],
+    )
+    _postprocess_policy_observations(
+        policy_observations,
+        sim_observations[:active_count],
+        base_ego,
+        base_partner,
+        partner_count,
+        aug_ego,
+        aug_partner,
+        road_count,
+        road_features,
+        binding.POLICY_TYPE_CLASS_COUNT,
+        ego_types,
+        partner_types,
+        trailer_features,
+    )
+    return policy_observations
+
+
+def _list_map_ids(map_dir, max_maps=-1):
+    map_paths = sorted(Path(map_dir).glob("map_*.bin"))
+    map_ids = []
+    for path in map_paths:
+        try:
+            map_ids.append(int(path.stem.split("_")[1]))
+        except (IndexError, ValueError):
+            continue
+    if max_maps is not None and max_maps > 0:
+        map_ids = map_ids[:max_maps]
+    return map_ids
+
+
+def _validate_bc_builder_support(env_cfg):
+    if env_cfg["action_type"] != "discrete":
+        print("Warning: offline BC dataset builder currently supports only discrete action_type.")
+        raise ValueError("Unsupported action_type for offline BC dataset builder")
+    if env_cfg["dynamics_model"] != "classic":
+        print("Warning: offline BC dataset builder currently supports only classic dynamics_model.")
+        raise ValueError("Unsupported dynamics_model for offline BC dataset builder")
+
+
+def build_bc_dataset(args=None, output_dir=None):
+    args = args or load_drive_builder_config()
+    env_cfg = dict(args["env"])
+    bc_cfg = _resolve_bc_config(args, output_dir=output_dir)
+    _validate_bc_builder_support(env_cfg)
+
+    map_dir = env_cfg["map_dir"]
+    if not os.path.isdir(map_dir):
+        raise FileNotFoundError(f"Map directory not found: {map_dir}")
+
+    shard_dir = Path(bc_cfg["output_dir"])
+    shard_dir.mkdir(parents=True, exist_ok=True)
+    map_ids = _list_map_ids(map_dir, max_maps=bc_cfg["max_maps"])
+    max_agents = int(env_cfg.get("max_controlled_agents", -1))
+    if max_agents <= 0:
+        max_agents = binding.MAX_AGENTS
+    max_agents = min(max_agents, binding.MAX_AGENTS)
+
+    shard_paths = []
+    for map_id in tqdm(map_ids, desc="Building BC shards", unit="map"):
+        shard_path = shard_dir / f"map_{map_id:03d}.pt"
+        if bc_cfg["skip_existing_shards"] and shard_path.exists():
+            shard_paths.append(str(shard_path))
+            continue
+
+        obs_buf, act_buf, rew_buf, term_buf, trunc_buf, sim_obs_dim = _create_builder_env_buffers(
+            env_cfg["dynamics_model"], max_agents
+        )
+        env_handle = binding.env_init(
+            obs_buf,
+            act_buf,
+            rew_buf,
+            term_buf,
+            trunc_buf,
+            0,
+            human_agent_idx=0,
+            reward_vehicle_collision=env_cfg["reward_vehicle_collision"],
+            reward_offroad_collision=env_cfg["reward_offroad_collision"],
+            reward_goal=env_cfg["reward_goal"],
+            reward_goal_post_respawn=env_cfg["reward_goal_post_respawn"],
+            goal_radius=env_cfg["goal_radius"],
+            goal_speed=env_cfg["goal_speed"],
+            goal_behavior=env_cfg["goal_behavior"],
+            goal_target_distance=env_cfg["goal_target_distance"],
+            collision_behavior=env_cfg["collision_behavior"],
+            offroad_behavior=env_cfg["offroad_behavior"],
+            dt=env_cfg["dt"],
+            episode_length=env_cfg["episode_length"],
+            termination_mode=env_cfg["termination_mode"],
+            max_controlled_agents=max_agents,
+            map_id=map_id,
+            max_agents=max_agents,
+            ini_file="pufferlib/config/ocean/drive.ini",
+            init_steps=env_cfg["init_steps"],
+                init_mode=0 if env_cfg["init_mode"] == "create_all_valid" else 1,
+                control_mode={
+                    "control_vehicles": 0,
+                    "control_agents": 1,
+                    "control_wosac": 2,
+                    "control_sdc_only": 3,
+                }[env_cfg["control_mode"]],
+                map_dir=map_dir,
+                extend_classic_action_space=int(_as_bool(env_cfg.get("extend_classic_action_space", True))),
+                non_kinematic_vehicle_params_override=None,
+                force_zero_trailer_articulation_at_init=int(_as_bool(env_cfg.get("force_zero_trailer_articulation_at_init", False))),
+            )
+
+        try:
+            binding.env_reset(env_handle, 0)
+            active_count = binding.env_get_active_agent_count(env_handle)
+            if active_count <= 0:
+                continue
+
+            scenario_ids = np.zeros(active_count, dtype=np.int32)
+            agent_ids = np.zeros(active_count, dtype=np.int32)
+            binding.env_get_active_agent_info(env_handle, scenario_ids, agent_ids)
+
+            max_steps = max(0, int(env_cfg["episode_length"]) - int(env_cfg["init_steps"]) - 1)
+            agent_actions = np.full((active_count, max_steps), -1, dtype=np.int32)
+            agent_step_costs = np.zeros((active_count, max_steps), dtype=np.float32)
+            agent_step_lat_costs = np.zeros((active_count, max_steps), dtype=np.float32)
+            agent_step_lon_costs = np.zeros((active_count, max_steps), dtype=np.float32)
+            agent_num_steps = np.zeros(active_count, dtype=np.int32)
+            agent_total_costs = np.zeros(active_count, dtype=np.float32)
+            agent_total_lat_costs = np.zeros(active_count, dtype=np.float32)
+            agent_total_lon_costs = np.zeros(active_count, dtype=np.float32)
+
+            for agent_slot in range(active_count):
+                num_steps, total_cost, total_lat_cost, total_lon_cost = binding.env_fit_discrete_action_sequence(
+                    env_handle,
+                    agent_slot,
+                    int(bc_cfg["beam_width"]),
+                    int(bc_cfg["planning_horizon"]),
+                    float(bc_cfg["match_weight_lateral"]),
+                    float(bc_cfg["match_weight_longitudinal"]),
+                    float(bc_cfg["match_weight_heading"]),
+                    float(bc_cfg["match_weight_speed"]),
+                    float(bc_cfg["match_weight_steer_change"]),
+                    float(bc_cfg["match_weight_accel_change"]),
+                    agent_actions[agent_slot],
+                    agent_step_costs[agent_slot],
+                    agent_step_lat_costs[agent_slot],
+                    agent_step_lon_costs[agent_slot],
+                )
+                agent_num_steps[agent_slot] = num_steps
+                agent_total_costs[agent_slot] = total_cost
+                agent_total_lat_costs[agent_slot] = total_lat_cost
+                agent_total_lon_costs[agent_slot] = total_lon_cost
+
+            sample_obs = []
+            sample_actions = []
+            sample_scenario_ids = []
+            sample_agent_ids = []
+            sample_timesteps = []
+            sample_total_costs = []
+            sample_step_costs = []
+            sample_total_lat_costs = []
+            sample_total_lon_costs = []
+            sample_step_lat_costs = []
+            sample_step_lon_costs = []
+            sample_map_ids = []
+
+            max_num_steps = int(np.max(agent_num_steps)) if active_count > 0 else 0
+            timestep_obs = np.zeros((active_count, sim_obs_dim), dtype=np.float32)
+            policy_obs_dim = (
+                sim_obs_dim
+                if env_cfg["observation_mode"] == "default"
+                else (
+                    {"classic": binding.EGO_FEATURES_CLASSIC, "jerk": binding.EGO_FEATURES_JERK}[env_cfg["dynamics_model"]]
+                    + 1
+                    + _EGO_TRAILER_STATE_FEATURES
+                    + (binding.MAX_AGENTS - 1) * (binding.PARTNER_FEATURES + 1)
+                    + binding.MAX_ROAD_SEGMENT_OBSERVATIONS * binding.ROAD_FEATURES
+                )
+            )
+            for step_idx in range(max_num_steps):
+                binding.env_set_logged_timestep(env_handle, int(env_cfg["init_steps"]) + step_idx)
+                binding.env_copy_observations(env_handle, timestep_obs)
+                policy_observations = _build_policy_observation_batch(env_cfg, active_count, timestep_obs, env_handle)
+
+                valid_slots = np.nonzero(agent_num_steps > step_idx)[0]
+                for agent_slot in valid_slots:
+                    sample_obs.append(policy_observations[agent_slot].copy())
+                    sample_actions.append(int(agent_actions[agent_slot, step_idx]))
+                    sample_scenario_ids.append(int(scenario_ids[agent_slot]))
+                    sample_agent_ids.append(int(agent_ids[agent_slot]))
+                    sample_timesteps.append(int(env_cfg["init_steps"]) + step_idx)
+                    sample_total_costs.append(float(agent_total_costs[agent_slot]))
+                    sample_step_costs.append(float(agent_step_costs[agent_slot, step_idx]))
+                    sample_total_lat_costs.append(float(agent_total_lat_costs[agent_slot]))
+                    sample_total_lon_costs.append(float(agent_total_lon_costs[agent_slot]))
+                    sample_step_lat_costs.append(float(agent_step_lat_costs[agent_slot, step_idx]))
+                    sample_step_lon_costs.append(float(agent_step_lon_costs[agent_slot, step_idx]))
+                    sample_map_ids.append(int(map_id))
+
+            if sample_obs:
+                obs_tensor = torch.from_numpy(np.stack(sample_obs).astype(np.float32))
+            else:
+                obs_tensor = torch.zeros((0, policy_obs_dim), dtype=torch.float32)
+
+            payload = {
+                "obs": obs_tensor,
+                "action": torch.tensor(sample_actions, dtype=torch.int64),
+                "scenario_id": torch.tensor(sample_scenario_ids, dtype=torch.int32),
+                "agent_id": torch.tensor(sample_agent_ids, dtype=torch.int32),
+                "timestep": torch.tensor(sample_timesteps, dtype=torch.int32),
+                "match_cost_total": torch.tensor(sample_total_costs, dtype=torch.float32),
+                "match_cost_step": torch.tensor(sample_step_costs, dtype=torch.float32),
+                "match_cost_lateral_total": torch.tensor(sample_total_lat_costs, dtype=torch.float32),
+                "match_cost_longitudinal_total": torch.tensor(sample_total_lon_costs, dtype=torch.float32),
+                "match_cost_lateral_step": torch.tensor(sample_step_lat_costs, dtype=torch.float32),
+                "match_cost_longitudinal_step": torch.tensor(sample_step_lon_costs, dtype=torch.float32),
+                "map_id": torch.tensor(sample_map_ids, dtype=torch.int32),
+                "metadata": {
+                    "source_map": f"map_{map_id:03d}.bin",
+                    "sample_count": len(sample_actions),
+                    "observation_dim": int(obs_tensor.shape[1]),
+                    "action_space_size": (
+                        _CLASSIC_DISCRETE_ACTIONS
+                        if _as_bool(env_cfg.get("extend_classic_action_space", True))
+                        else 7 * 13
+                    ),
+                    "config": {"env": env_cfg, "bc": bc_cfg},
+                    "optimizer": {
+                        "beam_width": int(bc_cfg["beam_width"]),
+                        "planning_horizon": int(bc_cfg["planning_horizon"]),
+                        "match_weight_lateral": float(bc_cfg["match_weight_lateral"]),
+                        "match_weight_longitudinal": float(bc_cfg["match_weight_longitudinal"]),
+                        "match_weight_heading": float(bc_cfg["match_weight_heading"]),
+                        "match_weight_speed": float(bc_cfg["match_weight_speed"]),
+                        "match_weight_steer_change": float(bc_cfg["match_weight_steer_change"]),
+                        "match_weight_accel_change": float(bc_cfg["match_weight_accel_change"]),
+                        "init_steps": int(env_cfg["init_steps"]),
+                    },
+                },
+            }
+            torch.save(payload, shard_path)
+            shard_paths.append(str(shard_path))
+        finally:
+            binding.env_close(env_handle)
+
+    return shard_paths
+
+
 class Drive(pufferlib.PufferEnv):
     def __init__(
         self,
@@ -128,6 +513,7 @@ class Drive(pufferlib.PufferEnv):
         init_mode="create_all_valid",
         control_mode="control_vehicles",
         observation_mode="default",
+        extend_classic_action_space=True,
         map_dir="resources/drive/binaries/training",
         sequential_map_sampling=False,
         sdc_runtime_truck_override=False,
@@ -179,6 +565,7 @@ class Drive(pufferlib.PufferEnv):
         self.init_mode_str = init_mode
         self.control_mode_str = control_mode
         self.observation_mode_str = observation_mode
+        self.extend_classic_action_space = _as_bool(extend_classic_action_space)
         self.map_dir = map_dir
         self.force_zero_trailer_articulation_at_init = _as_bool(force_zero_trailer_articulation_at_init)
         self.non_kinematic_vehicle_params_override = None
@@ -245,7 +632,8 @@ class Drive(pufferlib.PufferEnv):
         if action_type == "discrete":
             if dynamics_model == "classic":
                 # Joint action space (assume dependence)
-                self.single_action_space = gymnasium.spaces.MultiDiscrete([7 * 13])
+                action_count = _CLASSIC_DISCRETE_ACTIONS if self.extend_classic_action_space else (7 * 13)
+                self.single_action_space = gymnasium.spaces.MultiDiscrete([action_count])
                 # Multi discrete (assume independence)
                 # self.single_action_space = gymnasium.spaces.MultiDiscrete([7, 13])
             elif dynamics_model == "jerk":
@@ -334,6 +722,7 @@ class Drive(pufferlib.PufferEnv):
                 init_mode=self.init_mode,
                 control_mode=self.control_mode,
                 map_dir=map_dir,
+                extend_classic_action_space=int(self.extend_classic_action_space),
                 non_kinematic_vehicle_params_override=self.non_kinematic_vehicle_params_override,
                 force_zero_trailer_articulation_at_init=int(self.force_zero_trailer_articulation_at_init),
             )
@@ -394,6 +783,7 @@ class Drive(pufferlib.PufferEnv):
                 init_mode=self.init_mode,
                 control_mode=self.control_mode,
                 map_dir=self.map_dir,
+                extend_classic_action_space=int(self.extend_classic_action_space),
                 non_kinematic_vehicle_params_override=self.non_kinematic_vehicle_params_override,
                 force_zero_trailer_articulation_at_init=int(self.force_zero_trailer_articulation_at_init),
             )
@@ -534,45 +924,29 @@ class Drive(pufferlib.PufferEnv):
         base_ego = self._base_ego_features
         base_partner = self._base_partner_features
         partner_count = self.max_partner_objects
-        base_partner_dim = partner_count * base_partner
-        base_road_start = base_ego + base_partner_dim
-        road_dim = self.max_road_objects * self.road_features
 
         aug_ego = self.ego_features
         aug_partner = self.partner_features
-        aug_partner_dim = partner_count * aug_partner
-        aug_road_start = aug_ego + aug_partner_dim
-
-        self.observations[:] = 0.0
-        self.observations[:, :base_ego] = self._sim_observations[:, :base_ego]
-
-        sim_partner = self._sim_observations[:, base_ego:base_road_start].reshape(
-            self.num_agents, partner_count, base_partner
-        )
-        aug_partner_view = self.observations[:, aug_ego:aug_road_start].reshape(self.num_agents, partner_count, aug_partner)
-        aug_partner_view[:, :, :base_partner] = sim_partner
-        self.observations[:, aug_road_start : aug_road_start + road_dim] = self._sim_observations[
-            :, base_road_start : base_road_start + road_dim
-        ]
 
         policy_type_max = self.type_classes - 1
         ego_types = np.clip(self.get_global_agent_types(), _POLICY_TYPE_PADDED, policy_type_max).astype(np.float32)
         partner_types = np.clip(self.get_partner_types(), _POLICY_TYPE_PADDED, policy_type_max).astype(np.float32)
         ego_trailer_features = self.get_ego_trailer_obs_features()
-
-        ego_type_idx = base_ego
-        self.observations[:, ego_type_idx] = ego_types
-        trailer_feature_start = ego_type_idx + 1
-        self.observations[:, trailer_feature_start] = ego_trailer_features["rel_x"]
-        self.observations[:, trailer_feature_start + 1] = ego_trailer_features["rel_y"]
-        self.observations[:, trailer_feature_start + 2] = ego_trailer_features["rel_heading_x"]
-        self.observations[:, trailer_feature_start + 3] = ego_trailer_features["rel_heading_y"]
-
-        # Populate partner type channel only for occupied partner slots.
-        occupied_partner_slots = np.any(np.abs(sim_partner) > _EMPTY_PARTNER_EPS, axis=2)
-        aug_partner_view[:, :, base_partner] = np.where(
-            occupied_partner_slots, partner_types, _POLICY_TYPE_PADDED
-        ).astype(np.float32)
+        _postprocess_policy_observations(
+            self.observations,
+            self._sim_observations,
+            base_ego,
+            base_partner,
+            partner_count,
+            aug_ego,
+            aug_partner,
+            self.max_road_objects,
+            self.road_features,
+            self.type_classes,
+            ego_types,
+            partner_types,
+            ego_trailer_features,
+        )
 
     def get_ground_truth_trajectories(self):
         """Get ground truth trajectories for all active agents.
@@ -1004,22 +1378,45 @@ def test_performance(timeout=10, atn_cache=1024, num_agents=1024):
 
 if __name__ == "__main__":
     import argparse
-    
-    parser = argparse.ArgumentParser(description="Convert JSON map files to binary format")
-    parser.add_argument("--input-folder", type=str, default="data/processed/training",
-                        help="Path to folder containing JSON map files")
-    parser.add_argument("--output-folder", type=str, default=None,
-                        help="Path to save binary files (default: resources/drive/binaries/{dataset_name})")
-    parser.add_argument("--max-maps", type=int, default=50_000,
-                        help="Maximum number of maps to process")
-    parser.add_argument("--num-workers", type=int, default=None,
-                        help="Number of parallel workers (default: all CPU cores)")
-    
-    args = parser.parse_args()
-    
-    process_all_maps(
-        data_folder=args.input_folder,
-        output_folder=args.output_folder,
-        max_maps=args.max_maps,
-        num_workers=args.num_workers
+
+    parser = argparse.ArgumentParser(description="Convert Drive data or build offline BC datasets")
+    parser.add_argument(
+        "--mode",
+        choices=["convert", "build-bc"],
+        default="convert",
+        help="Whether to convert JSON maps or build offline BC dataset shards",
     )
+    parser.add_argument(
+        "--input-folder", type=str, default="data/processed/training", help="Path to folder containing JSON map files"
+    )
+    parser.add_argument(
+        "--output-folder",
+        type=str,
+        default=None,
+        help="Path to save binary files or BC shards (defaults depend on mode)",
+    )
+    parser.add_argument("--max-maps", type=int, default=50_000, help="Maximum number of maps to process")
+    parser.add_argument(
+        "--num-workers", type=int, default=None, help="Number of parallel workers for JSON conversion"
+    )
+    parser.add_argument(
+        "--config-path",
+        type=str,
+        default=None,
+        help="Optional path to the drive config file used by the offline BC dataset builder",
+    )
+
+    args = parser.parse_args()
+
+    if args.mode == "build-bc":
+        config = load_drive_builder_config(args.config_path)
+        config.setdefault("bc", {})
+        config["bc"]["max_maps"] = args.max_maps
+        build_bc_dataset(config, output_dir=args.output_folder)
+    else:
+        process_all_maps(
+            data_folder=args.input_folder,
+            output_folder=args.output_folder,
+            max_maps=args.max_maps,
+            num_workers=args.num_workers,
+        )

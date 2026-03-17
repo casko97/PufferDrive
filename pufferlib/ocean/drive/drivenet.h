@@ -55,7 +55,8 @@ struct DriveNet {
     Multidiscrete *multidiscrete;
 };
 
-DriveNet *init_drivenet(Weights *weights, int num_agents, int dynamics_model, int action_type, int observation_mode) {
+DriveNet *init_drivenet(Weights *weights, int num_agents, int dynamics_model, int action_type, int observation_mode,
+                       int extend_classic_action_space) {
     DriveNet *net = calloc(1, sizeof(DriveNet));
     int base_ego_dim = (dynamics_model == JERK) ? EGO_FEATURES_JERK : EGO_FEATURES_CLASSIC;
     int max_partners = MAX_AGENTS - 1;
@@ -82,8 +83,11 @@ DriveNet *init_drivenet(Weights *weights, int num_agents, int dynamics_model, in
         action_dim = 2;
     } else {  // Discrete
         if (dynamics_model == CLASSIC) {
-            action_size = 7 * 13; // Joint action space
-            logit_sizes[0] = 7 * 13;
+            int acceleration_count =
+                extend_classic_action_space ? (int)(sizeof(ACCELERATION_VALUES_EXTENDED) / sizeof(float))
+                                            : (int)(sizeof(ACCELERATION_VALUES_LEGACY) / sizeof(float));
+            action_size = acceleration_count * (int)(sizeof(STEERING_VALUES) / sizeof(float));
+            logit_sizes[0] = action_size;
             action_dim = 1;
         } else {                 // JERK
             action_size = 4 * 3; // Joint action space (4 longitudinal × 3 lateral = 12)
