@@ -20,6 +20,8 @@ from tqdm import tqdm
 _POLICY_TYPE_PADDED = 0
 _EMPTY_PARTNER_EPS = 1e-8
 _EGO_TRAILER_STATE_FEATURES = 4
+_EGO_SPEED_OBS_INDEX = 2
+_MAX_SPEED_MPS = 100.0
 _CLASSIC_ACCELERATION_VALUES = (-6.0, -4.0, -2.0, -1.0, 0.0, 1.0, 2.0, 4.0, 6.0)
 _CLASSIC_STEERING_VALUES = (-1.0, -0.833, -0.667, -0.5, -0.333, -0.167, 0.0, 0.167, 0.333, 0.5, 0.667, 0.833, 1.0)
 _CLASSIC_DISCRETE_ACTIONS = len(_CLASSIC_ACCELERATION_VALUES) * len(_CLASSIC_STEERING_VALUES)
@@ -419,6 +421,7 @@ def _resolve_bc_train_config(args, dataset_dir=None, output_dir=None):
     bc_train.setdefault("learning_rate", train.get("learning_rate", 3e-4))
     bc_train.setdefault("weight_decay", 0.0)
     bc_train.setdefault("num_workers", 0)
+    bc_train.setdefault("shard_shuffle_buffer", 1)
     bc_train.setdefault("val_fraction", 0.1)
     bc_train.setdefault("seq_len", train.get("bptt_horizon", 32))
     bc_train.setdefault("sequence_stride", bc_train["seq_len"])
@@ -432,6 +435,9 @@ def _resolve_bc_train_config(args, dataset_dir=None, output_dir=None):
     bc_train.setdefault("lr_scheduler_patience", 2)
     bc_train.setdefault("lr_scheduler_threshold", 1e-4)
     bc_train.setdefault("min_learning_rate", 0.0)
+    bc_train.setdefault("rebalance_windows", False)
+    bc_train.setdefault("window_balance_fraction", 0.0)
+    bc_train.setdefault("window_balance_max_multiplier", 10.0)
     return bc_train
 
 
@@ -453,13 +459,14 @@ def _get_discrete_action_size(env):
 
 
 class _StreamingBCIterableDataset(IterableDataset):
-    def __init__(self, shard_paths, obs_dim, action_space_size, *, shuffle, seed):
+    def __init__(self, shard_paths, obs_dim, action_space_size, *, shuffle, seed, shard_shuffle_buffer=1):
         super().__init__()
         self.shard_paths = list(shard_paths)
         self.obs_dim = int(obs_dim)
         self.action_space_size = int(action_space_size)
         self.shuffle = bool(shuffle)
         self.seed = int(seed)
+        self.shard_shuffle_buffer = max(1, int(shard_shuffle_buffer))
         self.epoch = 0
         self._length = None
 
@@ -489,6 +496,30 @@ class _StreamingBCIterableDataset(IterableDataset):
     def _compute_length(self):
         raise NotImplementedError
 
+    def _iter_mixed_shard_stream(self, shard_iter, shard_sample_fn):
+        active_shards = []
+        sample_rng = random.Random(self.seed + self.epoch * 9973 + 17)
+
+        def _fill_active():
+            while len(active_shards) < self.shard_shuffle_buffer:
+                try:
+                    shard_idx, shard_path = next(shard_iter)
+                except StopIteration:
+                    break
+                shard_samples = shard_sample_fn(shard_idx, shard_path)
+                if shard_samples:
+                    active_shards.append(shard_samples)
+
+        _fill_active()
+        while active_shards:
+            shard_choice = sample_rng.randrange(len(active_shards)) if self.shuffle else 0
+            shard_stream = active_shards[shard_choice]
+            yield shard_stream.pop()
+            if shard_stream:
+                continue
+            active_shards.pop(shard_choice)
+            _fill_active()
+
 
 class _FlatBCDataset(_StreamingBCIterableDataset):
     def _compute_length(self):
@@ -500,7 +531,9 @@ class _FlatBCDataset(_StreamingBCIterableDataset):
 
     def __iter__(self):
         row_seed = self.seed + self.epoch * 9973
-        for shard_idx, shard_path in enumerate(self._iter_worker_shards()):
+        worker_shards = list(self._iter_worker_shards())
+
+        def _shard_samples(shard_idx, shard_path):
             payload = self._load_shard(shard_path)
             row_indices = list(range(int(payload["action"].shape[0])))
             if self.shuffle:
@@ -508,19 +541,58 @@ class _FlatBCDataset(_StreamingBCIterableDataset):
                 rng.shuffle(row_indices)
             obs = payload["obs"].float()
             action = payload["action"].long()
-            for row_idx in row_indices:
-                yield obs[row_idx], action[row_idx]
+            return [(obs[row_idx], action[row_idx]) for row_idx in row_indices]
+
+        shard_iter = iter(enumerate(worker_shards))
+        yield from self._iter_mixed_shard_stream(shard_iter, _shard_samples)
 
 
 class _SequenceBCDataset(_StreamingBCIterableDataset):
-    def __init__(self, shard_paths, obs_dim, action_space_size, *, seq_len, stride, shuffle, seed, require_embedded):
-        super().__init__(shard_paths, obs_dim, action_space_size, shuffle=shuffle, seed=seed)
+    def __init__(
+        self,
+        shard_paths,
+        obs_dim,
+        action_space_size,
+        *,
+        seq_len,
+        stride,
+        shuffle,
+        seed,
+        require_embedded,
+        shard_shuffle_buffer=1,
+        rebalance_windows=False,
+        window_balance_fraction=0.0,
+        window_balance_max_multiplier=10.0,
+    ):
+        super().__init__(
+            shard_paths,
+            obs_dim,
+            action_space_size,
+            shuffle=shuffle,
+            seed=seed,
+            shard_shuffle_buffer=shard_shuffle_buffer,
+        )
         self.seq_len = int(seq_len)
         self.stride = max(1, int(stride))
         self.require_embedded = bool(require_embedded)
+        self.rebalance_windows = bool(rebalance_windows)
+        self.window_balance_fraction = float(window_balance_fraction)
+        self.window_balance_max_multiplier = float(window_balance_max_multiplier)
         self._manifest_cache = {}
+        self._window_weight_cache = {}
         self._manifest_built = 0
         self._manifest_loaded = 0
+        self._action_rarity_weights = None
+        if self.rebalance_windows:
+            self._action_rarity_weights = _compute_window_action_rarity_weights(
+                self.shard_paths,
+                self.obs_dim,
+                self.action_space_size,
+                seq_len=self.seq_len,
+                stride=self.stride,
+                require_embedded=self.require_embedded,
+                max_multiplier=self.window_balance_max_multiplier,
+            )
 
     def _compute_length(self):
         total = 0
@@ -531,15 +603,28 @@ class _SequenceBCDataset(_StreamingBCIterableDataset):
 
     def __iter__(self):
         sample_seed = self.seed + self.epoch * 9973
-        for shard_idx, shard_path in enumerate(self._iter_worker_shards()):
+        worker_shards = list(self._iter_worker_shards())
+
+        def _shard_samples(shard_idx, shard_path):
             payload = self._load_shard(shard_path)
             manifest = self._load_sequence_manifest(shard_path)
             samples = _build_sequence_samples_from_manifest(payload, manifest)
             if self.shuffle:
-                rng = random.Random(sample_seed + shard_idx)
-                rng.shuffle(samples)
-            for sample in samples:
-                yield sample
+                if self.rebalance_windows:
+                    weights = self._load_window_weights(shard_path, payload, manifest)
+                    selected_indices = _resample_window_indices_from_weights(
+                        weights,
+                        target_count=len(samples),
+                        seed=sample_seed + shard_idx,
+                    )
+                    samples = [samples[int(idx)] for idx in selected_indices.tolist()]
+                else:
+                    rng = random.Random(sample_seed + shard_idx)
+                    rng.shuffle(samples)
+            return samples
+
+        shard_iter = iter(enumerate(worker_shards))
+        yield from self._iter_mixed_shard_stream(shard_iter, _shard_samples)
 
     def _load_sequence_manifest(self, shard_path):
         manifest = self._manifest_cache.get(shard_path)
@@ -560,12 +645,120 @@ class _SequenceBCDataset(_StreamingBCIterableDataset):
                 self._manifest_loaded += 1
         return manifest
 
+    def _load_window_weights(self, shard_path, payload, manifest):
+        weights = self._window_weight_cache.get(shard_path)
+        if weights is None:
+            weights = _window_sampling_weights_from_payload(
+                payload,
+                manifest,
+                self._action_rarity_weights,
+                balance_fraction=self.window_balance_fraction,
+            )
+            self._window_weight_cache[shard_path] = weights
+        return weights
+
     def manifest_stats(self):
         return {
             "built": int(self._manifest_built),
             "loaded": int(self._manifest_loaded),
             "cached": int(len(self._manifest_cache)),
+            "weighted": int(self.rebalance_windows),
         }
+
+
+def _window_action_counts_from_payload(payload, manifest):
+    window_count = int(manifest["window_count"])
+    if window_count <= 0:
+        return np.zeros((0, _CLASSIC_DISCRETE_ACTIONS), dtype=np.int32)
+    action_tensor = payload["action"].cpu().long()
+    window_indices = manifest["window_indices"].cpu().long()
+    valid_lengths = manifest["valid_lengths"].cpu().long()
+    counts = np.zeros((window_count, _CLASSIC_DISCRETE_ACTIONS), dtype=np.int32)
+    for window_index in range(window_count):
+        valid_len = int(valid_lengths[window_index].item())
+        if valid_len <= 0:
+            continue
+        row_indices = window_indices[window_index, :valid_len]
+        window_actions = action_tensor[row_indices].numpy()
+        counts[window_index] = np.bincount(window_actions, minlength=_CLASSIC_DISCRETE_ACTIONS).astype(
+            np.int32, copy=False
+        )
+    return counts
+
+
+def _compute_action_rarity_weights(action_counts, *, max_multiplier):
+    action_counts = np.asarray(action_counts, dtype=np.float64)
+    positive = action_counts > 0
+    if not np.any(positive):
+        raise ValueError("No positive action counts available for window rebalancing")
+    uniform_target = float(action_counts[positive].sum()) / float(np.count_nonzero(positive))
+    rarity = np.ones_like(action_counts, dtype=np.float64)
+    rarity[positive] = uniform_target / action_counts[positive]
+    rarity = np.clip(rarity, 1.0, float(max_multiplier))
+    return rarity
+
+
+def _compute_window_action_rarity_weights(
+    shard_paths,
+    obs_dim,
+    action_space_size,
+    *,
+    seq_len,
+    stride,
+    require_embedded,
+    max_multiplier,
+):
+    global_counts = np.zeros((_CLASSIC_DISCRETE_ACTIONS,), dtype=np.int64)
+    for shard_path in shard_paths:
+        payload = torch.load(shard_path, map_location="cpu")
+        _validate_bc_shard_payload(payload, obs_dim, action_space_size, str(shard_path))
+        manifest = _load_or_build_sequence_manifest(
+            shard_path,
+            obs_dim,
+            action_space_size,
+            seq_len=seq_len,
+            stride=stride,
+            require_embedded=require_embedded,
+        )
+        window_counts = _window_action_counts_from_payload(payload, manifest)
+        global_counts += window_counts.sum(axis=0, dtype=np.int64)
+    return _compute_action_rarity_weights(global_counts, max_multiplier=max_multiplier)
+
+
+def _window_sampling_weights_from_payload(payload, manifest, action_rarity_weights, *, balance_fraction):
+    window_action_counts = _window_action_counts_from_payload(payload, manifest).astype(np.float64, copy=False)
+    if window_action_counts.shape[0] == 0:
+        return np.zeros((0,), dtype=np.float64)
+    if action_rarity_weights is None or float(balance_fraction) <= 0.0:
+        return np.ones((window_action_counts.shape[0],), dtype=np.float64)
+    window_lengths = window_action_counts.sum(axis=1)
+    weights = np.ones((window_action_counts.shape[0],), dtype=np.float64)
+    valid = window_lengths > 0
+    if np.any(valid):
+        rarity_score = (window_action_counts[valid] * action_rarity_weights[None, :]).sum(axis=1) / window_lengths[valid]
+        weights[valid] = (1.0 - float(balance_fraction)) + float(balance_fraction) * rarity_score
+    return np.clip(weights, 1e-12, None)
+
+
+def _resample_window_indices_from_weights(weights, *, target_count, seed):
+    target_count = int(target_count)
+    weights = np.asarray(weights, dtype=np.float64)
+    window_count = int(weights.shape[0])
+    if target_count <= 0 or window_count <= 0:
+        return np.zeros((0,), dtype=np.int64)
+    probs = weights / float(weights.sum())
+    expected = probs * float(target_count)
+    counts = np.floor(expected).astype(np.int64)
+    remaining = int(target_count) - int(counts.sum())
+    if remaining > 0:
+        residual = expected - counts
+        order = np.argsort(-residual)
+        counts[order[:remaining]] += 1
+    selected_indices = np.repeat(np.arange(window_count, dtype=np.int64), counts)
+    if selected_indices.size > 1:
+        rng = np.random.default_rng(int(seed))
+        rng.shuffle(selected_indices)
+    return selected_indices
 
 
 def _list_bc_shards(dataset_dir, max_shards=-1):
@@ -757,6 +950,14 @@ def _validate_bc_shard_payload(payload, obs_dim, action_space_size, shard_path):
 
     if "window_metadata" in payload:
         _validate_sequence_manifest(payload["window_metadata"], shard_path=shard_path)
+    window_sets = payload.get("window_sets")
+    if window_sets is not None:
+        if not isinstance(window_sets, dict):
+            message = f"BC shard {shard_path} window_sets must be a dict"
+            _print_mismatch(message)
+            raise ValueError(message)
+        for name, manifest in window_sets.items():
+            _validate_sequence_manifest(manifest, shard_path=f"{shard_path}:{name}")
 
 
 def _peek_bc_shard(shard_paths, obs_dim, action_space_size):
@@ -808,16 +1009,27 @@ def _sequence_spans_from_payload(payload):
 
 
 def _build_sequence_manifest_from_payload(payload, seq_len, stride):
+    return _build_sequence_manifest_from_spans(_sequence_spans_from_payload(payload), seq_len, stride)
+
+
+def _build_sequence_manifest_from_spans(spans, seq_len, stride, *, start_offsets_by_sequence_id=None):
     seq_len = int(seq_len)
     stride = max(1, int(stride))
 
     window_indices = []
     valid_lengths = []
-    for _, start_row, end_row in _sequence_spans_from_payload(payload):
+    for sequence_id, start_row, end_row in spans:
         sequence_length = end_row - start_row
         if sequence_length <= 0:
             continue
-        for start_idx in range(0, sequence_length, stride):
+        allowed_offsets = None
+        if start_offsets_by_sequence_id is not None:
+            allowed_offsets = start_offsets_by_sequence_id.get(int(sequence_id), [])
+        if allowed_offsets is None:
+            start_offsets = range(0, sequence_length, stride)
+        else:
+            start_offsets = sorted({int(v) for v in allowed_offsets if 0 <= int(v) < sequence_length})
+        for start_idx in start_offsets:
             start = start_row + start_idx
             end = min(start + seq_len, end_row)
             if end <= start:
@@ -932,6 +1144,16 @@ def _embedded_sequence_manifest(payload, *, seq_len=None, stride=None, shard_pat
     return _validate_sequence_manifest(manifest, seq_len=seq_len, stride=stride, shard_path=shard_path)
 
 
+def _embedded_named_sequence_manifest(payload, name, *, seq_len=None, stride=None, shard_path=None):
+    window_sets = payload.get("window_sets")
+    if not isinstance(window_sets, dict):
+        return None
+    manifest = window_sets.get(name)
+    if manifest is None:
+        return None
+    return _validate_sequence_manifest(manifest, seq_len=seq_len, stride=stride, shard_path=shard_path)
+
+
 def _load_or_build_sequence_manifest(
     shard_path,
     obs_dim,
@@ -960,7 +1182,17 @@ def _load_or_build_sequence_manifest(
 
     payload = torch.load(shard_path, map_location="cpu")
     _validate_bc_shard_payload(payload, obs_dim, action_space_size, str(shard_path))
-    embedded_manifest = _embedded_sequence_manifest(payload, seq_len=seq_len, stride=stride, shard_path=str(shard_path))
+    try:
+        embedded_manifest = _embedded_sequence_manifest(
+            payload,
+            seq_len=seq_len,
+            stride=stride,
+            shard_path=str(shard_path),
+        )
+    except ValueError:
+        if require_embedded:
+            raise
+        embedded_manifest = None
     if embedded_manifest is not None:
         if return_status:
             return embedded_manifest, False
@@ -1259,6 +1491,10 @@ def train_bc_policy(args=None, dataset_dir=None, output_dir=None, logger=None):
                 shuffle=True,
                 seed=seed,
                 require_embedded=_as_bool(bc_train_cfg.get("use_embedded_windows", False)),
+                shard_shuffle_buffer=bc_train_cfg["shard_shuffle_buffer"],
+                rebalance_windows=_as_bool(bc_train_cfg.get("rebalance_windows", False)),
+                window_balance_fraction=bc_train_cfg["window_balance_fraction"],
+                window_balance_max_multiplier=bc_train_cfg["window_balance_max_multiplier"],
             )
             val_dataset = _SequenceBCDataset(
                 val_shards,
@@ -1269,10 +1505,26 @@ def train_bc_policy(args=None, dataset_dir=None, output_dir=None, logger=None):
                 shuffle=False,
                 seed=seed,
                 require_embedded=_as_bool(bc_train_cfg.get("use_embedded_windows", False)),
+                shard_shuffle_buffer=1,
+                rebalance_windows=False,
             )
         else:
-            train_dataset = _FlatBCDataset(train_shards, obs_dim, action_space_size, shuffle=True, seed=seed)
-            val_dataset = _FlatBCDataset(val_shards, obs_dim, action_space_size, shuffle=False, seed=seed)
+            train_dataset = _FlatBCDataset(
+                train_shards,
+                obs_dim,
+                action_space_size,
+                shuffle=True,
+                seed=seed,
+                shard_shuffle_buffer=bc_train_cfg["shard_shuffle_buffer"],
+            )
+            val_dataset = _FlatBCDataset(
+                val_shards,
+                obs_dim,
+                action_space_size,
+                shuffle=False,
+                seed=seed,
+                shard_shuffle_buffer=1,
+            )
 
         if first_train_payload is None or int(first_train_payload["action"].shape[0]) == 0:
             message = "BC training dataset is empty after loading selected shards"
@@ -1624,10 +1876,46 @@ def _resolve_bc_export_window_config(args, bc_cfg):
     if stride is None:
         stride = bc_train_cfg.get("sequence_stride", seq_len)
 
+    takeoff_seq_len = bc_cfg.get("takeoff_window_seq_len")
+    if takeoff_seq_len is None:
+        takeoff_seq_len = seq_len
+    takeoff_stride = bc_cfg.get("takeoff_window_stride")
+    if takeoff_stride is None:
+        takeoff_stride = max(1, min(int(stride), 4))
+
     return {
-        "seq_len": int(seq_len),
-        "stride": max(1, int(stride)),
+        "base": {
+            "seq_len": int(seq_len),
+            "stride": max(1, int(stride)),
+        },
+        "takeoff": {
+            "seq_len": int(takeoff_seq_len),
+            "stride": max(1, int(takeoff_stride)),
+            "standstill_speed": float(bc_cfg.get("takeoff_standstill_speed", 0.5)),
+            "target_speed": float(bc_cfg.get("takeoff_target_speed", 2.0)),
+            "horizon_steps": max(1, int(bc_cfg.get("takeoff_horizon_steps", 20))),
+        },
     }
+
+
+def _identify_takeoff_start_offsets(speed_series_mps, *, stride, standstill_speed, target_speed, horizon_steps):
+    speed_series = np.asarray(speed_series_mps, dtype=np.float32)
+    if speed_series.size == 0:
+        return []
+
+    takeoff_starts = []
+    for start_idx in range(0, int(speed_series.shape[0]), max(1, int(stride))):
+        start_speed = abs(float(speed_series[start_idx]))
+        if start_speed > float(standstill_speed):
+            continue
+        horizon_end = min(int(speed_series.shape[0]), start_idx + int(horizon_steps) + 1)
+        if horizon_end <= start_idx + 1:
+            continue
+        future_peak = float(np.max(np.abs(speed_series[start_idx + 1 : horizon_end])))
+        if future_peak < float(target_speed):
+            continue
+        takeoff_starts.append(int(start_idx))
+    return takeoff_starts
 
 
 def build_bc_dataset(args=None, output_dir=None):
@@ -1790,6 +2078,7 @@ def build_bc_dataset(args=None, output_dir=None):
             sample_step_lat_costs = []
             sample_step_lon_costs = []
             sample_map_ids = []
+            agent_speed_series_mps = np.zeros((active_count, max(0, int(np.max(agent_num_steps)) if active_count > 0 else 0)), dtype=np.float32)
 
             max_num_steps = int(np.max(agent_num_steps)) if active_count > 0 else 0
             timestep_obs = np.zeros((active_count, sim_obs_dim), dtype=np.float32)
@@ -1811,6 +2100,9 @@ def build_bc_dataset(args=None, output_dir=None):
 
                 valid_slots = np.nonzero(agent_num_steps > step_idx)[0]
                 for agent_slot in valid_slots:
+                    agent_speed_series_mps[agent_slot, step_idx] = (
+                        float(timestep_obs[agent_slot, _EGO_SPEED_OBS_INDEX]) * _MAX_SPEED_MPS
+                    )
                     sample_obs.append(policy_observations[agent_slot].copy())
                     sample_actions.append(int(agent_actions[agent_slot, step_idx]))
                     sample_scenario_ids.append(int(scenario_ids[agent_slot]))
@@ -1884,15 +2176,47 @@ def build_bc_dataset(args=None, output_dir=None):
                 },
             }
             if export_window_cfg is not None:
-                window_manifest = _build_sequence_manifest_from_payload(
+                base_window_manifest = _build_sequence_manifest_from_payload(
                     payload,
-                    export_window_cfg["seq_len"],
-                    export_window_cfg["stride"],
+                    export_window_cfg["base"]["seq_len"],
+                    export_window_cfg["base"]["stride"],
                 )
-                payload["window_metadata"] = window_manifest
-                payload["metadata"]["window_count"] = int(window_manifest["window_count"])
-                payload["metadata"]["window_seq_len"] = int(window_manifest["seq_len"])
-                payload["metadata"]["window_stride"] = int(window_manifest["stride"])
+                sequence_spans = _sequence_spans_from_payload(payload)
+                takeoff_start_offsets = {}
+                takeoff_sequence_ids = []
+                for sequence_id, _, _ in sequence_spans:
+                    seq_id = int(sequence_id)
+                    seq_len = int(agent_num_steps[seq_id]) if 0 <= seq_id < int(agent_num_steps.shape[0]) else 0
+                    if seq_len <= 0:
+                        continue
+                    start_offsets = _identify_takeoff_start_offsets(
+                        agent_speed_series_mps[seq_id, :seq_len],
+                        stride=export_window_cfg["takeoff"]["stride"],
+                        standstill_speed=export_window_cfg["takeoff"]["standstill_speed"],
+                        target_speed=export_window_cfg["takeoff"]["target_speed"],
+                        horizon_steps=export_window_cfg["takeoff"]["horizon_steps"],
+                    )
+                    if start_offsets:
+                        takeoff_start_offsets[seq_id] = start_offsets
+                        takeoff_sequence_ids.append(seq_id)
+                takeoff_window_manifest = _build_sequence_manifest_from_spans(
+                    sequence_spans,
+                    export_window_cfg["takeoff"]["seq_len"],
+                    export_window_cfg["takeoff"]["stride"],
+                    start_offsets_by_sequence_id=takeoff_start_offsets,
+                )
+                payload["window_metadata"] = base_window_manifest
+                payload["window_sets"] = {
+                    "base_windows": base_window_manifest,
+                    "takeoff_windows": takeoff_window_manifest,
+                }
+                payload["metadata"]["window_count"] = int(base_window_manifest["window_count"])
+                payload["metadata"]["window_seq_len"] = int(base_window_manifest["seq_len"])
+                payload["metadata"]["window_stride"] = int(base_window_manifest["stride"])
+                payload["metadata"]["takeoff_window_count"] = int(takeoff_window_manifest["window_count"])
+                payload["metadata"]["takeoff_window_seq_len"] = int(takeoff_window_manifest["seq_len"])
+                payload["metadata"]["takeoff_window_stride"] = int(takeoff_window_manifest["stride"])
+                payload["metadata"]["takeoff_sequence_ids"] = [int(v) for v in takeoff_sequence_ids]
             torch.save(payload, shard_path)
             shard_paths.append(str(shard_path))
         finally:
