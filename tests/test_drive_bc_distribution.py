@@ -5,6 +5,8 @@ import numpy as np
 import pytest
 import torch
 
+from scripts.create_balanced_bc_window_subset import create_balanced_bc_window_subset
+
 
 CLASSIC_ACCELERATION_VALUES = np.asarray((-6.0, -4.0, -2.0, -1.0, 0.0, 1.0, 2.0, 4.0, 6.0), dtype=np.float32)
 CLASSIC_STEERING_VALUES = np.asarray(
@@ -124,3 +126,143 @@ def test_bc_training_stride10_dataset_action_distribution_summary():
     assert plot_path.exists()
     assert summary_path.exists()
     assert nonzero_actions > 10
+
+
+def test_balanced_subset_builder_counts_all_actions_within_window(tmp_path):
+    source_dir = tmp_path / "source"
+    output_dir = tmp_path / "subset"
+    source_dir.mkdir()
+
+    action_a = 0
+    action_b = 1
+    action_c = 2
+
+    payload = {
+        "action": torch.tensor([action_a, action_a, action_a, action_b, action_a, action_c], dtype=torch.int64),
+        "window_metadata": {
+            "version": 1,
+            "seq_len": 2,
+            "stride": 1,
+            "window_count": 3,
+            "window_indices": torch.tensor(
+                [
+                    [0, 1],
+                    [2, 3],
+                    [4, 5],
+                ],
+                dtype=torch.int64,
+            ),
+            "valid_lengths": torch.tensor([2, 2, 2], dtype=torch.int64),
+        },
+        "metadata": {
+            "map_id": 0,
+        },
+    }
+    torch.save(payload, source_dir / "map_000.pt")
+
+    summary = create_balanced_bc_window_subset(
+        source_dir,
+        output_dir,
+        window_set_name="window_metadata",
+        target_count_per_action=1,
+        seed=0,
+        log_every=1,
+    )
+
+    assert summary["source_total_windows"] == 3
+    assert summary["source_total_action_occurrences"] == 6
+    assert summary["source_action_counts"][action_a] == 4
+    assert summary["source_action_counts"][action_b] == 1
+    assert summary["source_action_counts"][action_c] == 1
+
+    assert summary["actual_target_count_per_action"] == 1
+    assert summary["subset_total_windows"] == 2
+    assert summary["subset_total_action_occurrences"] == 4
+    assert summary["subset_nonzero_actions"] == 3
+    assert summary["subset_action_counts"][action_a] == 2
+    assert summary["subset_action_counts"][action_b] == 1
+    assert summary["subset_action_counts"][action_c] == 1
+
+    subset_payload = torch.load(output_dir / "map_000.pt", map_location="cpu")
+    subset_manifest = subset_payload["window_metadata"]
+    assert int(subset_manifest["window_count"]) == 2
+    selected_rows = subset_manifest["window_indices"][:, 0].tolist()
+    assert sorted(selected_rows) == [2, 4]
+
+    summary_path = output_dir / "subset_summary.json"
+    assert summary_path.exists()
+    written_summary = json.loads(summary_path.read_text())
+    assert written_summary["subset_total_action_occurrences"] == 4
+
+
+def test_fractional_rarity_rebalancing_preserves_window_count_and_upsamples_rare_windows(tmp_path):
+    source_dir = tmp_path / "source"
+    output_dir = tmp_path / "subset"
+    source_dir.mkdir()
+
+    action_common = 0
+    action_rare = 1
+
+    payload = {
+        "action": torch.tensor(
+            [
+                action_common,
+                action_common,
+                action_common,
+                action_common,
+                action_common,
+                action_common,
+                action_common,
+                action_rare,
+            ],
+            dtype=torch.int64,
+        ),
+        "window_metadata": {
+            "version": 1,
+            "seq_len": 2,
+            "stride": 1,
+            "window_count": 4,
+            "window_indices": torch.tensor(
+                [
+                    [0, 1],
+                    [2, 3],
+                    [4, 5],
+                    [6, 7],
+                ],
+                dtype=torch.int64,
+            ),
+            "valid_lengths": torch.tensor([2, 2, 2, 2], dtype=torch.int64),
+        },
+        "metadata": {
+            "map_id": 0,
+        },
+    }
+    torch.save(payload, source_dir / "map_000.pt")
+
+    summary = create_balanced_bc_window_subset(
+        source_dir,
+        output_dir,
+        window_set_name="window_metadata",
+        rebalance_strategy="fractional_rarity",
+        balance_fraction=1.0,
+        target_window_fraction=1.0,
+        max_rarity_multiplier=10.0,
+        target_count_per_action=1,
+        seed=0,
+        log_every=1,
+    )
+
+    assert summary["rebalance_strategy"] == "fractional_rarity"
+    assert summary["source_total_windows"] == 4
+    assert summary["subset_total_windows"] == 4
+    assert summary["source_total_action_occurrences"] == 8
+    assert summary["subset_total_action_occurrences"] == 8
+    assert summary["source_action_counts"][action_common] == 7
+    assert summary["source_action_counts"][action_rare] == 1
+    assert summary["subset_action_counts"][action_rare] > summary["source_action_counts"][action_rare]
+
+    subset_payload = torch.load(output_dir / "map_000.pt", map_location="cpu")
+    subset_manifest = subset_payload["window_metadata"]
+    assert int(subset_manifest["window_count"]) == 4
+    selected_rows = subset_manifest["window_indices"][:, 0].tolist()
+    assert selected_rows.count(6) >= 2
