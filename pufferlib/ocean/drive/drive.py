@@ -25,6 +25,7 @@ _MAX_SPEED_MPS = 100.0
 _CLASSIC_ACCELERATION_VALUES = (-6.0, -4.0, -2.0, -1.0, 0.0, 1.0, 2.0, 4.0, 6.0)
 _CLASSIC_STEERING_VALUES = (-1.0, -0.833, -0.667, -0.5, -0.333, -0.167, 0.0, 0.167, 0.333, 0.5, 0.667, 0.833, 1.0)
 _CLASSIC_DISCRETE_ACTIONS = len(_CLASSIC_ACCELERATION_VALUES) * len(_CLASSIC_STEERING_VALUES)
+_BC_INDEX_PROGRESS_INTERVAL = 500
 _NON_KINEMATIC_PARAM_ORDER = [
     "tractor_length",
     "trailer_length",
@@ -596,9 +597,23 @@ class _SequenceBCDataset(_StreamingBCIterableDataset):
 
     def _compute_length(self):
         total = 0
-        for shard_path in self.shard_paths:
+        zero_window_shards = 0
+        start_time = time.time()
+        total_shards = len(self.shard_paths)
+        for shard_idx, shard_path in enumerate(self.shard_paths, start=1):
             manifest = self._load_sequence_manifest(shard_path)
-            total += int(manifest["window_count"])
+            window_count = int(manifest["window_count"])
+            total += window_count
+            if window_count <= 0:
+                zero_window_shards += 1
+            if shard_idx % _BC_INDEX_PROGRESS_INTERVAL == 0 or shard_idx == total_shards:
+                avg_windows = float(total) / float(shard_idx) if shard_idx > 0 else 0.0
+                print(
+                    f"[BC] indexing windows progress shards={shard_idx}/{total_shards} "
+                    f"windows={total} zero_window_shards={zero_window_shards} "
+                    f"avg_windows_per_shard={avg_windows:.2f} elapsed={time.time() - start_time:.1f}s",
+                    flush=True,
+                )
         return total
 
     def __iter__(self):
@@ -709,7 +724,10 @@ def _compute_window_action_rarity_weights(
     max_multiplier,
 ):
     global_counts = np.zeros((_CLASSIC_DISCRETE_ACTIONS,), dtype=np.int64)
-    for shard_path in shard_paths:
+    zero_window_shards = 0
+    start_time = time.time()
+    total_shards = len(shard_paths)
+    for shard_idx, shard_path in enumerate(shard_paths, start=1):
         payload = torch.load(shard_path, map_location="cpu")
         _validate_bc_shard_payload(payload, obs_dim, action_space_size, str(shard_path))
         manifest = _load_or_build_sequence_manifest(
@@ -720,8 +738,19 @@ def _compute_window_action_rarity_weights(
             stride=stride,
             require_embedded=require_embedded,
         )
+        if int(manifest["window_count"]) <= 0:
+            zero_window_shards += 1
         window_counts = _window_action_counts_from_payload(payload, manifest)
         global_counts += window_counts.sum(axis=0, dtype=np.int64)
+        if shard_idx % _BC_INDEX_PROGRESS_INTERVAL == 0 or shard_idx == total_shards:
+            positive_counts = global_counts[global_counts > 0]
+            mean_positive = float(positive_counts.mean()) if positive_counts.size > 0 else 0.0
+            print(
+                f"[BC] window rebalance stats shards={shard_idx}/{total_shards} "
+                f"zero_window_shards={zero_window_shards} positive_actions={int(np.count_nonzero(global_counts))} "
+                f"mean_positive_action_count={mean_positive:.1f} elapsed={time.time() - start_time:.1f}s",
+                flush=True,
+            )
     return _compute_action_rarity_weights(global_counts, max_multiplier=max_multiplier)
 
 
