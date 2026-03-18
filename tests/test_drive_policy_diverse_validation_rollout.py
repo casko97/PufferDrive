@@ -306,7 +306,7 @@ def _save_policy_rollout_plot(scenarios):
 
     output_dir = Path("outputs/test_visualizations")
     output_dir.mkdir(parents=True, exist_ok=True)
-    plot_path = output_dir / "bc_streaming_diverse_validation_policy_rollout.png"
+    plot_path = output_dir / "bc_streaming_diverse_validation_policy_rollout_standalone.png"
 
     ncols = 3
     nrows = int(np.ceil(len(scenarios) / ncols))
