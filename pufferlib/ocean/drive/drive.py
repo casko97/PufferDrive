@@ -427,6 +427,11 @@ def _resolve_bc_train_config(args, dataset_dir=None, output_dir=None):
     bc_train.setdefault("log_interval", 25)
     bc_train.setdefault("early_stopping_patience", 0)
     bc_train.setdefault("early_stopping_min_delta", 0.0)
+    bc_train.setdefault("lr_scheduler", None)
+    bc_train.setdefault("lr_scheduler_factor", 0.5)
+    bc_train.setdefault("lr_scheduler_patience", 2)
+    bc_train.setdefault("lr_scheduler_threshold", 1e-4)
+    bc_train.setdefault("min_learning_rate", 0.0)
     return bc_train
 
 
@@ -1337,6 +1342,19 @@ def train_bc_policy(args=None, dataset_dir=None, output_dir=None, logger=None):
             lr=float(bc_train_cfg["learning_rate"]),
             weight_decay=float(bc_train_cfg["weight_decay"]),
         )
+        scheduler = None
+        scheduler_name = bc_train_cfg.get("lr_scheduler")
+        if scheduler_name is not None:
+            scheduler_name = str(scheduler_name).strip().lower()
+        if scheduler_name in {"plateau", "reduce_on_plateau", "reducelronplateau"}:
+            scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+                optimizer,
+                mode="min",
+                factor=float(bc_train_cfg["lr_scheduler_factor"]),
+                patience=max(0, int(bc_train_cfg["lr_scheduler_patience"])),
+                threshold=float(bc_train_cfg["lr_scheduler_threshold"]),
+                min_lr=float(bc_train_cfg["min_learning_rate"]),
+            )
 
         history = []
         best_metric = None
@@ -1415,6 +1433,8 @@ def train_bc_policy(args=None, dataset_dir=None, output_dir=None, logger=None):
             torch.save(policy.state_dict(), latest_path)
 
             selection_metric = epoch_metrics["val_loss"] if val_metrics["samples"] > 0 else epoch_metrics["train_loss"]
+            if scheduler is not None:
+                scheduler.step(selection_metric)
             improved = best_metric is None or selection_metric < (best_metric - early_stopping_min_delta)
             if improved:
                 best_metric = selection_metric

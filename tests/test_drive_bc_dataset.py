@@ -262,6 +262,11 @@ def _bc_train_args(map_dir, dataset_dir, rnn_name="Recurrent"):
             "log_interval": 0,
             "early_stopping_patience": 0,
             "early_stopping_min_delta": 0.0,
+            "lr_scheduler": None,
+            "lr_scheduler_factor": 0.5,
+            "lr_scheduler_patience": 2,
+            "lr_scheduler_threshold": 1e-4,
+            "min_learning_rate": 0.0,
         },
     }
 
@@ -1384,6 +1389,45 @@ def test_bc_trainer_stops_early_when_validation_stalls(tmp_path, monkeypatch):
         metrics = __import__("json").load(f)
     assert metrics["stopped_early"] is True
     assert metrics["best_epoch"] == 1
+
+
+def test_bc_trainer_reduces_learning_rate_on_validation_plateau(tmp_path, monkeypatch):
+    map_dir = tmp_path / "maps"
+    map_dir.mkdir()
+    _write_bc_test_map(map_dir)
+    shard_paths = build_bc_dataset(_builder_args(map_dir))
+
+    args = _bc_train_args(map_dir, Path(shard_paths[0]).parent, rnn_name=None)
+    args["bc_train"]["epochs"] = 4
+    args["bc_train"]["lr_scheduler"] = "plateau"
+    args["bc_train"]["lr_scheduler_patience"] = 1
+    args["bc_train"]["lr_scheduler_factor"] = 0.5
+    args["bc_train"]["lr_scheduler_threshold"] = 0.0
+    args["bc_train"]["min_learning_rate"] = 0.0
+
+    epoch_counter = {"train": 0, "val": 0}
+    val_losses = [1.0, 1.1, 1.2, 1.3]
+    real_run_bc_epoch = drive_module._run_bc_epoch
+
+    def fake_run_bc_epoch(model, loader, optimizer, device, **kwargs):
+        if optimizer is not None:
+            epoch_counter["train"] += 1
+            idx = epoch_counter["train"] - 1
+            return {"loss": 2.0 - 0.1 * idx, "accuracy": 0.5, "samples": 8, "elapsed_sec": 0.01}
+
+        epoch_counter["val"] += 1
+        idx = epoch_counter["val"] - 1
+        return {"loss": val_losses[idx], "accuracy": 0.4, "samples": 8, "elapsed_sec": 0.01}
+
+    monkeypatch.setattr(drive_module, "_run_bc_epoch", fake_run_bc_epoch)
+    try:
+        result = train_bc_policy(args)
+    finally:
+        monkeypatch.setattr(drive_module, "_run_bc_epoch", real_run_bc_epoch)
+
+    learning_rates = [epoch["learning_rate"] for epoch in result["history"]]
+    assert learning_rates[:3] == [0.01, 0.01, 0.01]
+    assert learning_rates[3] == 0.005
 
 
 def test_binding_env_init_honors_python_config_overrides(tmp_path):
