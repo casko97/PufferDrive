@@ -1,12 +1,22 @@
-import numpy as np
-import pytest
-import torch
 import shutil
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
+import numpy as np
+import pytest
+import torch
+
 from pufferlib.ocean.drive import drive as drive_module
-from pufferlib.ocean.drive.drive import Drive, build_bc_dataset, binding, save_map_binary, train_bc_policy
+from pufferlib.ocean.drive.drive import (
+    Drive,
+    _EGO_SPEED_OBS_INDEX,
+    _MAX_SPEED_MPS,
+    binding,
+    build_bc_dataset,
+    save_map_binary,
+    train_bc_policy,
+)
 from pufferlib.ocean.torch import Drive as DrivePolicy
 from pufferlib.pufferl import load_policy
 
@@ -29,6 +39,13 @@ TEST_MATCH_WEIGHT_REF_STEER = 0.1
 TEST_REAL_CASE_PLANNING_HORIZON = 20
 TEST_GOAL_RADIUS = 0.2
 TRAINING_MAP_DIR = Path("resources/drive/binaries/training")
+PREVIOUS_FULL_BC_RUN_DIR = Path("experiments_bc/bc-streaming-full-default-20260317-150151")
+PREVIOUS_FULL_BC_CHECKPOINT = PREVIOUS_FULL_BC_RUN_DIR / "best.pt"
+PREVIOUS_FULL_BC_METRICS = PREVIOUS_FULL_BC_RUN_DIR / "metrics.json"
+BEST_FULL_BC_RUN_DIR = Path("experiments_bc/bc-full-windows-stride10-20260317-171857")
+BEST_FULL_BC_CHECKPOINT = BEST_FULL_BC_RUN_DIR / "best.pt"
+BEST_FULL_BC_METRICS = BEST_FULL_BC_RUN_DIR / "metrics.json"
+TRAINING_WINDOWS_STRIDE10_DATASET_DIR = Path("pufferlib/resources/drive/bc_dataset_training_full_windows_stride10")
 
 
 def _make_logged_vehicle(track_id, xs, ys, goal_x, goal_y, length=4.5, width=1.9):
@@ -165,7 +182,19 @@ REAL_TRAJECTORY_CASES = [
 ]
 
 
-def _builder_args(map_dir, action_type="discrete", *, export_windows=False, window_seq_len=32, window_stride=32):
+def _builder_args(
+    map_dir,
+    action_type="discrete",
+    *,
+    export_windows=False,
+    window_seq_len=32,
+    window_stride=32,
+    takeoff_window_seq_len=32,
+    takeoff_window_stride=4,
+    takeoff_standstill_speed=0.5,
+    takeoff_target_speed=2.0,
+    takeoff_horizon_steps=20,
+):
     return {
         "env": {
             "map_dir": str(map_dir),
@@ -198,6 +227,11 @@ def _builder_args(map_dir, action_type="discrete", *, export_windows=False, wind
             "export_windows": bool(export_windows),
             "window_seq_len": int(window_seq_len),
             "window_stride": int(window_stride),
+            "takeoff_window_seq_len": int(takeoff_window_seq_len),
+            "takeoff_window_stride": int(takeoff_window_stride),
+            "takeoff_standstill_speed": float(takeoff_standstill_speed),
+            "takeoff_target_speed": float(takeoff_target_speed),
+            "takeoff_horizon_steps": int(takeoff_horizon_steps),
             "beam_width": 4,
             "planning_horizon": 5,
             "match_weight_lateral": TEST_MATCH_WEIGHT_LATERAL,
@@ -254,6 +288,7 @@ def _bc_train_args(map_dir, dataset_dir, rnn_name="Recurrent"):
             "learning_rate": 0.01,
             "weight_decay": 0.0,
             "num_workers": 0,
+            "shard_shuffle_buffer": 1,
             "val_fraction": 0.0,
             "seq_len": 4,
             "sequence_stride": 4,
@@ -556,6 +591,107 @@ def _fit_and_rollout_real_case(map_dir, case):
     }
 
 
+def _greedy_discrete_action(logits):
+    if isinstance(logits, tuple):
+        return torch.stack([branch.argmax(dim=1) for branch in logits], dim=1)
+    return logits.argmax(dim=1, keepdim=True)
+
+
+def _trajectory_speed_curve(x, y, dt=0.1):
+    x = np.asarray(x, dtype=np.float32)
+    y = np.asarray(y, dtype=np.float32)
+    if x.size == 0:
+        return np.zeros((0,), dtype=np.float32)
+    if x.size == 1:
+        return np.zeros((1,), dtype=np.float32)
+    dx = np.diff(x)
+    dy = np.diff(y)
+    speed = np.sqrt(dx * dx + dy * dy) / float(dt)
+    return np.concatenate([speed[:1], speed]).astype(np.float32)
+
+
+def _load_bc_rollout_args(checkpoint_path, metrics_path):
+    if not checkpoint_path.exists():
+        pytest.skip(f"BC checkpoint not found: {checkpoint_path}")
+    if not metrics_path.exists():
+        pytest.skip(f"BC run metrics not found: {metrics_path}")
+
+    with metrics_path.open("r", encoding="utf-8") as handle:
+        metrics = json.load(handle)
+
+    config = metrics["config"]
+    return {
+        "package": config["base"]["package"],
+        "env_name": config["base"]["env_name"],
+        "policy_name": config["base"]["policy_name"],
+        "rnn_name": config["base"]["rnn_name"],
+        "policy": config["policy"],
+        "rnn": config["rnn"],
+        "train": {"device": "cpu", "use_rnn": bool(config["base"]["rnn_name"])},
+        "env": {
+            "observation_mode": config["env"]["observation_mode"],
+            "action_type": config["env"]["action_type"],
+            "dynamics_model": config["env"]["dynamics_model"],
+            "extend_classic_action_space": bool(config["env"]["extend_classic_action_space"]),
+        },
+        "load_id": None,
+        "load_model_path": str(checkpoint_path),
+    }
+
+
+def _rollout_bc_policy_real_case(map_dir, case, checkpoint_path, metrics_path):
+    args = _load_bc_rollout_args(checkpoint_path, metrics_path)
+    source_map = TRAINING_MAP_DIR / case["source_map"]
+    if not source_map.exists():
+        pytest.skip(f"Training map fixture not found: {source_map}")
+
+    shutil.copy2(source_map, map_dir / "map_000.bin")
+    num_steps = int(case["planning_horizon"])
+    env = Drive(
+        num_agents=1,
+        num_maps=1,
+        map_dir=str(map_dir),
+        episode_length=91,
+        init_steps=0,
+        control_mode="control_vehicles",
+        init_mode="create_all_valid",
+        resample_frequency=0,
+        observation_mode=args["env"]["observation_mode"],
+        action_type=args["env"]["action_type"],
+        dynamics_model=args["env"]["dynamics_model"],
+        extend_classic_action_space=bool(args["env"]["extend_classic_action_space"]),
+    )
+
+    try:
+        policy = load_policy(args, SimpleNamespace(driver_env=env), env_name="puffer_drive")
+        policy.eval()
+
+        obs, _ = env.reset(seed=0)
+        start_state = env.get_global_agent_state()
+        rollout_x = [float(start_state["x"][0])]
+        rollout_y = [float(start_state["y"][0])]
+        device = torch.device("cpu")
+        state = {"lstm_h": torch.zeros(env.num_agents, policy.hidden_size, device=device), "lstm_c": torch.zeros(env.num_agents, policy.hidden_size, device=device)}
+
+        for _ in range(num_steps):
+            with torch.no_grad():
+                obs_tensor = torch.as_tensor(obs, device=device)
+                logits, _ = policy.forward_eval(obs_tensor, state)
+                action = _greedy_discrete_action(logits)
+                action_np = action.cpu().numpy().reshape(-1).astype(np.int32)
+
+            obs, _, dones, truncs, _ = env.step(action_np)
+            current_state = env.get_global_agent_state()
+            rollout_x.append(float(current_state["x"][0]))
+            rollout_y.append(float(current_state["y"][0]))
+            if np.all(dones) or np.all(truncs):
+                break
+    finally:
+        env.close()
+
+    return np.asarray(rollout_x, dtype=np.float32), np.asarray(rollout_y, dtype=np.float32)
+
+
 def test_bc_builder_rejects_unsupported_action_type(tmp_path):
     map_dir = tmp_path / "maps"
     map_dir.mkdir()
@@ -643,6 +779,32 @@ def test_action_generation_rollout_matches_gt_and_saves_plot(tmp_path):
         case_dir = tmp_path / case["name"]
         case_dir.mkdir()
         result = _fit_and_rollout_real_case(case_dir, case)
+        previous_bc_rollout_x, previous_bc_rollout_y = _rollout_bc_policy_real_case(
+            case_dir,
+            case,
+            PREVIOUS_FULL_BC_CHECKPOINT,
+            PREVIOUS_FULL_BC_METRICS,
+        )
+        current_bc_rollout_x, current_bc_rollout_y = _rollout_bc_policy_real_case(
+            case_dir,
+            case,
+            BEST_FULL_BC_CHECKPOINT,
+            BEST_FULL_BC_METRICS,
+        )
+        previous_bc_steps = min(len(result["gt_x"]), len(previous_bc_rollout_x))
+        previous_bc_rollout_x = previous_bc_rollout_x[:previous_bc_steps]
+        previous_bc_rollout_y = previous_bc_rollout_y[:previous_bc_steps]
+        previous_bc_displacement = np.sqrt(
+            (previous_bc_rollout_x - result["gt_x"][:previous_bc_steps]) ** 2
+            + (previous_bc_rollout_y - result["gt_y"][:previous_bc_steps]) ** 2
+        )
+        current_bc_steps = min(len(result["gt_x"]), len(current_bc_rollout_x))
+        current_bc_rollout_x = current_bc_rollout_x[:current_bc_steps]
+        current_bc_rollout_y = current_bc_rollout_y[:current_bc_steps]
+        current_bc_displacement = np.sqrt(
+            (current_bc_rollout_x - result["gt_x"][:current_bc_steps]) ** 2
+            + (current_bc_rollout_y - result["gt_y"][:current_bc_steps]) ** 2
+        )
 
         assert result["num_steps"] == case["planning_horizon"]
         assert result["total_cost"] >= 0.0
@@ -668,13 +830,31 @@ def test_action_generation_rollout_matches_gt_and_saves_plot(tmp_path):
             assert result["positive_accel_fraction"] > 0.7
             assert result["negative_accel_fraction"] == 0.0
             assert result["min_acceleration"] >= 0.0
+        assert previous_bc_steps > 1
+        assert current_bc_steps > 1
+        assert np.all(np.isfinite(previous_bc_rollout_x))
+        assert np.all(np.isfinite(previous_bc_rollout_y))
+        assert np.all(np.isfinite(current_bc_rollout_x))
+        assert np.all(np.isfinite(current_bc_rollout_y))
 
-        case_results.append(result)
+        case_results.append(
+            {
+                **result,
+                "previous_bc_rollout_x": previous_bc_rollout_x,
+                "previous_bc_rollout_y": previous_bc_rollout_y,
+                "previous_bc_mean_displacement": float(previous_bc_displacement.mean()),
+                "previous_bc_final_displacement": float(previous_bc_displacement[-1]),
+                "current_bc_rollout_x": current_bc_rollout_x,
+                "current_bc_rollout_y": current_bc_rollout_y,
+                "current_bc_mean_displacement": float(current_bc_displacement.mean()),
+                "current_bc_final_displacement": float(current_bc_displacement[-1]),
+            }
+        )
 
     plot_dir = Path("outputs/test_visualizations")
     plot_dir.mkdir(parents=True, exist_ok=True)
     plot_path = plot_dir / "action_generation_rollout.png"
-    fig, axes = plt.subplots(1, len(case_results), figsize=(6 * len(case_results), 4), squeeze=False)
+    fig, axes = plt.subplots(2, len(case_results), figsize=(6 * len(case_results), 8), squeeze=False)
     relative_results = []
     for result in case_results:
         origin_x = float(result["gt_x"][0])
@@ -686,19 +866,56 @@ def test_action_generation_rollout_matches_gt_and_saves_plot(tmp_path):
                 "gt_plot_y": result["gt_y"] - origin_y,
                 "rollout_plot_x": result["rollout_x"] - origin_x,
                 "rollout_plot_y": result["rollout_y"] - origin_y,
+                "previous_bc_plot_x": result["previous_bc_rollout_x"] - origin_x,
+                "previous_bc_plot_y": result["previous_bc_rollout_y"] - origin_y,
+                "current_bc_plot_x": result["current_bc_rollout_x"] - origin_x,
+                "current_bc_plot_y": result["current_bc_rollout_y"] - origin_y,
+                "gt_speed": _trajectory_speed_curve(result["gt_x"], result["gt_y"]),
+                "target_speed": _trajectory_speed_curve(result["rollout_x"], result["rollout_y"]),
+                "previous_bc_speed": _trajectory_speed_curve(result["previous_bc_rollout_x"], result["previous_bc_rollout_y"]),
+                "current_bc_speed": _trajectory_speed_curve(result["current_bc_rollout_x"], result["current_bc_rollout_y"]),
             }
         )
 
     max_span = 1.0
     for result in relative_results:
-        plot_x = np.concatenate([result["gt_plot_x"], result["rollout_plot_x"]])
-        plot_y = np.concatenate([result["gt_plot_y"], result["rollout_plot_y"]])
+        plot_x = np.concatenate(
+            [
+                result["gt_plot_x"],
+                result["rollout_plot_x"],
+                result["previous_bc_plot_x"],
+                result["current_bc_plot_x"],
+            ]
+        )
+        plot_y = np.concatenate(
+            [
+                result["gt_plot_y"],
+                result["rollout_plot_y"],
+                result["previous_bc_plot_y"],
+                result["current_bc_plot_y"],
+            ]
+        )
         max_span = max(max_span, float(plot_x.max() - plot_x.min()), float(plot_y.max() - plot_y.min()))
     axis_span = max_span * 1.15
 
-    for ax, result in zip(axes[0], relative_results):
-        plot_x = np.concatenate([result["gt_plot_x"], result["rollout_plot_x"]])
-        plot_y = np.concatenate([result["gt_plot_y"], result["rollout_plot_y"]])
+    for col_idx, result in enumerate(relative_results):
+        ax = axes[0][col_idx]
+        plot_x = np.concatenate(
+            [
+                result["gt_plot_x"],
+                result["rollout_plot_x"],
+                result["previous_bc_plot_x"],
+                result["current_bc_plot_x"],
+            ]
+        )
+        plot_y = np.concatenate(
+            [
+                result["gt_plot_y"],
+                result["rollout_plot_y"],
+                result["previous_bc_plot_y"],
+                result["current_bc_plot_y"],
+            ]
+        )
         center_x = 0.5 * float(plot_x.min() + plot_x.max())
         center_y = 0.5 * float(plot_y.min() + plot_y.max())
         half_span = 0.5 * axis_span
@@ -719,10 +936,26 @@ def test_action_generation_rollout_matches_gt_and_saves_plot(tmp_path):
             linewidth=1.5,
             label="Rollout from target actions",
         )
+        ax.plot(
+            result["previous_bc_plot_x"],
+            result["previous_bc_plot_y"],
+            marker="s",
+            markersize=3,
+            linewidth=1.5,
+            label="Previous BC rollout",
+        )
+        ax.plot(
+            result["current_bc_plot_x"],
+            result["current_bc_plot_y"],
+            marker="^",
+            markersize=3,
+            linewidth=1.5,
+            label="Current BC rollout",
+        )
         ax.set_title(
             f"{result['name']} ({result['source_map']})\ntotal_cost={result['total_cost']:.3f}, "
             f"lat={result['total_lat_cost']:.3f}, lon={result['total_lon_cost']:.3f}\n"
-            f"mean_err={result['mean_displacement']:.3f}, dh={result['heading_delta']:.3f}\n"
+            f"target_err={result['mean_displacement']:.3f}, prev_bc={result['previous_bc_mean_displacement']:.3f}, cur_bc={result['current_bc_mean_displacement']:.3f}, dh={result['heading_delta']:.3f}\n"
             f"acc=[{result['min_acceleration']:.0f},{result['max_acceleration']:.0f}], rev={result['steering_reversals']}"
         )
         ax.set_xlabel("x rel. to start [m]")
@@ -731,6 +964,22 @@ def test_action_generation_rollout_matches_gt_and_saves_plot(tmp_path):
         ax.set_ylim(center_y - half_span, center_y + half_span)
         ax.set_aspect("equal", adjustable="box")
         ax.legend()
+
+        speed_ax = axes[1][col_idx]
+        gt_t = np.arange(result["gt_speed"].shape[0], dtype=np.float32) * 0.1
+        target_t = np.arange(result["target_speed"].shape[0], dtype=np.float32) * 0.1
+        previous_bc_t = np.arange(result["previous_bc_speed"].shape[0], dtype=np.float32) * 0.1
+        current_bc_t = np.arange(result["current_bc_speed"].shape[0], dtype=np.float32) * 0.1
+
+        speed_ax.plot(gt_t, result["gt_speed"], linewidth=1.5, label="GT speed")
+        speed_ax.plot(target_t, result["target_speed"], linewidth=1.5, label="Target-action rollout speed")
+        speed_ax.plot(previous_bc_t, result["previous_bc_speed"], linewidth=1.5, label="Previous BC speed")
+        speed_ax.plot(current_bc_t, result["current_bc_speed"], linewidth=1.5, label="Current BC speed")
+        speed_ax.set_title(f"{result['name']} speed")
+        speed_ax.set_xlabel("time [s]")
+        speed_ax.set_ylabel("speed [m/s]")
+        speed_ax.grid(True, alpha=0.3)
+        speed_ax.legend()
 
     fig.tight_layout()
     fig.savefig(plot_path)
@@ -880,6 +1129,32 @@ def test_bc_trainer_recurrent_uses_embedded_windows(tmp_path, monkeypatch):
     assert not manifest_path.exists()
 
 
+def test_bc_trainer_recurrent_supports_window_rebalancing(tmp_path):
+    map_dir = tmp_path / "maps"
+    map_dir.mkdir()
+    _write_bc_test_map(map_dir)
+    seq_len = 4
+    stride = 4
+    shard_paths = build_bc_dataset(
+        _builder_args(map_dir, export_windows=True, window_seq_len=seq_len, window_stride=stride)
+    )
+    shard_path = Path(shard_paths[0])
+
+    args = _bc_train_args(map_dir, shard_path.parent, rnn_name="Recurrent")
+    args["bc_train"]["use_embedded_windows"] = True
+    args["bc_train"]["rebalance_windows"] = True
+    args["bc_train"]["window_balance_fraction"] = 0.5
+    args["bc_train"]["window_balance_max_multiplier"] = 10.0
+    args["bc_train"]["seq_len"] = seq_len
+    args["bc_train"]["sequence_stride"] = stride
+    args["train"]["bptt_horizon"] = seq_len
+
+    result = train_bc_policy(args)
+
+    assert Path(result["latest_path"]).exists()
+    assert result["history"][0]["train_samples"] > 0
+
+
 def test_bc_trainer_recurrent_rejects_missing_embedded_windows(tmp_path):
     map_dir = tmp_path / "maps"
     map_dir.mkdir()
@@ -891,6 +1166,26 @@ def test_bc_trainer_recurrent_rejects_missing_embedded_windows(tmp_path):
     args["bc_train"]["use_embedded_windows"] = True
     with pytest.raises(ValueError, match="does not contain embedded window metadata"):
         train_bc_policy(args)
+
+
+def test_bc_trainer_recurrent_can_rebuild_when_embedded_stride_mismatches(tmp_path):
+    map_dir = tmp_path / "maps"
+    map_dir.mkdir()
+    _write_bc_test_map(map_dir)
+    seq_len = 4
+    embedded_stride = 4
+    shard_paths = build_bc_dataset(
+        _builder_args(map_dir, export_windows=True, window_seq_len=seq_len, window_stride=embedded_stride)
+    )
+    shard_path = Path(shard_paths[0])
+
+    args = _bc_train_args(map_dir, shard_path.parent, rnn_name="Recurrent")
+    args["bc_train"]["use_embedded_windows"] = False
+    args["bc_train"]["seq_len"] = seq_len
+    args["bc_train"]["sequence_stride"] = 2
+
+    result = train_bc_policy(args)
+    assert len(result["history"]) == args["bc_train"]["epochs"]
 
 
 def test_bc_trainer_rejects_missing_sequence_id(tmp_path):
@@ -921,6 +1216,207 @@ def test_bc_trainer_non_recurrent_smoke(tmp_path):
 
     assert Path(result["latest_path"]).exists()
     assert result["history"][0]["train_samples"] > 0
+
+
+def test_flat_bc_dataset_can_mix_samples_across_small_shard_buffer(tmp_path):
+    shard_a = tmp_path / "map_000.pt"
+    shard_b = tmp_path / "map_001.pt"
+    payload_template = {
+        "obs": None,
+        "action": torch.tensor([0, 0, 0], dtype=torch.int64),
+        "map_id": torch.tensor([0, 0, 0], dtype=torch.int64),
+        "timestep": torch.tensor([0, 1, 2], dtype=torch.int64),
+        "sequence_id": torch.tensor([0, 0, 0], dtype=torch.int64),
+        "sequence_row_index": torch.tensor([0, 1, 2], dtype=torch.int64),
+        "sequence_length": torch.tensor([3, 3, 3], dtype=torch.int64),
+    }
+    payload_a = dict(payload_template)
+    payload_a["obs"] = torch.zeros((3, 2), dtype=torch.float32)
+    payload_a["obs"][:, 0] = 1.0
+    payload_b = dict(payload_template)
+    payload_b["obs"] = torch.zeros((3, 2), dtype=torch.float32)
+    payload_b["obs"][:, 0] = 2.0
+    torch.save(payload_a, shard_a)
+    torch.save(payload_b, shard_b)
+
+    dataset = drive_module._FlatBCDataset(
+        [str(shard_a), str(shard_b)],
+        obs_dim=2,
+        action_space_size=1,
+        shuffle=True,
+        seed=7,
+        shard_shuffle_buffer=2,
+    )
+    dataset.set_epoch(0)
+    values = [int(sample[0][0].item()) for sample in dataset]
+
+    assert values.count(1) == 3
+    assert values.count(2) == 3
+    assert values[:3] != [1, 1, 1]
+    assert values[:3] != [2, 2, 2]
+
+
+def test_sequence_bc_dataset_can_rebalance_windows_toward_rare_actions(tmp_path):
+    matplotlib = pytest.importorskip("matplotlib")
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    def _sample_action_counts(samples, action_space_size):
+        counts = np.zeros((action_space_size,), dtype=np.int64)
+        for _, actions, mask in samples:
+            valid_actions = actions[mask].cpu().numpy().astype(np.int64, copy=False)
+            counts += np.bincount(valid_actions, minlength=action_space_size)
+        return counts
+
+    def _balance_metrics(counts):
+        positive = counts[counts > 0].astype(np.float64)
+        uniform_target = float(positive.sum()) / float(positive.size)
+        probs = positive / float(positive.sum())
+        entropy = float(-(probs * np.log(probs)).sum())
+        max_entropy = float(np.log(max(positive.size, 2)))
+        normalized_entropy = entropy / max_entropy
+        imbalance_ratio = float(positive.max() / positive.min())
+        mean_abs_relative_deviation = float(np.mean(np.abs(positive - uniform_target) / uniform_target))
+        balance_score = 1.0 / (1.0 + mean_abs_relative_deviation)
+        return {
+            "normalized_entropy": normalized_entropy,
+            "imbalance_ratio": imbalance_ratio,
+            "balance_score": balance_score,
+        }
+
+    shard_path = tmp_path / "map_000.pt"
+    action_common = 0
+    action_rare = 1
+    action_medium = 2
+    payload = {
+        "obs": torch.zeros((12, 2), dtype=torch.float32),
+        "action": torch.tensor(
+            [
+                action_common,
+                action_common,
+                action_common,
+                action_common,
+                action_common,
+                action_common,
+                action_common,
+                action_medium,
+                action_common,
+                action_rare,
+                action_medium,
+                action_rare,
+            ],
+            dtype=torch.int64,
+        ),
+        "map_id": torch.zeros((12,), dtype=torch.int64),
+        "timestep": torch.arange(12, dtype=torch.int64),
+        "sequence_id": torch.zeros((12,), dtype=torch.int64),
+        "sequence_row_index": torch.arange(12, dtype=torch.int64),
+        "sequence_length": torch.full((12,), 12, dtype=torch.int64),
+        "window_metadata": {
+            "version": 1,
+            "seq_len": 2,
+            "stride": 1,
+            "window_count": 6,
+            "window_indices": torch.tensor(
+                [
+                    [0, 1],
+                    [2, 3],
+                    [4, 5],
+                    [6, 7],
+                    [8, 9],
+                    [10, 11],
+                ],
+                dtype=torch.int64,
+            ),
+            "valid_lengths": torch.tensor([2, 2, 2, 2, 2, 2], dtype=torch.int64),
+        },
+    }
+    torch.save(payload, shard_path)
+
+    baseline = drive_module._SequenceBCDataset(
+        [str(shard_path)],
+        obs_dim=2,
+        action_space_size=CLASSIC_ACTION_SPACE,
+        seq_len=2,
+        stride=1,
+        shuffle=True,
+        seed=0,
+        require_embedded=True,
+        rebalance_windows=False,
+    )
+    baseline.set_epoch(0)
+    baseline_samples = list(baseline)
+    baseline_counts = _sample_action_counts(baseline_samples, CLASSIC_ACTION_SPACE)
+    baseline_metrics = _balance_metrics(baseline_counts)
+
+    rebalanced = drive_module._SequenceBCDataset(
+        [str(shard_path)],
+        obs_dim=2,
+        action_space_size=CLASSIC_ACTION_SPACE,
+        seq_len=2,
+        stride=1,
+        shuffle=True,
+        seed=0,
+        require_embedded=True,
+        rebalance_windows=True,
+        window_balance_fraction=1.0,
+        window_balance_max_multiplier=10.0,
+    )
+    rebalanced.set_epoch(0)
+    rebalanced_samples = list(rebalanced)
+    rebalanced_counts = _sample_action_counts(rebalanced_samples, CLASSIC_ACTION_SPACE)
+    rebalanced_metrics = _balance_metrics(rebalanced_counts)
+
+    assert len(baseline_samples) == 6
+    assert len(rebalanced_samples) == 6
+    assert int(baseline_counts.sum()) == 12
+    assert int(rebalanced_counts.sum()) == 12
+    assert baseline_counts[action_common] == 8
+    assert baseline_counts[action_medium] == 2
+    assert baseline_counts[action_rare] == 2
+    assert rebalanced_counts[action_rare] >= baseline_counts[action_rare]
+    assert rebalanced_counts[action_medium] >= baseline_counts[action_medium]
+    assert rebalanced_metrics["normalized_entropy"] >= baseline_metrics["normalized_entropy"]
+    assert rebalanced_metrics["imbalance_ratio"] <= baseline_metrics["imbalance_ratio"]
+    assert rebalanced_metrics["balance_score"] >= baseline_metrics["balance_score"]
+
+    plot_dir = Path("outputs/test_visualizations")
+    plot_dir.mkdir(parents=True, exist_ok=True)
+    plot_path = plot_dir / "bc_train_window_rebalancing_distribution_diff.png"
+    fig, axes = plt.subplots(2, 1, figsize=(10, 8), squeeze=False)
+    ax_counts, ax_ratio = axes[:, 0]
+    plotted_action_ids = np.asarray([action_common, action_medium, action_rare], dtype=np.int64)
+    x = np.arange(plotted_action_ids.shape[0], dtype=np.float32)
+    width = 0.35
+    ax_counts.bar(x - width / 2, baseline_counts[plotted_action_ids], width=width, label="baseline")
+    ax_counts.bar(x + width / 2, rebalanced_counts[plotted_action_ids], width=width, label="rebalanced")
+    ax_counts.set_xticks(x)
+    ax_counts.set_xticklabels([str(int(action_id)) for action_id in plotted_action_ids])
+    ax_counts.set_xlabel("action id")
+    ax_counts.set_ylabel("sampled count")
+    ax_counts.set_title(
+        "Trainer window rebalancing action counts\n"
+        f"baseline_score={baseline_metrics['balance_score']:.3f}, "
+        f"rebalanced_score={rebalanced_metrics['balance_score']:.3f}"
+    )
+    ax_counts.legend()
+    ax_counts.grid(True, axis="y", alpha=0.25)
+
+    ratio = rebalanced_counts[plotted_action_ids].astype(np.float64) / np.maximum(
+        baseline_counts[plotted_action_ids].astype(np.float64), 1.0
+    )
+    ax_ratio.bar(x, ratio, color="tab:green", width=0.6)
+    ax_ratio.axhline(1.0, color="black", linestyle="--", linewidth=1.0)
+    ax_ratio.set_xticks(x)
+    ax_ratio.set_xticklabels([str(int(action_id)) for action_id in plotted_action_ids])
+    ax_ratio.set_xlabel("action id")
+    ax_ratio.set_ylabel("rebalanced / baseline")
+    ax_ratio.set_title("Distribution shift over sampled recurrent windows")
+    ax_ratio.grid(True, axis="y", alpha=0.25)
+    fig.tight_layout()
+    fig.savefig(plot_path)
+    plt.close(fig)
+    assert plot_path.exists()
 
 
 def test_bc_trainer_rejects_mismatched_obs_width(tmp_path):
@@ -1592,7 +2088,11 @@ def test_bc_dataset_export_can_embed_training_windows(tmp_path, monkeypatch):
     payload = torch.load(shard_path)
 
     assert "window_metadata" in payload
+    assert "window_sets" in payload
     window_metadata = payload["window_metadata"]
+    assert "base_windows" in payload["window_sets"]
+    assert "takeoff_windows" in payload["window_sets"]
+    assert payload["window_sets"]["base_windows"]["window_count"] == window_metadata["window_count"]
     assert int(window_metadata["seq_len"]) == seq_len
     assert int(window_metadata["stride"]) == stride
     assert int(window_metadata["window_count"]) > 0
@@ -1637,6 +2137,465 @@ def test_bc_dataset_export_can_embed_training_windows(tmp_path, monkeypatch):
 
     assert int(manifest["window_count"]) == int(window_metadata["window_count"])
     assert not drive_module._sequence_manifest_path(shard_path, seq_len, stride).exists()
+
+
+def test_bc_dataset_export_writes_takeoff_windows_for_standstill_takeoff(tmp_path):
+    map_dir = tmp_path / "maps"
+    map_dir.mkdir()
+    _write_bc_test_map(
+        map_dir,
+        ego_x=[0.0, 0.0, 0.0, 0.2, 0.8, 1.8, 3.2, 5.0],
+        ego_y=[0.0, 0.0, 0.0, 0.0, 0.02, 0.05, 0.08, 0.1],
+    )
+
+    shard_paths = build_bc_dataset(
+        _builder_args(
+            map_dir,
+            export_windows=True,
+            window_seq_len=4,
+            window_stride=4,
+            takeoff_window_seq_len=4,
+            takeoff_window_stride=2,
+            takeoff_standstill_speed=0.25,
+            takeoff_target_speed=2.5,
+            takeoff_horizon_steps=6,
+        )
+    )
+    payload = torch.load(shard_paths[0])
+
+    assert "window_sets" in payload
+    base_windows = payload["window_sets"]["base_windows"]
+    takeoff_windows = payload["window_sets"]["takeoff_windows"]
+    assert int(base_windows["seq_len"]) == 4
+    assert int(base_windows["stride"]) == 4
+    assert int(takeoff_windows["seq_len"]) == 4
+    assert int(takeoff_windows["stride"]) == 2
+    assert int(takeoff_windows["window_count"]) > 0
+    assert int(takeoff_windows["window_count"]) <= int(base_windows["window_count"])
+    assert payload["metadata"]["takeoff_window_count"] == int(takeoff_windows["window_count"])
+    assert payload["metadata"]["takeoff_window_seq_len"] == 4
+    assert payload["metadata"]["takeoff_window_stride"] == 2
+    assert payload["metadata"]["takeoff_sequence_ids"] == [0]
+
+
+def test_bc_dataset_export_plots_takeoff_window_speed_curves(tmp_path):
+    matplotlib = pytest.importorskip("matplotlib")
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    takeoff_cases = [
+        {
+            "name": "clean_launch",
+            "ego_x": [0.0, 0.0, 0.0, 0.15, 0.6, 1.5, 2.9, 4.8],
+            "ego_y": [0.0, 0.0, 0.0, 0.0, 0.02, 0.05, 0.08, 0.1],
+        },
+        {
+            "name": "gentle_rollout",
+            "ego_x": [0.0, 0.0, 0.02, 0.10, 0.35, 0.85, 1.7, 2.9],
+            "ego_y": [0.0, 0.0, 0.0, 0.01, 0.03, 0.06, 0.10, 0.14],
+        },
+        {
+            "name": "curved_takeoff",
+            "ego_x": [0.0, 0.0, 0.0, 0.12, 0.45, 1.0, 1.9, 3.2],
+            "ego_y": [0.0, 0.0, 0.0, 0.02, 0.08, 0.20, 0.45, 0.85],
+        },
+        {
+            "name": "late_but_strong",
+            "ego_x": [0.0, 0.0, 0.0, 0.0, 0.18, 0.9, 2.2, 4.4],
+            "ego_y": [0.0, 0.0, 0.0, 0.0, 0.01, 0.03, 0.07, 0.10],
+        },
+    ]
+
+    examples = []
+    standstill_speed = 0.25
+    target_speed = 2.5
+
+    for case_idx, case in enumerate(takeoff_cases):
+        map_dir = tmp_path / f"maps_{case_idx}"
+        map_dir.mkdir()
+        _write_bc_test_map(
+            map_dir,
+            ego_x=case["ego_x"],
+            ego_y=case["ego_y"],
+            map_filename=f"map_{case_idx:03d}.bin",
+            unique_map_id=123 + case_idx,
+        )
+
+        builder_args = _builder_args(
+            map_dir,
+            export_windows=True,
+            window_seq_len=4,
+            window_stride=4,
+            takeoff_window_seq_len=4,
+            takeoff_window_stride=2,
+            takeoff_standstill_speed=standstill_speed,
+            takeoff_target_speed=target_speed,
+            takeoff_horizon_steps=6,
+        )
+        shard_paths = build_bc_dataset(builder_args)
+        payload = torch.load(shard_paths[0])
+        takeoff_windows = payload["window_sets"]["takeoff_windows"]
+        assert int(takeoff_windows["window_count"]) > 0
+
+        obs = payload["obs"].float()
+        for window_idx in range(int(takeoff_windows["window_count"])):
+            valid_len = int(takeoff_windows["valid_lengths"][window_idx])
+            row_indices = takeoff_windows["window_indices"][window_idx, :valid_len].long()
+            speed_curve = obs[row_indices, _EGO_SPEED_OBS_INDEX].cpu().numpy() * _MAX_SPEED_MPS
+            examples.append(
+                {
+                    "case_name": case["name"],
+                    "window_idx": window_idx,
+                    "speed_curve": speed_curve,
+                    "time_axis": np.arange(valid_len, dtype=np.float32) * 0.1,
+                }
+            )
+
+    assert len(examples) >= 4
+
+    plot_dir = Path("outputs/test_visualizations")
+    plot_dir.mkdir(parents=True, exist_ok=True)
+    plot_path = plot_dir / "takeoff_window_speed_curves.png"
+
+    selected_examples = examples[: min(len(examples), 6)]
+    selected_examples = [
+        example
+        for example in examples
+        if abs(float(example["speed_curve"][0])) <= standstill_speed + 1e-6
+        and float(np.max(np.abs(example["speed_curve"]))) >= target_speed - 1e-6
+    ][:6]
+    assert len(selected_examples) >= 4
+
+    cols = 3
+    rows = int(np.ceil(len(selected_examples) / cols))
+    fig, axes = plt.subplots(rows, cols, figsize=(4.5 * cols, 3.8 * rows), squeeze=False)
+    flat_axes = list(axes.flat)
+
+    for ax, example in zip(flat_axes, selected_examples):
+        speed_curve = example["speed_curve"]
+        time_axis = example["time_axis"]
+        ax.plot(time_axis, speed_curve, marker="o", linewidth=1.5)
+        ax.axhline(standstill_speed, color="tab:orange", linestyle="--", linewidth=1.0, label="standstill threshold")
+        ax.axhline(target_speed, color="tab:green", linestyle="--", linewidth=1.0, label="target speed")
+        ax.set_title(f"{example['case_name']} | window {example['window_idx']}")
+        ax.set_xlabel("time [s]")
+        ax.set_ylabel("speed [m/s]")
+        ax.grid(True, alpha=0.3)
+        ax.legend()
+
+        assert abs(float(speed_curve[0])) <= standstill_speed + 1e-6
+        assert float(np.max(np.abs(speed_curve))) >= target_speed - 1e-6
+
+    for ax in flat_axes[len(selected_examples):]:
+        ax.axis("off")
+
+    fig.tight_layout()
+    fig.savefig(plot_path)
+    plt.close(fig)
+    assert plot_path.exists()
+
+
+def test_bc_training_stride10_dataset_action_distribution_summary():
+    matplotlib = pytest.importorskip("matplotlib")
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    dataset_dir = TRAINING_WINDOWS_STRIDE10_DATASET_DIR
+    if not dataset_dir.is_dir():
+        pytest.skip(f"Training stride-10 BC dataset not found: {dataset_dir}")
+
+    shard_paths = sorted(dataset_dir.glob("map_*.pt"))
+    if not shard_paths:
+        pytest.skip(f"No BC shard files found in {dataset_dir}")
+
+    action_counts = np.zeros(CLASSIC_ACTION_SPACE, dtype=np.int64)
+    total_samples = 0
+
+    for shard_path in shard_paths:
+        payload = torch.load(shard_path)
+        actions = payload.get("action")
+        if actions is None or int(actions.numel()) == 0:
+            continue
+        actions_np = actions.cpu().numpy().astype(np.int64, copy=False)
+        total_samples += int(actions_np.size)
+        action_counts += np.bincount(actions_np, minlength=CLASSIC_ACTION_SPACE)
+
+    assert total_samples > 0
+    assert int(action_counts.sum()) == total_samples
+
+    accel_counts = action_counts.reshape(len(CLASSIC_ACCELERATION_VALUES), len(CLASSIC_STEERING_VALUES)).sum(axis=1)
+    steer_counts = action_counts.reshape(len(CLASSIC_ACCELERATION_VALUES), len(CLASSIC_STEERING_VALUES)).sum(axis=0)
+
+    nonzero_actions = int(np.count_nonzero(action_counts))
+    sample_probs = action_counts / float(total_samples)
+    nonzero_probs = sample_probs[sample_probs > 0]
+    entropy = float(-(nonzero_probs * np.log(nonzero_probs)).sum())
+
+    top_action_indices = np.argsort(action_counts)[::-1][:10]
+    top_actions = []
+    for action_id in top_action_indices:
+        count = int(action_counts[action_id])
+        if count <= 0:
+            continue
+        accel_idx = int(action_id // len(CLASSIC_STEERING_VALUES))
+        steer_idx = int(action_id % len(CLASSIC_STEERING_VALUES))
+        top_actions.append(
+            {
+                "action_id": int(action_id),
+                "count": count,
+                "fraction": float(count / total_samples),
+                "acceleration": float(CLASSIC_ACCELERATION_VALUES[accel_idx]),
+                "steering": float(CLASSIC_STEERING_VALUES[steer_idx]),
+            }
+        )
+
+    plot_dir = Path("outputs/test_visualizations")
+    plot_dir.mkdir(parents=True, exist_ok=True)
+    plot_path = plot_dir / "bc_training_stride10_action_distribution.png"
+    summary_path = plot_dir / "bc_training_stride10_action_distribution.json"
+
+    fig, axes = plt.subplots(3, 1, figsize=(14, 11), squeeze=False)
+    ax_joint, ax_accel, ax_steer = axes[:, 0]
+
+    ax_joint.bar(np.arange(CLASSIC_ACTION_SPACE), action_counts, color="tab:blue", width=0.9)
+    ax_joint.set_title(
+        f"Joint action distribution | samples={total_samples:,} | nonzero_actions={nonzero_actions}/{CLASSIC_ACTION_SPACE} | entropy={entropy:.2f}"
+    )
+    ax_joint.set_xlabel("joint action id")
+    ax_joint.set_ylabel("count")
+    ax_joint.grid(True, axis="y", alpha=0.25)
+
+    accel_labels = [f"{v:g}" for v in CLASSIC_ACCELERATION_VALUES]
+    ax_accel.bar(np.arange(len(CLASSIC_ACCELERATION_VALUES)), accel_counts, color="tab:orange", width=0.75)
+    ax_accel.set_title("Acceleration marginal")
+    ax_accel.set_xlabel("acceleration [m/s^2]")
+    ax_accel.set_ylabel("count")
+    ax_accel.set_xticks(np.arange(len(CLASSIC_ACCELERATION_VALUES)))
+    ax_accel.set_xticklabels(accel_labels)
+    ax_accel.grid(True, axis="y", alpha=0.25)
+
+    steer_labels = [f"{v:.3g}" for v in CLASSIC_STEERING_VALUES]
+    ax_steer.bar(np.arange(len(CLASSIC_STEERING_VALUES)), steer_counts, color="tab:green", width=0.75)
+    ax_steer.set_title("Steering marginal")
+    ax_steer.set_xlabel("steering")
+    ax_steer.set_ylabel("count")
+    ax_steer.set_xticks(np.arange(len(CLASSIC_STEERING_VALUES)))
+    ax_steer.set_xticklabels(steer_labels)
+    ax_steer.grid(True, axis="y", alpha=0.25)
+
+    fig.tight_layout()
+    fig.savefig(plot_path)
+    plt.close(fig)
+
+    summary = {
+        "dataset_dir": str(dataset_dir),
+        "shard_count": len(shard_paths),
+        "total_samples": int(total_samples),
+        "action_space_size": int(CLASSIC_ACTION_SPACE),
+        "nonzero_actions": nonzero_actions,
+        "entropy": entropy,
+        "top_actions": top_actions,
+        "acceleration_counts": accel_counts.tolist(),
+        "steering_counts": steer_counts.tolist(),
+    }
+    summary_path.write_text(json.dumps(summary, indent=2))
+
+    assert plot_path.exists()
+    assert summary_path.exists()
+    assert nonzero_actions > 10
+
+
+def _evaluate_real_prefix_window_rebalancing(window_balance_fraction, *, plot_stem):
+    matplotlib = pytest.importorskip("matplotlib")
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    dataset_dir = TRAINING_WINDOWS_STRIDE10_DATASET_DIR
+    if not dataset_dir.is_dir():
+        pytest.skip(f"Training stride-10 BC dataset not found: {dataset_dir}")
+
+    shard_paths = sorted(dataset_dir.glob("map_*.pt"))[:32]
+    if not shard_paths:
+        pytest.skip(f"No BC shard files found in {dataset_dir}")
+
+    first_payload = torch.load(shard_paths[0], map_location="cpu")
+    obs_dim = int(first_payload["obs"].shape[1])
+
+    def _sample_action_counts(dataset):
+        counts = np.zeros((CLASSIC_ACTION_SPACE,), dtype=np.int64)
+        total_windows = 0
+        for _, actions, mask in dataset:
+            valid_actions = actions[mask].cpu().numpy().astype(np.int64, copy=False)
+            counts += np.bincount(valid_actions, minlength=CLASSIC_ACTION_SPACE)
+            total_windows += 1
+        return counts, total_windows
+
+    def _balance_metrics(counts):
+        positive = counts[counts > 0].astype(np.float64)
+        probs = positive / float(positive.sum())
+        entropy = float(-(probs * np.log(probs)).sum())
+        max_entropy = float(np.log(max(positive.size, 2)))
+        normalized_entropy = entropy / max_entropy
+        imbalance_ratio = float(positive.max() / positive.min())
+        uniform_target = float(positive.sum()) / float(positive.size)
+        mean_abs_relative_deviation = float(np.mean(np.abs(positive - uniform_target) / uniform_target))
+        balance_score = 1.0 / (1.0 + mean_abs_relative_deviation)
+        return {
+            "normalized_entropy": normalized_entropy,
+            "imbalance_ratio": imbalance_ratio,
+            "balance_score": balance_score,
+            "positive_actions": int(positive.size),
+        }
+
+    baseline = drive_module._SequenceBCDataset(
+        [str(path) for path in shard_paths],
+        obs_dim=obs_dim,
+        action_space_size=CLASSIC_ACTION_SPACE,
+        seq_len=32,
+        stride=10,
+        shuffle=True,
+        seed=0,
+        require_embedded=True,
+        rebalance_windows=False,
+    )
+    baseline.set_epoch(0)
+    baseline_counts, baseline_windows = _sample_action_counts(baseline)
+    baseline_metrics = _balance_metrics(baseline_counts)
+
+    rebalanced = drive_module._SequenceBCDataset(
+        [str(path) for path in shard_paths],
+        obs_dim=obs_dim,
+        action_space_size=CLASSIC_ACTION_SPACE,
+        seq_len=32,
+        stride=10,
+        shuffle=True,
+        seed=0,
+        require_embedded=True,
+        rebalance_windows=True,
+        window_balance_fraction=window_balance_fraction,
+        window_balance_max_multiplier=10.0,
+    )
+    rebalanced.set_epoch(0)
+    rebalanced_counts, rebalanced_windows = _sample_action_counts(rebalanced)
+    rebalanced_metrics = _balance_metrics(rebalanced_counts)
+
+    assert baseline_windows > 0
+    assert rebalanced_windows == baseline_windows
+    assert int(baseline_counts.sum()) > 0
+    assert int(rebalanced_counts.sum()) > 0
+    assert rebalanced_metrics["positive_actions"] == baseline_metrics["positive_actions"]
+    assert rebalanced_metrics["normalized_entropy"] >= baseline_metrics["normalized_entropy"]
+    assert rebalanced_metrics["imbalance_ratio"] <= baseline_metrics["imbalance_ratio"]
+    assert rebalanced_metrics["balance_score"] >= baseline_metrics["balance_score"]
+
+    ratio = rebalanced_counts.astype(np.float64) / np.maximum(baseline_counts.astype(np.float64), 1.0)
+    changed_action_ids = np.argsort(np.abs(ratio - 1.0))[::-1]
+    changed_action_ids = [int(action_id) for action_id in changed_action_ids if int(baseline_counts[action_id] + rebalanced_counts[action_id]) > 0][:12]
+    assert changed_action_ids
+
+    plot_dir = Path("outputs/test_visualizations")
+    plot_dir.mkdir(parents=True, exist_ok=True)
+    plot_path = plot_dir / f"{plot_stem}_distribution_diff.png"
+    full_plot_path = plot_dir / f"{plot_stem}_full_action_space.png"
+
+    x = np.arange(len(changed_action_ids), dtype=np.float32)
+    width = 0.35
+    fig, axes = plt.subplots(2, 1, figsize=(12, 8), squeeze=False)
+    ax_counts, ax_ratio = axes[:, 0]
+    ax_counts.bar(x - width / 2, baseline_counts[changed_action_ids], width=width, label="baseline")
+    ax_counts.bar(x + width / 2, rebalanced_counts[changed_action_ids], width=width, label="rebalanced")
+    ax_counts.set_xticks(x)
+    ax_counts.set_xticklabels([str(action_id) for action_id in changed_action_ids], rotation=45, ha="right")
+    ax_counts.set_xlabel("joint action id")
+    ax_counts.set_ylabel("sampled action occurrences")
+    ax_counts.set_title(
+        "Real prefix recurrent window rebalancing\n"
+        f"baseline_score={baseline_metrics['balance_score']:.3f}, "
+        f"rebalanced_score={rebalanced_metrics['balance_score']:.3f}"
+    )
+    ax_counts.legend()
+    ax_counts.grid(True, axis="y", alpha=0.25)
+
+    ax_ratio.bar(x, ratio[changed_action_ids], color="tab:green", width=0.6)
+    ax_ratio.axhline(1.0, color="black", linestyle="--", linewidth=1.0)
+    ax_ratio.set_xticks(x)
+    ax_ratio.set_xticklabels([str(action_id) for action_id in changed_action_ids], rotation=45, ha="right")
+    ax_ratio.set_xlabel("joint action id")
+    ax_ratio.set_ylabel("rebalanced / baseline")
+    ax_ratio.set_title("Largest action-distribution shifts on real shard prefix")
+    ax_ratio.grid(True, axis="y", alpha=0.25)
+
+    fig.tight_layout()
+    fig.savefig(plot_path)
+    plt.close(fig)
+    assert plot_path.exists()
+
+    full_x = np.arange(CLASSIC_ACTION_SPACE)
+    full_ratio = rebalanced_counts.astype(np.float64) / np.maximum(baseline_counts.astype(np.float64), 1.0)
+    full_changed = rebalanced_counts - baseline_counts
+    fig, axes = plt.subplots(3, 1, figsize=(16, 12), squeeze=False)
+    ax0, ax1, ax2 = axes[:, 0]
+
+    ax0.bar(full_x, baseline_counts, width=0.9, alpha=0.6, label="baseline")
+    ax0.bar(full_x, rebalanced_counts, width=0.6, alpha=0.6, label="rebalanced")
+    ax0.set_title(
+        f"Full action space counts | windows={baseline_windows} -> {rebalanced_windows} | "
+        f"fraction={window_balance_fraction:.2f}"
+    )
+    ax0.set_xlabel("joint action id")
+    ax0.set_ylabel("sampled action occurrences")
+    ax0.grid(True, axis="y", alpha=0.25)
+    ax0.legend()
+
+    ax1.bar(full_x, full_ratio, width=0.9, color="tab:green")
+    ax1.axhline(1.0, color="black", linestyle="--", linewidth=1.0)
+    ax1.set_title("Full action space ratio: rebalanced / baseline")
+    ax1.set_xlabel("joint action id")
+    ax1.set_ylabel("ratio")
+    ax1.grid(True, axis="y", alpha=0.25)
+
+    colors = np.where(full_changed >= 0, "tab:blue", "tab:red")
+    ax2.bar(full_x, full_changed, width=0.9, color=colors)
+    ax2.axhline(0.0, color="black", linewidth=1.0)
+    ax2.set_title("Full action space signed change: rebalanced - baseline")
+    ax2.set_xlabel("joint action id")
+    ax2.set_ylabel("delta count")
+    ax2.grid(True, axis="y", alpha=0.25)
+
+    fig.tight_layout()
+    fig.savefig(full_plot_path)
+    plt.close(fig)
+    assert full_plot_path.exists()
+
+    return {
+        "baseline_windows": baseline_windows,
+        "rebalanced_windows": rebalanced_windows,
+        "baseline_metrics": baseline_metrics,
+        "rebalanced_metrics": rebalanced_metrics,
+        "distribution_diff_plot": plot_path,
+        "full_action_space_plot": full_plot_path,
+    }
+
+
+def test_recurrent_window_rebalancing_improves_real_dataset_balance_prefix():
+    result = _evaluate_real_prefix_window_rebalancing(
+        1.0,
+        plot_stem="bc_train_window_rebalancing_real_prefix",
+    )
+    assert result["rebalanced_metrics"]["normalized_entropy"] >= result["baseline_metrics"]["normalized_entropy"]
+    assert result["rebalanced_metrics"]["imbalance_ratio"] <= result["baseline_metrics"]["imbalance_ratio"]
+    assert result["rebalanced_metrics"]["balance_score"] >= result["baseline_metrics"]["balance_score"]
+
+
+def test_recurrent_window_rebalancing_real_prefix_mild_plot():
+    result = _evaluate_real_prefix_window_rebalancing(
+        0.2,
+        plot_stem="bc_train_window_rebalancing_real_prefix_mild",
+    )
+    assert result["rebalanced_windows"] == result["baseline_windows"]
+    assert result["rebalanced_metrics"]["normalized_entropy"] >= result["baseline_metrics"]["normalized_entropy"]
+    assert result["rebalanced_metrics"]["imbalance_ratio"] <= result["baseline_metrics"]["imbalance_ratio"]
+    assert result["rebalanced_metrics"]["balance_score"] >= result["baseline_metrics"]["balance_score"]
 
 
 def test_drive_accepts_c_compatible_enum_aliases(tmp_path):
