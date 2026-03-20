@@ -1,0 +1,10 @@
+These visualizer videos use the apricot-voice-35 car-baseline model weights.
+
+Config change relative to the previous trailer-model visualization attempt:
+- Policy/model: `pufferlib/resources/drive/models/apricot-voice-35-car-baseline/puffer_drive_weights.bin`
+- Observation mode: baseline/default visualizer behavior (no `sdc_only_with_trailer`)
+- No `--sdc-runtime-truck-override`
+- Intended camera/view: zoomed-in topdown
+
+The source scenario ranking comes from:
+- `human_replay_eval_best_worst_scenarios.json`

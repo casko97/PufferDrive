@@ -1,0 +1,9 @@
+{
+  "checkpoint": "/home/casko/phd-code/PufferDrive/pufferlib/resources/drive/models/apricot-voice-35/puffer_drive_3vut5lku.pt",
+  "completed_maps": 97,
+  "config": "/home/casko/phd-code/PufferDrive/pufferlib/resources/drive/models/apricot-voice-35/conf1_discrete_human_replay_eval.ini",
+  "processed_maps": 100,
+  "skipped_maps": 3,
+  "status": "completed",
+  "total_maps": 100
+}
