@@ -1,0 +1,24 @@
+{
+  "aggregate_metrics_mean_over_maps": {
+    "collision_rate": 0.08709101206553516,
+    "collisions_per_agent": 0.3700852952341535,
+    "completion_rate": 0.9610086519326737,
+    "dnf_rate": 0.018835291113537638,
+    "episode_length": 59.29971677865555,
+    "episode_return": 0.8461314468686261,
+    "goals_reached_this_episode": 0.9610086519326737,
+    "goals_sampled_this_episode": 1.0,
+    "lane_alignment_rate": 0.8664438293051364,
+    "n": 2063.89552238806,
+    "offroad_per_agent": 0.41626194096430996,
+    "offroad_rate": 0.035047500428601185,
+    "score": 0.9524272831518259,
+    "speed_at_goal": 15.195839604335045
+  },
+  "checkpoint": "/home/casko/phd-code/PufferDrive/pufferlib/resources/drive/models/apricot-aug-truck_model-ef8ls1mb/model_puffer_drive_005087.pt",
+  "config": "/home/casko/phd-code/PufferDrive/pufferlib/resources/drive/models/apricot-aug-truck_model-ef8ls1mb/truck eval/conf1_discrete_human_replay_eval.ini",
+  "map_dir": "/home/casko/phd-code/PufferDrive/pufferlib/resources/drive/binaries/validation",
+  "mode": "human_replay_eval",
+  "num_maps_evaluated": 67,
+  "num_maps_skipped": 33
+}

@@ -1,0 +1,11 @@
+{
+  "checkpoint": "/home/casko/phd-code/PufferDrive/pufferlib/resources/drive/models/apricot-truck_model-ef8ls1mb/model_puffer_drive_005087.pt",
+  "completed_maps": 31,
+  "config": "/home/casko/phd-code/PufferDrive/pufferlib/resources/drive/models/apricot-truck_model-ef8ls1mb/conf1_discrete_human_replay_eval.ini",
+  "latest_map": "map_432.bin",
+  "latest_status": "skipped",
+  "processed_maps": 43,
+  "skipped_maps": 12,
+  "status": "running",
+  "total_maps": 100
+}
