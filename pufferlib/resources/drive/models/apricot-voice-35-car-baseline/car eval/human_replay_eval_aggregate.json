@@ -1,0 +1,24 @@
+{
+  "aggregate_metrics_mean_over_maps": {
+    "collision_rate": 0.025693382656103686,
+    "collisions_per_agent": 0.09203806494019534,
+    "completion_rate": 0.9855030869182787,
+    "dnf_rate": 0.010090278657643418,
+    "episode_length": 48.645857760780736,
+    "episode_return": 1.0011424048950797,
+    "goals_reached_this_episode": 0.9855030869182787,
+    "goals_sampled_this_episode": 1.0,
+    "lane_alignment_rate": 0.8450793670980554,
+    "n": 2056.3368421052633,
+    "offroad_per_agent": 0.08732418867906458,
+    "offroad_rate": 0.02181701327821142,
+    "score": 0.9833546494182788,
+    "speed_at_goal": 16.710693888915213
+  },
+  "checkpoint": "/home/casko/phd-code/PufferDrive/pufferlib/resources/drive/models/apricot-voice-35-car-baseline/puffer_drive_3vut5lku.pt",
+  "config": "/home/casko/phd-code/PufferDrive/pufferlib/resources/drive/models/apricot-voice-35-car-baseline/car eval/conf1_discrete_human_replay_eval.ini",
+  "map_dir": "/home/casko/phd-code/PufferDrive/pufferlib/resources/drive/binaries/validation",
+  "mode": "human_replay_eval",
+  "num_maps_evaluated": 95,
+  "num_maps_skipped": 5
+}
