@@ -1,0 +1,200 @@
+[
+  {
+    "error": "No valid maps left: all 1 candidates had invalid initial SDC trailer state",
+    "error_type": "ValueError",
+    "map_name": "map_1280.bin",
+    "map_path": "/home/casko/phd-code/PufferDrive/pufferlib/resources/drive/binaries/validation/map_1280.bin"
+  },
+  {
+    "error": "No valid maps left: all 1 candidates had invalid initial SDC trailer state",
+    "error_type": "ValueError",
+    "map_name": "map_1303.bin",
+    "map_path": "/home/casko/phd-code/PufferDrive/pufferlib/resources/drive/binaries/validation/map_1303.bin"
+  },
+  {
+    "error": "No controllable agents found in any of the 1 available maps",
+    "error_type": "ValueError",
+    "map_name": "map_1971.bin",
+    "map_path": "/home/casko/phd-code/PufferDrive/pufferlib/resources/drive/binaries/validation/map_1971.bin"
+  },
+  {
+    "error": "No valid maps left: all 1 candidates had invalid initial SDC trailer state",
+    "error_type": "ValueError",
+    "map_name": "map_2082.bin",
+    "map_path": "/home/casko/phd-code/PufferDrive/pufferlib/resources/drive/binaries/validation/map_2082.bin"
+  },
+  {
+    "error": "No valid maps left: all 1 candidates had invalid initial SDC trailer state",
+    "error_type": "ValueError",
+    "map_name": "map_2430.bin",
+    "map_path": "/home/casko/phd-code/PufferDrive/pufferlib/resources/drive/binaries/validation/map_2430.bin"
+  },
+  {
+    "error": "No valid maps left: all 1 candidates had invalid initial SDC trailer state",
+    "error_type": "ValueError",
+    "map_name": "map_2768.bin",
+    "map_path": "/home/casko/phd-code/PufferDrive/pufferlib/resources/drive/binaries/validation/map_2768.bin"
+  },
+  {
+    "error": "No valid maps left: all 1 candidates had invalid initial SDC trailer state",
+    "error_type": "ValueError",
+    "map_name": "map_3224.bin",
+    "map_path": "/home/casko/phd-code/PufferDrive/pufferlib/resources/drive/binaries/validation/map_3224.bin"
+  },
+  {
+    "error": "No controllable agents found in any of the 1 available maps",
+    "error_type": "ValueError",
+    "map_name": "map_3330.bin",
+    "map_path": "/home/casko/phd-code/PufferDrive/pufferlib/resources/drive/binaries/validation/map_3330.bin"
+  },
+  {
+    "error": "Timed out after 180 seconds",
+    "error_type": "TimeoutExpired",
+    "map_name": "map_3772.bin",
+    "map_path": "/home/casko/phd-code/PufferDrive/pufferlib/resources/drive/binaries/validation/map_3772.bin"
+  },
+  {
+    "error": "Timed out after 180 seconds",
+    "error_type": "TimeoutExpired",
+    "map_name": "map_4029.bin",
+    "map_path": "/home/casko/phd-code/PufferDrive/pufferlib/resources/drive/binaries/validation/map_4029.bin"
+  },
+  {
+    "error": "No valid maps left: all 1 candidates had invalid initial SDC trailer state",
+    "error_type": "ValueError",
+    "map_name": "map_418.bin",
+    "map_path": "/home/casko/phd-code/PufferDrive/pufferlib/resources/drive/binaries/validation/map_418.bin"
+  },
+  {
+    "error": "No valid maps left: all 1 candidates had invalid initial SDC trailer state",
+    "error_type": "ValueError",
+    "map_name": "map_432.bin",
+    "map_path": "/home/casko/phd-code/PufferDrive/pufferlib/resources/drive/binaries/validation/map_432.bin"
+  },
+  {
+    "error": "No valid maps left: all 1 candidates had invalid initial SDC trailer state",
+    "error_type": "ValueError",
+    "map_name": "map_4853.bin",
+    "map_path": "/home/casko/phd-code/PufferDrive/pufferlib/resources/drive/binaries/validation/map_4853.bin"
+  },
+  {
+    "error": "No valid maps left: all 1 candidates had invalid initial SDC trailer state",
+    "error_type": "ValueError",
+    "map_name": "map_4896.bin",
+    "map_path": "/home/casko/phd-code/PufferDrive/pufferlib/resources/drive/binaries/validation/map_4896.bin"
+  },
+  {
+    "error": "No valid maps left: all 1 candidates had invalid initial SDC trailer state",
+    "error_type": "ValueError",
+    "map_name": "map_5047.bin",
+    "map_path": "/home/casko/phd-code/PufferDrive/pufferlib/resources/drive/binaries/validation/map_5047.bin"
+  },
+  {
+    "error": "No valid maps left: all 1 candidates had invalid initial SDC trailer state",
+    "error_type": "ValueError",
+    "map_name": "map_5051.bin",
+    "map_path": "/home/casko/phd-code/PufferDrive/pufferlib/resources/drive/binaries/validation/map_5051.bin"
+  },
+  {
+    "error": "No valid maps left: all 1 candidates had invalid initial SDC trailer state",
+    "error_type": "ValueError",
+    "map_name": "map_5275.bin",
+    "map_path": "/home/casko/phd-code/PufferDrive/pufferlib/resources/drive/binaries/validation/map_5275.bin"
+  },
+  {
+    "error": "No valid maps left: all 1 candidates had invalid initial SDC trailer state",
+    "error_type": "ValueError",
+    "map_name": "map_5607.bin",
+    "map_path": "/home/casko/phd-code/PufferDrive/pufferlib/resources/drive/binaries/validation/map_5607.bin"
+  },
+  {
+    "error": "No valid maps left: all 1 candidates had invalid initial SDC trailer state",
+    "error_type": "ValueError",
+    "map_name": "map_5921.bin",
+    "map_path": "/home/casko/phd-code/PufferDrive/pufferlib/resources/drive/binaries/validation/map_5921.bin"
+  },
+  {
+    "error": "No valid maps left: all 1 candidates had invalid initial SDC trailer state",
+    "error_type": "ValueError",
+    "map_name": "map_5976.bin",
+    "map_path": "/home/casko/phd-code/PufferDrive/pufferlib/resources/drive/binaries/validation/map_5976.bin"
+  },
+  {
+    "error": "No valid maps left: all 1 candidates had invalid initial SDC trailer state",
+    "error_type": "ValueError",
+    "map_name": "map_620.bin",
+    "map_path": "/home/casko/phd-code/PufferDrive/pufferlib/resources/drive/binaries/validation/map_620.bin"
+  },
+  {
+    "error": "No valid maps left: all 1 candidates had invalid initial SDC trailer state",
+    "error_type": "ValueError",
+    "map_name": "map_6255.bin",
+    "map_path": "/home/casko/phd-code/PufferDrive/pufferlib/resources/drive/binaries/validation/map_6255.bin"
+  },
+  {
+    "error": "No valid maps left: all 1 candidates had invalid initial SDC trailer state",
+    "error_type": "ValueError",
+    "map_name": "map_7157.bin",
+    "map_path": "/home/casko/phd-code/PufferDrive/pufferlib/resources/drive/binaries/validation/map_7157.bin"
+  },
+  {
+    "error": "No valid maps left: all 1 candidates had invalid initial SDC trailer state",
+    "error_type": "ValueError",
+    "map_name": "map_7192.bin",
+    "map_path": "/home/casko/phd-code/PufferDrive/pufferlib/resources/drive/binaries/validation/map_7192.bin"
+  },
+  {
+    "error": "No valid maps left: all 1 candidates had invalid initial SDC trailer state",
+    "error_type": "ValueError",
+    "map_name": "map_7793.bin",
+    "map_path": "/home/casko/phd-code/PufferDrive/pufferlib/resources/drive/binaries/validation/map_7793.bin"
+  },
+  {
+    "error": "No valid maps left: all 1 candidates had invalid initial SDC trailer state",
+    "error_type": "ValueError",
+    "map_name": "map_8344.bin",
+    "map_path": "/home/casko/phd-code/PufferDrive/pufferlib/resources/drive/binaries/validation/map_8344.bin"
+  },
+  {
+    "error": "No valid maps left: all 1 candidates had invalid initial SDC trailer state",
+    "error_type": "ValueError",
+    "map_name": "map_8435.bin",
+    "map_path": "/home/casko/phd-code/PufferDrive/pufferlib/resources/drive/binaries/validation/map_8435.bin"
+  },
+  {
+    "error": "No valid maps left: all 1 candidates had invalid initial SDC trailer state",
+    "error_type": "ValueError",
+    "map_name": "map_8864.bin",
+    "map_path": "/home/casko/phd-code/PufferDrive/pufferlib/resources/drive/binaries/validation/map_8864.bin"
+  },
+  {
+    "error": "No valid maps left: all 1 candidates had invalid initial SDC trailer state",
+    "error_type": "ValueError",
+    "map_name": "map_9025.bin",
+    "map_path": "/home/casko/phd-code/PufferDrive/pufferlib/resources/drive/binaries/validation/map_9025.bin"
+  },
+  {
+    "error": "No valid maps left: all 1 candidates had invalid initial SDC trailer state",
+    "error_type": "ValueError",
+    "map_name": "map_9356.bin",
+    "map_path": "/home/casko/phd-code/PufferDrive/pufferlib/resources/drive/binaries/validation/map_9356.bin"
+  },
+  {
+    "error": "No valid maps left: all 1 candidates had invalid initial SDC trailer state",
+    "error_type": "ValueError",
+    "map_name": "map_9508.bin",
+    "map_path": "/home/casko/phd-code/PufferDrive/pufferlib/resources/drive/binaries/validation/map_9508.bin"
+  },
+  {
+    "error": "No valid maps left: all 1 candidates had invalid initial SDC trailer state",
+    "error_type": "ValueError",
+    "map_name": "map_9875.bin",
+    "map_path": "/home/casko/phd-code/PufferDrive/pufferlib/resources/drive/binaries/validation/map_9875.bin"
+  },
+  {
+    "error": "No valid maps left: all 1 candidates had invalid initial SDC trailer state",
+    "error_type": "ValueError",
+    "map_name": "map_9900.bin",
+    "map_path": "/home/casko/phd-code/PufferDrive/pufferlib/resources/drive/binaries/validation/map_9900.bin"
+  }
+]
