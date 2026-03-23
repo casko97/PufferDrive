@@ -1,0 +1,24 @@
+{
+  "aggregate_metrics_mean_over_maps": {
+    "collision_rate": 0.15778296127699423,
+    "collisions_per_agent": 1.7811296439959088,
+    "completion_rate": 0.7899241542470627,
+    "dnf_rate": 0.030650987573291943,
+    "episode_length": 72.85219087462494,
+    "episode_return": -2.2931026670595873,
+    "goals_reached_this_episode": 0.7899241542470627,
+    "goals_sampled_this_episode": 1.0,
+    "lane_alignment_rate": 0.7332348547120026,
+    "n": 2057.2608695652175,
+    "offroad_per_agent": 5.013714426034299,
+    "offroad_rate": 0.20994865986690653,
+    "score": 0.7827917086905327,
+    "speed_at_goal": 12.628837675288104
+  },
+  "checkpoint": "/home/casko/phd-code/PufferDrive/pufferlib/resources/drive/models/aug-long-parallel-trailer-no-truck-override-c5e2cdlo/model_puffer_drive_005087.pt",
+  "config": "/home/casko/phd-code/PufferDrive/pufferlib/resources/drive/models/aug-long-parallel-trailer-no-truck-override-c5e2cdlo/truck eval/conf1_discrete_human_replay_eval.ini",
+  "map_dir": "/home/casko/phd-code/PufferDrive/pufferlib/resources/drive/binaries/validation",
+  "mode": "human_replay_eval",
+  "num_maps_evaluated": 69,
+  "num_maps_skipped": 31
+}
