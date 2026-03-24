@@ -615,6 +615,10 @@ static inline void project_articulated_ego_trailer_pose(Drive *env, int update_v
         return;
     if (tractor->x == INVALID_POSITION)
         return;
+    if (tractor->stopped) {
+        freeze_ego_trailer_entity(env);
+        return;
+    }
 
     float tractor2hitch = env->non_kinematic_vehicle_params[6];
     float trailer2hitch = env->non_kinematic_vehicle_params[7];
@@ -2899,6 +2903,17 @@ void c_step(Drive *env) {
     memset(env->terminals, 0, env->active_agent_count * sizeof(unsigned char));
     env->timestep++;
 
+    int sdc_trailer_snapshot_valid = 0;
+    float sdc_trailer_prev_x = 0.0f;
+    float sdc_trailer_prev_y = 0.0f;
+    float sdc_trailer_prev_heading = 0.0f;
+    float sdc_trailer_prev_heading_x = 1.0f;
+    float sdc_trailer_prev_heading_y = 0.0f;
+    float sdc_trailer_prev_vx = 0.0f;
+    float sdc_trailer_prev_vy = 0.0f;
+    float sdc_tractor_prev_articulation = 0.0f;
+    float sdc_trailer_prev_articulation = 0.0f;
+
     int originals_remaining = 0;
     for (int i = 0; i < env->active_agent_count; i++) {
         int agent_idx = env->active_agent_indices[i];
@@ -2930,6 +2945,20 @@ void c_step(Drive *env) {
         env->entities[agent_idx].collision_state = 0;
         float prev_vx = env->entities[agent_idx].vx;
         float prev_vy = env->entities[agent_idx].vy;
+
+        if (!sdc_trailer_snapshot_valid && has_valid_ego_trailer_pair(env) && agent_idx == env->sdc_track_index) {
+            Entity *trailer = &env->entities[env->ego_trailer_track_index];
+            sdc_trailer_snapshot_valid = 1;
+            sdc_trailer_prev_x = trailer->x;
+            sdc_trailer_prev_y = trailer->y;
+            sdc_trailer_prev_heading = trailer->heading;
+            sdc_trailer_prev_heading_x = trailer->heading_x;
+            sdc_trailer_prev_heading_y = trailer->heading_y;
+            sdc_trailer_prev_vx = trailer->vx;
+            sdc_trailer_prev_vy = trailer->vy;
+            sdc_tractor_prev_articulation = env->entities[agent_idx].articulation_angle;
+            sdc_trailer_prev_articulation = trailer->articulation_angle;
+        }
 
         move_dynamics(env, i, agent_idx);
         if (env->dynamics_model != ARTICULATED && has_valid_ego_trailer_pair(env) && agent_idx == env->sdc_track_index) {
@@ -3004,6 +3033,20 @@ void c_step(Drive *env) {
             }
             env->entities[agent_idx].metrics_array[REACHED_GOAL_IDX] = 1.0f;
             env->logs[i].speed_at_goal = current_speed;
+        }
+
+        if (sdc_trailer_snapshot_valid && has_valid_ego_trailer_pair(env) && agent_idx == env->sdc_track_index &&
+            env->entities[agent_idx].stopped) {
+            Entity *trailer = &env->entities[env->ego_trailer_track_index];
+            trailer->x = sdc_trailer_prev_x;
+            trailer->y = sdc_trailer_prev_y;
+            trailer->heading = sdc_trailer_prev_heading;
+            trailer->heading_x = sdc_trailer_prev_heading_x;
+            trailer->heading_y = sdc_trailer_prev_heading_y;
+            trailer->vx = 0.0f;
+            trailer->vy = 0.0f;
+            env->entities[agent_idx].articulation_angle = sdc_tractor_prev_articulation;
+            trailer->articulation_angle = sdc_trailer_prev_articulation;
         }
 
         int lane_aligned = env->entities[agent_idx].metrics_array[LANE_ALIGNED_IDX];

@@ -408,6 +408,13 @@ int eval_gif(const char *map_name, const char *policy_name, const char *config_i
             } else {
                 forward_drive_env(net, &env, (int *)env.actions);
                 c_step(&env);
+                if (env.sdc_track_index >= 0 && env.sdc_track_index < env.num_objects &&
+                    env.entities[env.sdc_track_index].stopped) {
+                    break;
+                }
+                if (env.timestep <= env.init_steps) {
+                    break;
+                }
             }
         }
     }
@@ -443,6 +450,13 @@ int eval_gif(const char *map_name, const char *policy_name, const char *config_i
             } else {
                 forward_drive_env(net, &env, (int *)env.actions);
                 c_step(&env);
+                if (env.sdc_track_index >= 0 && env.sdc_track_index < env.num_objects &&
+                    env.entities[env.sdc_track_index].stopped) {
+                    break;
+                }
+                if (env.timestep <= env.init_steps) {
+                    break;
+                }
             }
         }
     }
