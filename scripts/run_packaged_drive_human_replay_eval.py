@@ -167,6 +167,9 @@ def _run_single_scenario(args: dict[str, Any], policy, map_path: Path, temp_dir:
         "backend": scenario_args["eval"].get("backend", "PufferEnv"),
         "num_envs": int(args.get("_requested_num_envs", 1)),
     }
+    if scenario_args["eval"].get("human_replay_eval"):
+        scenario_args["env"]["control_mode"] = scenario_args["eval"]["human_replay_control_mode"]
+        scenario_args["env"]["episode_length"] = 91
 
     vecenv = pufferl.load_env("puffer_drive", scenario_args)
     try:
@@ -210,6 +213,9 @@ def _run_single_map_child(
     args["neptune"] = False
     args["vec"] = {"backend": args["eval"].get("backend", "PufferEnv"), "num_envs": int(num_envs)}
     args["_requested_num_envs"] = int(num_envs)
+    if args["eval"].get("human_replay_eval"):
+        args["env"]["control_mode"] = args["eval"]["human_replay_control_mode"]
+        args["env"]["episode_length"] = 91
 
     temp_root = output_dir / ".single_map_eval" / map_path.stem
     if temp_root.exists():
