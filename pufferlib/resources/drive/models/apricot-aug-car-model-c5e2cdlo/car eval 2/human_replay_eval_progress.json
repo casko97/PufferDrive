@@ -1,0 +1,9 @@
+{
+  "checkpoint": "/home/casko/phd-code/PufferDrive/pufferlib/resources/drive/models/apricot-aug-car-model-c5e2cdlo/model_puffer_drive_005087.pt",
+  "completed_maps": 65,
+  "config": "/home/casko/phd-code/PufferDrive/pufferlib/resources/drive/models/apricot-aug-car-model-c5e2cdlo/car eval 2/conf1_discrete_human_replay_eval.ini",
+  "processed_maps": 100,
+  "skipped_maps": 35,
+  "status": "completed",
+  "total_maps": 100
+}
