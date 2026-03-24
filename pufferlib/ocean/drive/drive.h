@@ -501,6 +501,18 @@ static inline bool is_ego_or_trailer_pair(Drive *env, int a, int b) {
             (a == env->ego_trailer_track_index && b == env->sdc_track_index));
 }
 
+static inline void freeze_ego_trailer_entity(Drive *env) {
+    if (!has_valid_ego_trailer_pair(env))
+        return;
+
+    Entity *trailer = &env->entities[env->ego_trailer_track_index];
+    if (trailer->removed || trailer->x == INVALID_POSITION)
+        return;
+
+    trailer->vx = 0.0f;
+    trailer->vy = 0.0f;
+}
+
 static inline void update_ego_trailer_pose(Drive *env) {
     if (!has_valid_ego_trailer_pair(env))
         return;
@@ -511,6 +523,10 @@ static inline void update_ego_trailer_pose(Drive *env) {
         return;
     if (tractor->x == INVALID_POSITION || trailer->x == INVALID_POSITION)
         return;
+    if (tractor->stopped) {
+        freeze_ego_trailer_entity(env);
+        return;
+    }
 
     // Use dataset non-kinematic geometry parameters from extension v2.
     float tractor2hitch = env->non_kinematic_vehicle_params[6];
@@ -1859,6 +1875,8 @@ void compute_agent_metrics(Drive *env, int agent_idx) {
         if (env->collision_behavior == STOP_AGENT && !agent->stopped) {
             agent->stopped = 1;
             agent->vx = agent->vy = 0.0f;
+            if (agent_idx == env->sdc_track_index)
+                freeze_ego_trailer_entity(env);
         } else if (env->collision_behavior == REMOVE_AGENT && !agent->removed) {
             Entity *agent_collided = &env->entities[car_collided_with_index];
             agent->removed = 1;
@@ -1872,6 +1890,8 @@ void compute_agent_metrics(Drive *env, int agent_idx) {
         if (env->offroad_behavior == STOP_AGENT && !agent->stopped) {
             agent->stopped = 1;
             agent->vx = agent->vy = 0.0f;
+            if (agent_idx == env->sdc_track_index)
+                freeze_ego_trailer_entity(env);
         } else if (env->offroad_behavior == REMOVE_AGENT && !agent->removed) {
             agent->removed = 1;
             agent->x = agent->y = -10000.0f;
@@ -2978,6 +2998,8 @@ void c_step(Drive *env) {
                 env->entities[agent_idx].current_goal_reached = 1;
                 env->entities[agent_idx].stopped = 1;
                 env->entities[agent_idx].vx = env->entities[agent_idx].vy = 0.0f;
+                if (agent_idx == env->sdc_track_index)
+                    freeze_ego_trailer_entity(env);
                 env->entities[agent_idx].goals_reached_this_episode += 1.0f;
             }
             env->entities[agent_idx].metrics_array[REACHED_GOAL_IDX] = 1.0f;
@@ -3004,6 +3026,8 @@ void c_step(Drive *env) {
             if (reached_goal) {
                 env->entities[agent_idx].stopped = 1;
                 env->entities[agent_idx].vx = env->entities[agent_idx].vy = 0.0f;
+                if (agent_idx == env->sdc_track_index)
+                    freeze_ego_trailer_entity(env);
             }
         }
     }
