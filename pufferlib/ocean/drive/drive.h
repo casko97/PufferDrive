@@ -49,6 +49,7 @@
 // Dynamics Models
 #define CLASSIC 0
 #define JERK 1
+#define ARTICULATED 2
 
 // Collision state
 #define NO_COLLISION 0
@@ -240,6 +241,7 @@ struct Entity {
     float jerk_lat;
     float steering_angle;
     float wheelbase;
+    float articulation_angle;
 };
 
 void free_entity(Entity *entity) {
@@ -274,6 +276,8 @@ float clip(float value, float min, float max) {
         return max;
     return value;
 }
+
+float normalize_heading(float heading);
 
 typedef struct GridMapEntity GridMapEntity;
 struct GridMapEntity {
@@ -547,6 +551,100 @@ static inline void update_ego_trailer_pose(Drive *env) {
     trailer->heading_y = sinf(theta_trailer);
     trailer->vx = (trailer->x - old_x) / fmaxf(env->dt, 1e-4f);
     trailer->vy = (trailer->y - old_y) / fmaxf(env->dt, 1e-4f);
+}
+
+static inline void sync_ego_trailer_entity_to_trajectory_step(Drive *env, int step) {
+    if (!has_valid_ego_trailer_pair(env))
+        return;
+
+    Entity *trailer = &env->entities[env->ego_trailer_track_index];
+    if (step < 0)
+        step = 0;
+    if (step >= trailer->array_size)
+        step = trailer->array_size - 1;
+
+    if (trailer->traj_valid && trailer->traj_valid[step] == 0) {
+        trailer->x = INVALID_POSITION;
+        trailer->y = INVALID_POSITION;
+        trailer->z = 0.0f;
+        trailer->vx = 0.0f;
+        trailer->vy = 0.0f;
+        trailer->vz = 0.0f;
+        trailer->heading = 0.0f;
+        trailer->heading_x = 1.0f;
+        trailer->heading_y = 0.0f;
+        trailer->valid = 0;
+        return;
+    }
+
+    trailer->x = trailer->traj_x[step];
+    trailer->y = trailer->traj_y[step];
+    trailer->z = trailer->traj_z[step];
+    trailer->vx = trailer->traj_vx[step];
+    trailer->vy = trailer->traj_vy[step];
+    trailer->vz = trailer->traj_vz[step];
+    trailer->heading = trailer->traj_heading[step];
+    trailer->heading_x = cosf(trailer->heading);
+    trailer->heading_y = sinf(trailer->heading);
+    trailer->valid = trailer->traj_valid[step];
+}
+
+static inline void project_articulated_ego_trailer_pose(Drive *env, int update_velocity_from_pose_delta) {
+    if (!has_valid_ego_trailer_pair(env))
+        return;
+
+    Entity *tractor = &env->entities[env->sdc_track_index];
+    Entity *trailer = &env->entities[env->ego_trailer_track_index];
+    if (tractor->removed || trailer->removed)
+        return;
+    if (tractor->x == INVALID_POSITION)
+        return;
+
+    float tractor2hitch = env->non_kinematic_vehicle_params[6];
+    float trailer2hitch = env->non_kinematic_vehicle_params[7];
+    float effective_length = fmaxf(0.5f, trailer->length - trailer2hitch);
+    float theta_tractor = tractor->heading;
+    float theta_trailer = normalize_heading(theta_tractor - tractor->articulation_angle);
+
+    float x_hitch = tractor->x + (-tractor->length * 0.5f + tractor2hitch) * cosf(theta_tractor);
+    float y_hitch = tractor->y + (-tractor->length * 0.5f + tractor2hitch) * sinf(theta_tractor);
+    float x_rear = x_hitch - effective_length * cosf(theta_trailer);
+    float y_rear = y_hitch - effective_length * sinf(theta_trailer);
+    float new_x = x_rear + 0.5f * trailer->length * cosf(theta_trailer);
+    float new_y = y_rear + 0.5f * trailer->length * sinf(theta_trailer);
+
+    float old_x = trailer->x;
+    float old_y = trailer->y;
+    trailer->x = new_x;
+    trailer->y = new_y;
+    trailer->heading = theta_trailer;
+    trailer->heading_x = cosf(theta_trailer);
+    trailer->heading_y = sinf(theta_trailer);
+
+    if (update_velocity_from_pose_delta) {
+        trailer->vx = (trailer->x - old_x) / fmaxf(env->dt, 1e-4f);
+        trailer->vy = (trailer->y - old_y) / fmaxf(env->dt, 1e-4f);
+    } else {
+        trailer->vx = tractor->vx;
+        trailer->vy = tractor->vy;
+    }
+}
+
+static inline void initialize_articulated_ego_trailer_state(Drive *env, int force_zero_articulation) {
+    if (!has_valid_ego_trailer_pair(env))
+        return;
+
+    Entity *tractor = &env->entities[env->sdc_track_index];
+    Entity *trailer = &env->entities[env->ego_trailer_track_index];
+    if (tractor->removed || trailer->removed)
+        return;
+    if (tractor->x == INVALID_POSITION || trailer->x == INVALID_POSITION)
+        return;
+
+    tractor->articulation_angle =
+        force_zero_articulation ? 0.0f : normalize_heading(tractor->heading - trailer->heading);
+    trailer->articulation_angle = tractor->articulation_angle;
+    project_articulated_ego_trailer_pose(env, 0);
 }
 
 static inline void apply_non_kinematic_runtime_override(Drive *env) {
@@ -910,8 +1008,11 @@ void set_start_position(Drive *env) {
         e->jerk_lat = 0.0f;
         e->steering_angle = 0.0f;
         e->wheelbase = 0.6f * e->length;
+        e->articulation_angle = 0.0f;
     }
-    if (env->force_zero_trailer_articulation_at_init) {
+    if (env->dynamics_model == ARTICULATED && has_valid_ego_trailer_pair(env)) {
+        initialize_articulated_ego_trailer_state(env, env->force_zero_trailer_articulation_at_init);
+    } else if (env->force_zero_trailer_articulation_at_init) {
         force_zero_trailer_articulation_pose_from_params(env);
     }
 }
@@ -1244,7 +1345,12 @@ void move_expert(Drive *env, float *actions, int agent_idx) {
 
     // Keep replayed trailer pose consistent with articulated geometry in extension v2.
     if (has_valid_ego_trailer_pair(env) && agent_idx == env->sdc_track_index) {
-        update_ego_trailer_pose(env);
+        if (env->dynamics_model == ARTICULATED) {
+            sync_ego_trailer_entity_to_trajectory_step(env, env->timestep);
+            initialize_articulated_ego_trailer_state(env, env->force_zero_trailer_articulation_at_init);
+        } else {
+            update_ego_trailer_pose(env);
+        }
     }
 }
 
@@ -2063,6 +2169,8 @@ float normalize_value(float value, float min, float max) { return (value - min) 
 
 void move_dynamics(Drive *env, int action_idx, int agent_idx) {
     Entity *agent = &env->entities[agent_idx];
+    int use_articulated_ego =
+        (env->dynamics_model == ARTICULATED && has_valid_ego_trailer_pair(env) && agent_idx == env->sdc_track_index);
     if (agent->removed)
         return;
 
@@ -2072,7 +2180,7 @@ void move_dynamics(Drive *env, int action_idx, int agent_idx) {
         return;
     }
 
-    if (env->dynamics_model == CLASSIC) {
+    if (env->dynamics_model == CLASSIC || use_articulated_ego || env->dynamics_model == ARTICULATED) {
         // Classic dynamics model
         float acceleration = 0.0f;
         float steering = 0.0f;
@@ -2125,6 +2233,8 @@ void move_dynamics(Drive *env, int action_idx, int agent_idx) {
         y = y + (new_vy * env->dt);
         heading = heading + yaw_rate * env->dt;
 
+        heading = normalize_heading(heading);
+
         // Apply updates to the agent's state
         agent->x = x;
         agent->y = y;
@@ -2133,6 +2243,22 @@ void move_dynamics(Drive *env, int action_idx, int agent_idx) {
         agent->heading_y = sinf(heading);
         agent->vx = new_vx;
         agent->vy = new_vy;
+        if (use_articulated_ego) {
+            Entity *trailer = &env->entities[env->ego_trailer_track_index];
+            float tractor2hitch = env->non_kinematic_vehicle_params[6];
+            float trailer2hitch = env->non_kinematic_vehicle_params[7];
+            float hitch_offset = -agent->length * 0.5f + tractor2hitch;
+            float effective_length = fmaxf(0.5f, trailer->length - trailer2hitch);
+            float theta_trailer = normalize_heading((heading - yaw_rate * env->dt) - agent->articulation_angle);
+            float x_hitch_dot = new_vx - yaw_rate * hitch_offset * sinf(heading);
+            float y_hitch_dot = new_vy + yaw_rate * hitch_offset * cosf(heading);
+            float theta_trailer_dot =
+                (-sinf(theta_trailer) * x_hitch_dot + cosf(theta_trailer) * y_hitch_dot) / effective_length;
+            theta_trailer = normalize_heading(theta_trailer + theta_trailer_dot * env->dt);
+            agent->articulation_angle = normalize_heading(agent->heading - theta_trailer);
+            trailer->articulation_angle = agent->articulation_angle;
+            project_articulated_ego_trailer_pose(env, 1);
+        }
     } else {
         // JERK dynamics model
         // Extract action components
@@ -2734,9 +2860,13 @@ void respawn_agent(Drive *env, int agent_idx) {
     env->entities[agent_idx].jerk_long = 0.0f;
     env->entities[agent_idx].jerk_lat = 0.0f;
     env->entities[agent_idx].steering_angle = 0.0f;
+    env->entities[agent_idx].articulation_angle = 0.0f;
 
     if (has_valid_ego_trailer_pair(env) && agent_idx == env->sdc_track_index) {
-        if (env->force_zero_trailer_articulation_at_init) {
+        if (env->dynamics_model == ARTICULATED) {
+            sync_ego_trailer_entity_to_trajectory_step(env, 0);
+            initialize_articulated_ego_trailer_state(env, env->force_zero_trailer_articulation_at_init);
+        } else if (env->force_zero_trailer_articulation_at_init) {
             force_zero_trailer_articulation_pose_from_params(env);
         } else {
             update_ego_trailer_pose(env);
@@ -2782,12 +2912,12 @@ void c_step(Drive *env) {
         float prev_vy = env->entities[agent_idx].vy;
 
         move_dynamics(env, i, agent_idx);
-        if (has_valid_ego_trailer_pair(env) && agent_idx == env->sdc_track_index) {
+        if (env->dynamics_model != ARTICULATED && has_valid_ego_trailer_pair(env) && agent_idx == env->sdc_track_index) {
             update_ego_trailer_pose(env);
         }
 
         // Tiny jerk penalty for smoothness
-        if (env->dynamics_model == CLASSIC) {
+        if (env->dynamics_model == CLASSIC || env->dynamics_model == ARTICULATED) {
             float delta_vx = env->entities[agent_idx].vx - prev_vx;
             float delta_vy = env->entities[agent_idx].vy - prev_vy;
             float jerk_penalty = -0.0002f * sqrtf(delta_vx * delta_vx + delta_vy * delta_vy) / env->dt;
@@ -3630,7 +3760,7 @@ void c_render(Drive *env) {
         int *action_array = (int *)env->actions;
         int action_val = action_array[env->human_agent_idx];
 
-        if (env->dynamics_model == CLASSIC) {
+        if (env->dynamics_model == CLASSIC || env->dynamics_model == ARTICULATED) {
             int num_steer = 13;
             int accel_idx = action_val / num_steer;
             int steer_idx = action_val % num_steer;

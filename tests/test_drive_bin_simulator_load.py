@@ -2,6 +2,7 @@ import numpy as np
 import pytest
 import matplotlib.pyplot as plt
 from matplotlib.patches import Polygon
+from matplotlib.patches import Circle
 from matplotlib.animation import FuncAnimation, PillowWriter
 from pathlib import Path
 import shutil
@@ -123,6 +124,38 @@ def _load_sdc_trajectory_from_base_bin(binary_path):
     if tractor is None:
         raise ValueError(f"SDC track index {sdc_track_index} not found in {binary_path}")
     return tractor
+
+
+def _load_sdc_goal_from_base_bin(binary_path):
+    """Read the SDC goal position from the base map binary layout."""
+    with open(binary_path, "rb") as f:
+        sdc_track_index = struct.unpack("<i", f.read(4))[0]
+        num_tracks_to_predict = struct.unpack("<i", f.read(4))[0]
+        f.seek(4 * num_tracks_to_predict, 1)
+        num_objects = struct.unpack("<i", f.read(4))[0]
+        _ = struct.unpack("<i", f.read(4))[0]  # num_roads
+
+        for obj_idx in range(num_objects):
+            _ = struct.unpack("<i", f.read(4))[0]  # scenario_id
+            _ = struct.unpack("<i", f.read(4))[0]  # type
+            _ = struct.unpack("<i", f.read(4))[0]  # id
+            trajectory_length = struct.unpack("<i", f.read(4))[0]
+
+            # x,y,z,vx,vy,vz,heading,valid
+            f.seek(4 * trajectory_length * 8, 1)
+
+            _ = struct.unpack("<f", f.read(4))[0]  # width
+            _ = struct.unpack("<f", f.read(4))[0]  # length
+            _ = struct.unpack("<f", f.read(4))[0]  # height
+            goal_x = float(struct.unpack("<f", f.read(4))[0])
+            goal_y = float(struct.unpack("<f", f.read(4))[0])
+            goal_z = float(struct.unpack("<f", f.read(4))[0])
+            _ = struct.unpack("<i", f.read(4))[0]  # mark_as_expert
+
+            if obj_idx == sdc_track_index:
+                return np.asarray([goal_x, goal_y, goal_z], dtype=np.float32)
+
+    raise ValueError(f"SDC track index {sdc_track_index} not found in {binary_path}")
 
 
 def _load_roads_from_base_bin(binary_path):
@@ -392,6 +425,8 @@ def _make_boston_rollout_animation(
     trailer_ade_curve,
     map_binary_path=None,
     map_roads=None,
+    goal_xy=None,
+    goal_radius=None,
 ):
     """Create GIF animation: XY traces + heading curves + articulation + ADE curves."""
     n_exec = min(
@@ -436,6 +471,12 @@ def _make_boston_rollout_animation(
     ax_ade = fig.add_subplot(gs[2, 1])  # ADE curves
 
     # Static map backdrop (if provided) + GT traces.
+    if goal_xy is None and map_binary_path is not None and Path(map_binary_path).exists():
+        try:
+            goal_xy = _load_sdc_goal_from_base_bin(map_binary_path)[:2]
+        except Exception:
+            goal_xy = None
+
     if map_roads is not None:
         for road in map_roads:
             if int(road["entity_type"]) == 6:
@@ -452,6 +493,31 @@ def _make_boston_rollout_animation(
 
     ax_xy.plot(gt_tractor_xy[:, 0], gt_tractor_xy[:, 1], "--", color="tab:blue", alpha=0.5, label="GT tractor")
     ax_xy.plot(gt_trailer_xy[:, 0], gt_trailer_xy[:, 1], "--", color="tab:orange", alpha=0.5, label="GT trailer")
+    goal_circle = None
+    goal_center = None
+    if goal_xy is not None:
+        goal_xy = np.asarray(goal_xy, dtype=np.float32)
+        goal_center, = ax_xy.plot(
+            [float(goal_xy[0])],
+            [float(goal_xy[1])],
+            marker="x",
+            color="tab:green",
+            ms=9,
+            mew=2.0,
+            linestyle="None",
+            label="Goal center",
+        )
+        if goal_radius is not None and float(goal_radius) > 0.0:
+            goal_circle = Circle(
+                (float(goal_xy[0]), float(goal_xy[1])),
+                float(goal_radius),
+                facecolor="none",
+                edgecolor="tab:green",
+                linestyle="--",
+                linewidth=1.5,
+                alpha=0.9,
+            )
+            ax_xy.add_patch(goal_circle)
     pred_tr_line, = ax_xy.plot([], [], "-", color="tab:blue", lw=2, label="Executed tractor")
     pred_tl_line, = ax_xy.plot([], [], "-", color="tab:orange", lw=2, label="Executed trailer")
     pred_tr_dot, = ax_xy.plot([], [], "o", color="tab:blue", ms=4)
@@ -503,7 +569,10 @@ def _make_boston_rollout_animation(
     ax_ade.legend(loc="best")
 
     # Stable axes
-    all_xy = np.vstack([gt_tractor_xy, gt_trailer_xy, pred_tractor_xy, pred_trailer_xy])
+    all_xy_parts = [gt_tractor_xy, gt_trailer_xy, pred_tractor_xy, pred_trailer_xy]
+    if goal_xy is not None:
+        all_xy_parts.append(np.asarray(goal_xy, dtype=np.float32)[None, :2])
+    all_xy = np.vstack(all_xy_parts)
     x_min, y_min = np.min(all_xy, axis=0)
     x_max, y_max = np.max(all_xy, axis=0)
     pad = 3.0
@@ -700,7 +769,7 @@ def test_boston_tractor_trailer_setup(tmp_path, monkeypatch):
 
     rollout_steps = 70  # configurable number of rollout steps for controller-driven simulation
     episode_length = rollout_steps + 5
-    env = _make_env(map_dir=map_dir, episode_length=episode_length)
+    env = _make_env(map_dir=map_dir, episode_length=episode_length, dynamics_model="articulated")
     try:
         history = _rollout_pure_pursuit_and_collect_trajectories(
             env=env,
@@ -754,7 +823,7 @@ def test_boston_tractor_trailer_setup(tmp_path, monkeypatch):
     trailer_ade_curve = np.cumsum(trailer_step_err) / (np.arange(n_eval, dtype=np.float32) + 1.0)
 
     # Plot/animation artifact for manual inspection.
-    gif_path = tmp_path / "boston_pure_pursuit_rollout.gif"
+    gif_path = tmp_path / "boston_pure_pursuit_rollout_current_articulated.gif"
     _make_boston_rollout_animation(
         output_path=gif_path,
         gt_tractor_xy=gt_tractor_xy[:n_eval],
@@ -779,7 +848,7 @@ def test_boston_tractor_trailer_setup(tmp_path, monkeypatch):
     # Also store a stable copy under outputs/ for easy inspection outside pytest tmp dirs.
     output_dir = Path("outputs/test_visualizations")
     output_dir.mkdir(parents=True, exist_ok=True)
-    stable_gif_path = output_dir / "boston_pure_pursuit_rollout.gif"
+    stable_gif_path = output_dir / "boston_pure_pursuit_rollout_current_articulated.gif"
     shutil.copy2(gif_path, stable_gif_path)
     assert stable_gif_path.exists()
     assert stable_gif_path.stat().st_size > 0
@@ -1215,6 +1284,21 @@ def _classic_joint_action(accel_idx, steer_idx):
     return accel_idx * 13 + steer_idx
 
 
+def _project_trailer_pose(tractor_x, tractor_y, tractor_heading, trailer_heading, tractor_length, trailer_length, params):
+    tractor_length = float(tractor_length)
+    tractor2hitch = float(params[6])
+    trailer2hitch = float(params[7])
+    effective_length = max(0.5, trailer_length - trailer2hitch)
+
+    x_hitch = tractor_x + (-tractor_length * 0.5 + tractor2hitch) * np.cos(tractor_heading)
+    y_hitch = tractor_y + (-tractor_length * 0.5 + tractor2hitch) * np.sin(tractor_heading)
+    x_rear = x_hitch - effective_length * np.cos(trailer_heading)
+    y_rear = y_hitch - effective_length * np.sin(trailer_heading)
+    trailer_x = x_rear + 0.5 * trailer_length * np.cos(trailer_heading)
+    trailer_y = y_rear + 0.5 * trailer_length * np.sin(trailer_heading)
+    return float(trailer_x), float(trailer_y)
+
+
 def _make_env(map_dir, episode_length, **kwargs):
     """Create a Drive env for SDC-only curved-rollout tests."""
     return Drive(
@@ -1248,3 +1332,129 @@ def test_get_global_agent_types_exposes_sim_entity_type(tmp_path):
         np.testing.assert_array_equal(state_with_types["type"], types)
     finally:
         env.close()
+
+
+def test_articulated_mode_uses_classic_action_space_and_resets(generated_conversion_bin, monkeypatch):
+    _shared_patch(monkeypatch)
+    env = Drive(
+        num_agents=1,
+        num_maps=1,
+        map_dir=str(generated_conversion_bin.parent),
+        resample_frequency=0,
+        episode_length=10,
+        control_mode="control_sdc_only",
+        init_mode="create_all_valid",
+        dynamics_model="articulated",
+    )
+    try:
+        assert env.single_action_space.nvec.tolist() == [7 * 13]
+        obs, _ = env.reset(seed=0)
+        assert obs.shape[0] == env.num_agents
+    finally:
+        env.close()
+
+
+def test_articulated_reset_projects_trailer_from_geometry(generated_conversion_bin, monkeypatch):
+    _shared_patch(monkeypatch)
+    params = _load_non_kinematic_vehicle_params_from_bin(str(generated_conversion_bin))
+    env = Drive(
+        num_agents=1,
+        num_maps=1,
+        map_dir=str(generated_conversion_bin.parent),
+        resample_frequency=0,
+        episode_length=10,
+        control_mode="control_sdc_only",
+        init_mode="create_all_valid",
+        dynamics_model="articulated",
+    )
+    try:
+        env.reset(seed=0)
+        tractor = env.get_global_agent_state()
+        trailer = env.get_sdc_trailer_state()
+
+        expected_heading = 0.1
+        expected_x, expected_y = _project_trailer_pose(
+            tractor_x=float(tractor["x"][0]),
+            tractor_y=float(tractor["y"][0]),
+            tractor_heading=float(tractor["heading"][0]),
+            trailer_heading=expected_heading,
+            tractor_length=float(tractor["length"][0]),
+            trailer_length=float(trailer["length"][0]),
+            params=params,
+        )
+
+        assert int(trailer["has_trailer"][0]) == 1
+        assert np.isclose(float(trailer["heading"][0]), expected_heading, atol=1e-5)
+        assert np.isclose(float(trailer["x"][0]), expected_x, atol=1e-5)
+        assert np.isclose(float(trailer["y"][0]), expected_y, atol=1e-5)
+    finally:
+        env.close()
+
+
+def test_articulated_reset_force_zero_aligns_trailer_with_tractor(generated_conversion_bin, monkeypatch):
+    _shared_patch(monkeypatch)
+    params = _load_non_kinematic_vehicle_params_from_bin(str(generated_conversion_bin))
+    env = Drive(
+        num_agents=1,
+        num_maps=1,
+        map_dir=str(generated_conversion_bin.parent),
+        resample_frequency=0,
+        episode_length=10,
+        control_mode="control_sdc_only",
+        init_mode="create_all_valid",
+        dynamics_model="articulated",
+        force_zero_trailer_articulation_at_init=True,
+    )
+    try:
+        env.reset(seed=0)
+        tractor = env.get_global_agent_state()
+        trailer = env.get_sdc_trailer_state()
+
+        expected_heading = float(tractor["heading"][0])
+        expected_x, expected_y = _project_trailer_pose(
+            tractor_x=float(tractor["x"][0]),
+            tractor_y=float(tractor["y"][0]),
+            tractor_heading=expected_heading,
+            trailer_heading=expected_heading,
+            tractor_length=float(tractor["length"][0]),
+            trailer_length=float(trailer["length"][0]),
+            params=params,
+        )
+
+        assert np.isclose(float(trailer["heading"][0]), expected_heading, atol=1e-5)
+        assert np.isclose(float(trailer["x"][0]), expected_x, atol=1e-5)
+        assert np.isclose(float(trailer["y"][0]), expected_y, atol=1e-5)
+    finally:
+        env.close()
+
+
+def test_articulated_tractor_motion_matches_classic_with_zero_articulation(generated_conversion_bin, monkeypatch):
+    _shared_patch(monkeypatch)
+    common_kwargs = dict(
+        num_agents=1,
+        num_maps=1,
+        map_dir=str(generated_conversion_bin.parent),
+        resample_frequency=0,
+        episode_length=10,
+        control_mode="control_sdc_only",
+        init_mode="create_all_valid",
+        force_zero_trailer_articulation_at_init=True,
+    )
+    env_classic = Drive(dynamics_model="classic", **common_kwargs)
+    env_articulated = Drive(dynamics_model="articulated", **common_kwargs)
+    try:
+        env_classic.reset(seed=0)
+        env_articulated.reset(seed=0)
+        action = np.full_like(env_classic.actions, _classic_joint_action(4, 8))
+
+        env_classic.step(action)
+        env_articulated.step(action)
+
+        classic_state = env_classic.get_global_agent_state()
+        articulated_state = env_articulated.get_global_agent_state()
+        assert np.isclose(float(classic_state["x"][0]), float(articulated_state["x"][0]), atol=1e-5)
+        assert np.isclose(float(classic_state["y"][0]), float(articulated_state["y"][0]), atol=1e-5)
+        assert np.isclose(float(classic_state["heading"][0]), float(articulated_state["heading"][0]), atol=1e-5)
+    finally:
+        env_classic.close()
+        env_articulated.close()

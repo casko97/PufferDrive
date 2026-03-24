@@ -98,7 +98,7 @@ int demo(const char *map_name, const char *policy_name, int show_grid, int obs_o
         forward_drive_env(net, &env, actions);
 
         if (IsKeyDown(KEY_LEFT_SHIFT)) {
-            if (env.dynamics_model == CLASSIC) {
+            if (env.dynamics_model == CLASSIC || env.dynamics_model == ARTICULATED) {
                 // Classic dynamics: acceleration and steering
                 int accel_idx = 3; // neutral (0 m/s²)
                 int steer_idx = 6; // neutral (0.0 steering)

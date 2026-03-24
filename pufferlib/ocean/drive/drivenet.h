@@ -81,7 +81,7 @@ DriveNet *init_drivenet(Weights *weights, int num_agents, int dynamics_model, in
         action_size = 2;  // accel/jerk_long + steer/jerk_lat
         action_dim = 2;
     } else {  // Discrete
-        if (dynamics_model == CLASSIC) {
+        if (dynamics_model == CLASSIC || dynamics_model == ARTICULATED) {
             action_size = 7 * 13; // Joint action space
             logit_sizes[0] = 7 * 13;
             action_dim = 1;
@@ -141,9 +141,11 @@ DriveNet *init_drivenet(Weights *weights, int num_agents, int dynamics_model, in
         net->multidiscrete = NULL;
     }
     
+    const char *dynamics_name =
+        (dynamics_model == CLASSIC) ? "classic" : ((dynamics_model == ARTICULATED) ? "articulated" : "jerk");
     printf("DriveNet initialized: action_type=%d (%s), action_dim=%d, dynamics_model=%d (%s), observation_mode=%d\n",
            action_type, action_type == 0 ? "discrete" : "continuous", action_dim,
-           dynamics_model, dynamics_model == 0 ? "classic" : "jerk", observation_mode);
+           dynamics_model, dynamics_name, observation_mode);
     
     return net;
 }
