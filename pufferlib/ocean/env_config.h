@@ -51,6 +51,8 @@ static int handler(void *config, const char *section, const char *name, const ch
     } else if (MATCH("env", "dynamics_model")) {
         if (strcmp(value, "\"classic\"") == 0 || strcmp(value, "classic") == 0) {
             env_config->dynamics_model = 0; // CLASSIC
+        } else if (strcmp(value, "\"articulated\"") == 0 || strcmp(value, "articulated") == 0) {
+            env_config->dynamics_model = 2; // ARTICULATED
         } else if (strcmp(value, "\"jerk\"") == 0 || strcmp(value, "jerk") == 0) {
             env_config->dynamics_model = 1; // JERK
         } else {

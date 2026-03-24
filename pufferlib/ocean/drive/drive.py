@@ -12,6 +12,7 @@ from tqdm import tqdm
 _POLICY_TYPE_PADDED = 0
 _EMPTY_PARTNER_EPS = 1e-8
 _EGO_TRAILER_STATE_FEATURES = 4
+_DYNAMICS_MODEL_IDS = {"classic": 0, "jerk": 1, "articulated": 2}
 _NON_KINEMATIC_PARAM_ORDER = [
     "tractor_length",
     "trailer_length",
@@ -158,7 +159,7 @@ class Drive(pufferlib.PufferEnv):
         self.type_classes = binding.POLICY_TYPE_CLASS_COUNT
 
         # Observation space calculation
-        self._base_ego_features = {"classic": binding.EGO_FEATURES_CLASSIC, "jerk": binding.EGO_FEATURES_JERK}.get(
+        self._base_ego_features = {"classic": binding.EGO_FEATURES_CLASSIC, "articulated": binding.EGO_FEATURES_CLASSIC, "jerk": binding.EGO_FEATURES_JERK}.get(
             dynamics_model
         )
 
@@ -243,7 +244,7 @@ class Drive(pufferlib.PufferEnv):
             )
 
         if action_type == "discrete":
-            if dynamics_model == "classic":
+            if dynamics_model in ("classic", "articulated"):
                 # Joint action space (assume dependence)
                 self.single_action_space = gymnasium.spaces.MultiDiscrete([7 * 13])
                 # Multi discrete (assume independence)
@@ -252,7 +253,7 @@ class Drive(pufferlib.PufferEnv):
                 # Joint action space (assume dependence) - 4 longitudinal × 3 lateral = 12
                 self.single_action_space = gymnasium.spaces.MultiDiscrete([4 * 3])
             else:
-                raise ValueError(f"dynamics_model must be 'classic' or 'jerk'. Got: {dynamics_model}")
+                raise ValueError(f"dynamics_model must be 'classic', 'articulated' or 'jerk'. Got: {dynamics_model}")
         elif action_type == "continuous":
             self.single_action_space = gymnasium.spaces.Box(low=-1, high=1, shape=(2,), dtype=np.float32)
         else:
@@ -280,6 +281,7 @@ class Drive(pufferlib.PufferEnv):
             map_dir=map_dir,
             num_agents=num_agents,
             num_maps=num_maps,
+            dynamics_model=_DYNAMICS_MODEL_IDS[dynamics_model],
             init_mode=self.init_mode,
             control_mode=self.control_mode,
             init_steps=self.init_steps,
@@ -324,6 +326,7 @@ class Drive(pufferlib.PufferEnv):
                 collision_behavior=self.collision_behavior,
                 offroad_behavior=self.offroad_behavior,
                 dt=dt,
+                dynamics_model=_DYNAMICS_MODEL_IDS[dynamics_model],
                 episode_length=(int(episode_length) if episode_length is not None else None),
                 termination_mode=(int(self.termination_mode) if self.termination_mode is not None else 0),
                 max_controlled_agents=self.max_controlled_agents,
@@ -346,6 +349,7 @@ class Drive(pufferlib.PufferEnv):
         agent_offsets, map_ids, num_envs = binding.shared(
             num_agents=self.num_agents,
             num_maps=self.num_maps,
+            dynamics_model=_DYNAMICS_MODEL_IDS[self.dynamics_model],
             init_mode=self.init_mode,
             control_mode=self.control_mode,
             init_steps=self.init_steps,
@@ -385,6 +389,7 @@ class Drive(pufferlib.PufferEnv):
                 collision_behavior=self.collision_behavior,
                 offroad_behavior=self.offroad_behavior,
                 dt=self.dt,
+                dynamics_model=_DYNAMICS_MODEL_IDS[self.dynamics_model],
                 episode_length=(int(self.episode_length) if self.episode_length is not None else None),
                 max_controlled_agents=self.max_controlled_agents,
                 map_id=map_ids[i],

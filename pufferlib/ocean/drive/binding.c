@@ -111,6 +111,7 @@ static PyObject *my_shared(PyObject *self, PyObject *args, PyObject *kwargs) {
     char *map_dir = unpack_str(kwargs, "map_dir");
     int num_agents = unpack(kwargs, "num_agents");
     int num_maps = unpack(kwargs, "num_maps");
+    int dynamics_model = unpack(kwargs, "dynamics_model");
     int init_mode = unpack(kwargs, "init_mode");
     int control_mode = unpack(kwargs, "control_mode");
     int init_steps = unpack(kwargs, "init_steps");
@@ -141,6 +142,7 @@ static PyObject *my_shared(PyObject *self, PyObject *args, PyObject *kwargs) {
         env->init_mode = init_mode;
         env->control_mode = control_mode;
         env->init_steps = init_steps;
+        env->dynamics_model = dynamics_model;
         env->goal_behavior = goal_behavior;
         env->goal_target_distance = goal_target_distance;
         env->override_non_kinematic_vehicle_params = override_non_kinematic;
@@ -242,12 +244,49 @@ static int my_init(Env *env, PyObject *args, PyObject *kwargs) {
     if (kwargs && PyDict_GetItemString(kwargs, "episode_length")) {
         conf.episode_length = (int)unpack(kwargs, "episode_length");
     }
+    if (kwargs && PyDict_GetItemString(kwargs, "reward_vehicle_collision")) {
+        conf.reward_vehicle_collision = (float)unpack(kwargs, "reward_vehicle_collision");
+    }
+    if (kwargs && PyDict_GetItemString(kwargs, "reward_offroad_collision")) {
+        conf.reward_offroad_collision = (float)unpack(kwargs, "reward_offroad_collision");
+    }
+    if (kwargs && PyDict_GetItemString(kwargs, "reward_goal")) {
+        conf.reward_goal = (float)unpack(kwargs, "reward_goal");
+    }
+    if (kwargs && PyDict_GetItemString(kwargs, "reward_goal_post_respawn")) {
+        conf.reward_goal_post_respawn = (float)unpack(kwargs, "reward_goal_post_respawn");
+    }
+    if (kwargs && PyDict_GetItemString(kwargs, "goal_radius")) {
+        conf.goal_radius = (float)unpack(kwargs, "goal_radius");
+    }
+    if (kwargs && PyDict_GetItemString(kwargs, "goal_speed")) {
+        conf.goal_speed = (float)unpack(kwargs, "goal_speed");
+    }
+    if (kwargs && PyDict_GetItemString(kwargs, "goal_behavior")) {
+        conf.goal_behavior = (int)unpack(kwargs, "goal_behavior");
+    }
+    if (kwargs && PyDict_GetItemString(kwargs, "goal_target_distance")) {
+        conf.goal_target_distance = (float)unpack(kwargs, "goal_target_distance");
+    }
+    if (kwargs && PyDict_GetItemString(kwargs, "collision_behavior")) {
+        conf.collision_behavior = (int)unpack(kwargs, "collision_behavior");
+    }
+    if (kwargs && PyDict_GetItemString(kwargs, "offroad_behavior")) {
+        conf.offroad_behavior = (int)unpack(kwargs, "offroad_behavior");
+    }
+    if (kwargs && PyDict_GetItemString(kwargs, "termination_mode")) {
+        conf.termination_mode = (int)unpack(kwargs, "termination_mode");
+    }
+    if (kwargs && PyDict_GetItemString(kwargs, "dt")) {
+        conf.dt = (float)unpack(kwargs, "dt");
+    }
     if (conf.episode_length <= 0) {
         PyErr_SetString(PyExc_ValueError, "episode_length must be > 0 (set in INI or kwargs)");
         return -1;
     }
     env->action_type = conf.action_type;
-    env->dynamics_model = conf.dynamics_model;
+    env->dynamics_model = kwargs && PyDict_GetItemString(kwargs, "dynamics_model") ? (int)unpack(kwargs, "dynamics_model")
+                                                                                   : conf.dynamics_model;
     env->reward_vehicle_collision = conf.reward_vehicle_collision;
     env->reward_offroad_collision = conf.reward_offroad_collision;
     env->reward_goal = conf.reward_goal;
