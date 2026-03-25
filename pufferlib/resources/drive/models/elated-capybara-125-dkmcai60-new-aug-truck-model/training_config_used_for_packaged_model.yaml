@@ -1,0 +1,251 @@
+_wandb:
+    value:
+        cli_version: 0.25.0
+        e:
+            jirx69ryxb287azizg91svxjv8lgvtld:
+                args:
+                    - --wandb
+                    - --wandb-project
+                    - pufferdrive
+                    - --wandb-group
+                    - apricot-truck
+                cpu_count: 128
+                cpu_count_logical: 256
+                cudaVersion: "13.0"
+                disk:
+                    /:
+                        total: "31317663744"
+                        used: "17074061312"
+                email: casko@kth.se
+                executable: /home/x_carsk/.conda/envs/pufferdrive_tractorTrailer/bin/python
+                git:
+                    commit: 10b772d46ce607d37641d96197a9bfd8ec89adb9
+                    remote: https://github.com/casko97/PufferDrive.git
+                gpu: NVIDIA A100-SXM4-40GB
+                gpu_count: 1
+                gpu_nvidia:
+                    - architecture: Ampere
+                      cudaCores: 6912
+                      memoryTotal: "42949672960"
+                      name: NVIDIA A100-SXM4-40GB
+                      uuid: GPU-1950bab1-4e5d-bb27-70a3-42001e88f1b7
+                host: node043
+                memory:
+                    total: "1081956724736"
+                os: Linux-4.18.0-553.109.1.el8_10.x86_64-x86_64-with-glibc2.28
+                program: /home/x_carsk/.conda/envs/pufferdrive_tractorTrailer/bin/puffer
+                python: CPython 3.11.14
+                root: /proj/rpl-soro/users/x_carsk/PufferDrive/PufferDrive
+                slurm:
+                    cluster_name: berzelius
+                    conf: /etc/slurm/slurm.conf
+                    cpus_on_node: "16"
+                    gpus: "1"
+                    gpus_on_node: "1"
+                    gtids: "0"
+                    job_account: berzelius-2026-36
+                    job_cpus_per_node: "16"
+                    job_end_time: "1774537437"
+                    job_gid: "15519"
+                    job_gpus: "7"
+                    job_id: "15899543"
+                    job_name: pufferdrive_testrun_0324
+                    job_nodelist: node043
+                    job_num_nodes: "1"
+                    job_partition: berzelius
+                    job_qos: normal
+                    job_start_time: "1774364634"
+                    job_uid: "15519"
+                    job_user: x_carsk
+                    jobid: "15899543"
+                    localid: "0"
+                    mem_per_cpu: "7950"
+                    nnodes: "1"
+                    nodeid: "0"
+                    nodelist: node043
+                    nprocs: "1"
+                    ntasks: "1"
+                    oom_kill_step: "0"
+                    prio_process: "0"
+                    procid: "0"
+                    script_context: prolog_task
+                    submit_dir: /proj/rpl-soro/users/x_carsk/PufferDrive/PufferDrive
+                    submit_host: berzelius2.nsc.liu.se
+                    task_pid: "1847930"
+                    tasks_per_node: "1"
+                    topology_addr: ibsw[40-59].ibsw[15,17-23].node043
+                    topology_addr_pattern: switch.switch.node
+                startedAt: "2026-03-24T15:04:40.199992Z"
+                writerId: jirx69ryxb287azizg91svxjv8lgvtld
+        m: []
+        python_version: 3.11.14
+        t:
+            "1":
+                - 1
+            "2":
+                - 1
+            "3":
+                - 2
+                - 14
+                - 15
+                - 16
+                - 61
+            "4": 3.11.14
+            "5": 0.25.0
+            "12": 0.25.0
+            "13": linux-x86_64
+dest_folder:
+    value: null
+env:
+    value:
+        action_type: discrete
+        collision_behavior: 0
+        control_mode: control_vehicles
+        dt: 0.1
+        dynamics_model: articulated
+        episode_length: 91
+        goal_behavior: 0
+        goal_radius: 2
+        goal_speed: 100
+        goal_target_distance: 30
+        init_mode: create_all_valid
+        init_steps: 0
+        map_dir: /proj/rpl-soro/users/x_carsk/PufferDrive/binaries/training
+        num_agents: 2048
+        num_maps: 10000
+        observation_mode: sdc_only_with_trailer
+        offroad_behavior: 0
+        resample_frequency: 910
+        reward_goal: 1
+        reward_goal_post_respawn: 0.25
+        reward_offroad_collision: -0.5
+        reward_vehicle_collision: -0.5
+        sdc_runtime_truck_override: "true"
+        termination_mode: 1
+env_name:
+    value: puffer_drive
+eval:
+    value:
+        backend: PufferEnv
+        eval_interval: 100
+        human_replay_control_mode: control_sdc_only
+        human_replay_eval: true
+        map_dir: /proj/rpl-soro/users/x_carsk/PufferDrive/binaries/validation
+        wosac_aggregate_results: true
+        wosac_control_mode: control_wosac
+        wosac_goal_behavior: 2
+        wosac_goal_radius: 2
+        wosac_init_mode: create_all_valid
+        wosac_init_steps: 10
+        wosac_num_maps: 10000
+        wosac_num_rollouts: 32
+        wosac_realism_eval: false
+        wosac_sanity_check: false
+fps:
+    value: 15
+gif_path:
+    value: eval.gif
+load_id:
+    value: null
+load_model_path:
+    value: null
+local_rank:
+    value: 0
+max_runs:
+    value: 200
+max_suggestion_cost:
+    value: 3600
+neptune:
+    value: false
+neptune_name:
+    value: pufferai
+neptune_project:
+    value: ablations
+package:
+    value: ocean
+policy:
+    value:
+        hidden_size: 256
+        input_size: 64
+policy_name:
+    value: Drive
+render_mode:
+    value: auto
+rnn:
+    value:
+        hidden_size: 256
+        input_size: 256
+rnn_name:
+    value: Recurrent
+sanity_maps:
+    value: null
+save_frames:
+    value: 0
+sweep:
+    value:
+        downsample: 10
+        goal: maximize
+        method: Protein
+        metric: score
+tag:
+    value: null
+train:
+    value:
+        adam_beta1: 0.9
+        adam_beta2: 0.999
+        adam_eps: 1e-08
+        anneal_lr: true
+        batch_size: 393216
+        bptt_horizon: 32
+        checkpoint_interval: 100
+        clip_coef: 0.2
+        compile: false
+        compile_fullgraph: true
+        compile_mode: max-autotune-no-cudagraphs
+        cpu_offload: false
+        data_dir: experiments
+        device: cuda
+        ent_coef: 0.005
+        gae_lambda: 0.95
+        gamma: 0.98
+        learning_rate: 0.003
+        max_grad_norm: 1
+        max_minibatch_size: 32768
+        minibatch_size: 24576
+        name: pufferai
+        obs_only: "true"
+        optimizer: muon
+        precision: float32
+        prio_alpha: 0.8499999999999999
+        prio_beta0: 0.8499999999999999
+        project: ablations
+        render: false
+        render_interval: 1000
+        render_map: none
+        seed: 42
+        show_grid: "true"
+        show_human_logs: "false"
+        show_lasers: "false"
+        torch_deterministic: true
+        total_timesteps: 2000000000
+        update_epochs: 1
+        use_rnn: true
+        vf_clip_coef: 0.1999999999999999
+        vf_coef: 2
+        vtrace_c_clip: 1
+        vtrace_rho_clip: 1
+        zoom_in: "true"
+vec:
+    value:
+        backend: Multiprocessing
+        batch_size: 3
+        num_envs: 6
+        num_workers: 6
+        seed: 42
+        zero_copy: true
+wandb:
+    value: true
+wandb_group:
+    value: apricot-truck
+wandb_project:
+    value: pufferdrive

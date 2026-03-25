@@ -1,19 +1,19 @@
 {
   "aggregate_metrics_mean_over_maps": {
-    "collision_rate": 0.3541666666666667,
-    "collisions_per_agent": 12.729166666666666,
+    "collision_rate": 0.3125,
+    "collisions_per_agent": 12.979166666666666,
     "completion_rate": 0.0625,
-    "dnf_rate": 0.1875,
+    "dnf_rate": 0.14583333333333334,
     "episode_length": 90.0,
-    "episode_return": -13.75559270901916,
+    "episode_return": -15.391681799665093,
     "goals_reached_this_episode": 0.0625,
     "goals_sampled_this_episode": 1.0,
-    "lane_alignment_rate": 0.5416666666666666,
+    "lane_alignment_rate": 0.4375,
     "n": 1.0,
-    "offroad_per_agent": 14.791666666666666,
-    "offroad_rate": 0.4791666666666667,
+    "offroad_per_agent": 17.8125,
+    "offroad_rate": 0.5208333333333334,
     "score": 0.0625,
-    "speed_at_goal": 0.10915685134629409
+    "speed_at_goal": 0.1286027042757875
   },
   "checkpoint": "/home/casko/phd-code/PufferDrive/pufferlib/resources/drive/models/apricot-aug-car-model-c5e2cdlo/model_puffer_drive_005087.pt",
   "config": "/home/casko/phd-code/PufferDrive/pufferlib/resources/drive/models/apricot-aug-car-model-c5e2cdlo/truck eval 3/conf1_discrete_human_replay_eval.ini",
