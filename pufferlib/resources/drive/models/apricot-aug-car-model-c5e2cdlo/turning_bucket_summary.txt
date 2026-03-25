@@ -1,0 +1,120 @@
+Model: /home/casko/phd-code/PufferDrive/pufferlib/resources/drive/models/apricot-aug-car-model-c5e2cdlo
+Turning threshold: 45.0 deg
+
+Sample set 496f9fa436daa01b
+runs: car eval 2, truck eval 2
+shared sample: sample_size=100 straight=83 turning=17
+
+== car eval 2 ==
+completed_rows: 93
+straight (n=76)
+  score: 0.374891
+  completion_rate: 0.431056
+  collisions_per_agent: 5.318269
+  offroad_per_agent: 4.232615
+  episode_return: -4.079914
+  goals_reached_this_episode: 0.431056
+  goals_sampled_this_episode: 1.000000
+  speed_at_goal: 4.607098
+  collision_rate: 0.171483
+  offroad_rate: 0.206235
+  dnf_rate: 0.291208
+  lane_alignment_rate: 0.739418
+  episode_length: 90.000000
+  n: 2048.000000
+turning (n=17)
+  score: 0.339643
+  completion_rate: 0.369026
+  collisions_per_agent: 0.676758
+  offroad_per_agent: 4.617245
+  episode_return: -2.212693
+  goals_reached_this_episode: 0.369026
+  goals_sampled_this_episode: 1.000000
+  speed_at_goal: 4.077637
+  collision_rate: 0.078498
+  offroad_rate: 0.228027
+  dnf_rate: 0.363741
+  lane_alignment_rate: 0.729291
+  episode_length: 90.000000
+  n: 2048.000000
+
+== truck eval 2 ==
+completed_rows: 65
+straight (n=51)
+  score: 0.346919
+  completion_rate: 0.410472
+  collisions_per_agent: 5.252652
+  offroad_per_agent: 4.630160
+  episode_return: -3.993504
+  goals_reached_this_episode: 0.410472
+  goals_sampled_this_episode: 1.000000
+  speed_at_goal: 4.408921
+  collision_rate: 0.158538
+  offroad_rate: 0.196662
+  dnf_rate: 0.324726
+  lane_alignment_rate: 0.760053
+  episode_length: 90.000000
+  n: 2048.000000
+turning (n=14)
+  score: 0.330811
+  completion_rate: 0.376674
+  collisions_per_agent: 3.405099
+  offroad_per_agent: 10.374965
+  episode_return: -6.357666
+  goals_reached_this_episode: 0.376674
+  goals_sampled_this_episode: 1.000000
+  speed_at_goal: 4.779289
+  collision_rate: 0.222796
+  offroad_rate: 0.324428
+  dnf_rate: 0.229178
+  lane_alignment_rate: 0.742711
+  episode_length: 90.000000
+  n: 2048.000000
+
+== Comparison: car eval 2 - truck eval 2 ==
+straight (left_n=76, right_n=51)
+  score: 0.027972
+  completion_rate: 0.020584
+  collisions_per_agent: 0.065617
+  offroad_per_agent: -0.397546
+  episode_return: -0.086410
+  speed_at_goal: 0.198176
+  collision_rate: 0.012945
+  offroad_rate: 0.009572
+  dnf_rate: -0.033518
+  lane_alignment_rate: -0.020634
+turning (left_n=17, right_n=14)
+  score: 0.008832
+  completion_rate: -0.007648
+  collisions_per_agent: -2.728341
+  offroad_per_agent: -5.757720
+  episode_return: 4.144974
+  speed_at_goal: -0.701653
+  collision_rate: -0.144297
+  offroad_rate: -0.096401
+  dnf_rate: 0.134563
+  lane_alignment_rate: -0.013420
+
+turning - straight within each run
+car eval 2
+  score: -0.035248
+  completion_rate: -0.062030
+  collisions_per_agent: -4.641512
+  offroad_per_agent: 0.384630
+  episode_return: 1.867221
+  speed_at_goal: -0.529461
+  collision_rate: -0.092985
+  offroad_rate: 0.021793
+  dnf_rate: 0.072532
+  lane_alignment_rate: -0.010127
+truck eval 2
+  score: -0.016108
+  completion_rate: -0.033798
+  collisions_per_agent: -1.847553
+  offroad_per_agent: 5.744805
+  episode_return: -2.364163
+  speed_at_goal: 0.370368
+  collision_rate: 0.064258
+  offroad_rate: 0.127766
+  dnf_rate: -0.095548
+  lane_alignment_rate: -0.017342
