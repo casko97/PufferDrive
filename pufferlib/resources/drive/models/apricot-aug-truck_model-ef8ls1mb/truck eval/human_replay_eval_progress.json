@@ -1,9 +1,0 @@
-{
-  "checkpoint": "/home/casko/phd-code/PufferDrive/pufferlib/resources/drive/models/apricot-aug-truck_model-ef8ls1mb/model_puffer_drive_005087.pt",
-  "completed_maps": 67,
-  "config": "/home/casko/phd-code/PufferDrive/pufferlib/resources/drive/models/apricot-aug-truck_model-ef8ls1mb/truck eval/conf1_discrete_human_replay_eval.ini",
-  "processed_maps": 100,
-  "skipped_maps": 33,
-  "status": "completed",
-  "total_maps": 100
-}
