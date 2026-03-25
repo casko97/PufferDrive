@@ -755,7 +755,10 @@ def save_map_binary(map_data, output_file, unique_map_id):
         # Write tracks_to_predict info (indices only)
         f.write(struct.pack("i", len(tracks_to_predict)))
         for track in tracks_to_predict:
-            track_index = track.get("track_index", -1)
+            if isinstance(track, dict):
+                track_index = track.get("track_index", -1)
+            else:
+                track_index = int(track)
             f.write(struct.pack("i", track_index))
 
         # Count total entities
