@@ -122,9 +122,8 @@ class RewardModel:
         
         self.capacity = int(capacity)
 
-        # We always want a segment lengths of 50 in these experiments
-        self.buffer_seg1 = np.empty((self.capacity, 50, self.ds+self.da), dtype=np.float32)
-        self.buffer_seg2 = np.empty((self.capacity, 50, self.ds+self.da), dtype=np.float32)
+        self.buffer_seg1 = np.empty((self.capacity, self.size_segment, self.ds+self.da), dtype=np.float32)
+        self.buffer_seg2 = np.empty((self.capacity, self.size_segment, self.ds+self.da), dtype=np.float32)
         self.buffer_label = np.empty((self.capacity, 1), dtype=np.float32)
         self.buffer_index = 0
         self.buffer_full = False
@@ -389,6 +388,10 @@ class RewardModel:
         return sa_t_1, sa_t_2, r_t_1, r_t_2
 
     def put_queries(self, sa_t_1, sa_t_2, labels):
+        if sa_t_1.shape[1] != self.size_segment or sa_t_2.shape[1] != self.size_segment:
+            raise ValueError(
+                f"segment length mismatch: expected {self.size_segment}, got {sa_t_1.shape[1]} and {sa_t_2.shape[1]}"
+            )
         total_sample = sa_t_1.shape[0]
         next_index = self.buffer_index + total_sample
         if next_index >= self.capacity:
@@ -692,9 +695,9 @@ class RewardModel:
         new_sa_t_2 = []
         for i in range(len(sa_t_1)):
             H = self.size_segment
-            H_tmp = 50
-            k_1 = np.random.randint(0, H - H_tmp-1)
-            k_2 = np.random.randint(0, H - H_tmp-1)
+            H_tmp = min(50, H)
+            k_1 = 0 if H_tmp == H else np.random.randint(0, H - H_tmp - 1)
+            k_2 = 0 if H_tmp == H else np.random.randint(0, H - H_tmp - 1)
             new_sa_t_1.append(sa_t_1[i][k_1:k_1 + H_tmp])
             new_sa_t_2.append(sa_t_2[i][k_2:k_2 + H_tmp])
             if i < 2:
@@ -707,9 +710,9 @@ class RewardModel:
         new_sa_t_2_unlabeled = []
         for i in range(len(sa_t_1_unlabeled)):
             H = self.size_segment
-            H_tmp = 50
-            k_1 = np.random.randint(0, H - H_tmp-1)
-            k_2 = np.random.randint(0, H - H_tmp-1)
+            H_tmp = min(50, H)
+            k_1 = 0 if H_tmp == H else np.random.randint(0, H - H_tmp - 1)
+            k_2 = 0 if H_tmp == H else np.random.randint(0, H - H_tmp - 1)
             new_sa_t_1_unlabeled.append(sa_t_1_unlabeled[i][k_1:k_1 + H_tmp])
             new_sa_t_2_unlabeled.append(sa_t_2_unlabeled[i][k_2:k_2 + H_tmp])
             if i < 2:

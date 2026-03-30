@@ -133,6 +133,106 @@ def _extract_ground_truth(env_handle, active_count: int):
     }
 
 
+def _record_observation(env_handle, active_count: int) -> np.ndarray:
+    timestep_obs = np.zeros((active_count, _obs_dim()), dtype=np.float32)
+    binding.env_copy_observations(env_handle, timestep_obs)
+    return timestep_obs[0].copy()
+
+
+def _record_agent_state(env_handle):
+    state_x = np.zeros(1, dtype=np.float32)
+    state_y = np.zeros(1, dtype=np.float32)
+    state_z = np.zeros(1, dtype=np.float32)
+    state_heading = np.zeros(1, dtype=np.float32)
+    state_id = np.zeros(1, dtype=np.int32)
+    state_length = np.zeros(1, dtype=np.float32)
+    state_width = np.zeros(1, dtype=np.float32)
+    binding.get_global_agent_state(
+        env_handle,
+        state_x,
+        state_y,
+        state_z,
+        state_heading,
+        state_id,
+        state_length,
+        state_width,
+    )
+    return (
+        float(state_x[0]),
+        float(state_y[0]),
+        float(state_heading[0]),
+    )
+
+
+def _compute_displacement_metrics(ref_x: np.ndarray, ref_y: np.ndarray, cand_x: np.ndarray, cand_y: np.ndarray) -> dict:
+    aligned_steps = min(len(ref_x), len(cand_x), len(ref_y), len(cand_y))
+    displacement = np.sqrt((cand_x[:aligned_steps] - ref_x[:aligned_steps]) ** 2 + (cand_y[:aligned_steps] - ref_y[:aligned_steps]) ** 2)
+    return {
+        "aligned_steps": int(aligned_steps),
+        "displacement_per_step": displacement.astype(np.float32),
+        "ade": float(displacement.mean()) if displacement.size else float("nan"),
+        "fde": float(displacement[-1]) if displacement.size else float("nan"),
+    }
+
+
+def _replay_action_sequence(map_dir: Path, fit_actions: np.ndarray, gt: dict | None = None) -> dict:
+    env_handle, obs, actions, rewards, terminals, truncs = _init_env(map_dir)
+    try:
+        binding.env_reset(env_handle, 0)
+        active_count = binding.env_get_active_agent_count(env_handle)
+        if active_count <= 0:
+            raise RuntimeError("no_active_agents")
+
+        rollout_obs = []
+        rollout_actions = []
+        rollout_timestep = []
+        start_x, start_y, start_heading = _record_agent_state(env_handle)
+        rollout_x = [start_x]
+        rollout_y = [start_y]
+        rollout_heading = [start_heading]
+
+        for step_idx, action in enumerate(fit_actions):
+            rollout_obs.append(_record_observation(env_handle, active_count))
+            rollout_actions.append(int(action))
+            rollout_timestep.append(OFFLINE_FIT_INIT_STEPS + step_idx)
+
+            actions[0] = int(action)
+            binding.env_step(env_handle)
+            if int(terminals[0]) != 0 or int(truncs[0]) != 0:
+                break
+
+            cur_x, cur_y, cur_heading = _record_agent_state(env_handle)
+            rollout_x.append(cur_x)
+            rollout_y.append(cur_y)
+            rollout_heading.append(cur_heading)
+
+        replay = {
+            "status": "ok",
+            "num_steps": len(rollout_actions),
+            "obs": np.stack(rollout_obs).astype(np.float32)
+            if rollout_obs
+            else np.zeros((0, _obs_dim()), dtype=np.float32),
+            "actions": np.asarray(rollout_actions, dtype=np.int32),
+            "timestep": np.asarray(rollout_timestep, dtype=np.int32),
+            "rollout_x": np.asarray(rollout_x, dtype=np.float32),
+            "rollout_y": np.asarray(rollout_y, dtype=np.float32),
+            "rollout_heading": np.asarray(rollout_heading, dtype=np.float32),
+        }
+        if gt is not None:
+            metrics = _compute_displacement_metrics(
+                np.asarray(gt["x"], dtype=np.float32),
+                np.asarray(gt["y"], dtype=np.float32),
+                replay["rollout_x"],
+                replay["rollout_y"],
+            )
+            replay["self_displacement_per_step"] = metrics["displacement_per_step"]
+            replay["self_ade"] = metrics["ade"]
+            replay["self_fde"] = metrics["fde"]
+        return replay
+    finally:
+        binding.env_close(env_handle)
+
+
 def _fit_side(source_bin: Path) -> dict:
     staged = _stage_map(source_bin)
     map_dir = Path(staged.name)
@@ -178,64 +278,14 @@ def _fit_side(source_bin: Path) -> dict:
                     step_lon_costs,
                 )
 
-                timestep_obs = np.zeros((active_count, _obs_dim()), dtype=np.float32)
                 logged_obs = []
                 for step_idx in range(int(num_steps)):
                     binding.env_set_logged_timestep(env_handle, OFFLINE_FIT_INIT_STEPS + step_idx)
-                    binding.env_copy_observations(env_handle, timestep_obs)
-                    logged_obs.append(timestep_obs[0].copy())
+                    logged_obs.append(_record_observation(env_handle, active_count))
             finally:
                 binding.env_close(env_handle)
 
-            env_handle, obs, actions, rewards, terminals, truncs = _init_env(map_dir)
-            try:
-                binding.env_reset(env_handle, 0)
-                state_x = np.zeros(1, dtype=np.float32)
-                state_y = np.zeros(1, dtype=np.float32)
-                state_z = np.zeros(1, dtype=np.float32)
-                state_heading = np.zeros(1, dtype=np.float32)
-                state_id = np.zeros(1, dtype=np.int32)
-                state_length = np.zeros(1, dtype=np.float32)
-                state_width = np.zeros(1, dtype=np.float32)
-                binding.get_global_agent_state(
-                    env_handle,
-                    state_x,
-                    state_y,
-                    state_z,
-                    state_heading,
-                    state_id,
-                    state_length,
-                    state_width,
-                )
-                rollout_x = [float(state_x[0])]
-                rollout_y = [float(state_y[0])]
-                rollout_heading = [float(state_heading[0])]
-                for step_idx in range(int(num_steps)):
-                    actions[0] = int(fit_actions[step_idx])
-                    binding.env_step(env_handle)
-                    if int(terminals[0]) != 0 or int(truncs[0]) != 0:
-                        break
-                    binding.get_global_agent_state(
-                        env_handle,
-                        state_x,
-                        state_y,
-                        state_z,
-                        state_heading,
-                        state_id,
-                        state_length,
-                        state_width,
-                    )
-                    rollout_x.append(float(state_x[0]))
-                    rollout_y.append(float(state_y[0]))
-                    rollout_heading.append(float(state_heading[0]))
-            finally:
-                binding.env_close(env_handle)
-
-            gt_x = np.asarray(gt["x"][: len(rollout_x)], dtype=np.float32)
-            gt_y = np.asarray(gt["y"][: len(rollout_y)], dtype=np.float32)
-            rollout_x = np.asarray(rollout_x, dtype=np.float32)
-            rollout_y = np.asarray(rollout_y, dtype=np.float32)
-            self_disp = np.sqrt((rollout_x - gt_x) ** 2 + (rollout_y - gt_y) ** 2)
+            replay = _replay_action_sequence(map_dir, fit_actions[:num_steps], gt=gt)
             return {
                 "source_map": source_bin.name,
                 "status": "ok",
@@ -256,12 +306,12 @@ def _fit_side(source_bin: Path) -> dict:
                 "gt_x": gt["x"].astype(np.float32),
                 "gt_y": gt["y"].astype(np.float32),
                 "gt_heading": gt["heading"].astype(np.float32),
-                "rollout_x": rollout_x,
-                "rollout_y": rollout_y,
-                "rollout_heading": np.asarray(rollout_heading, dtype=np.float32),
-                "self_displacement_per_step": self_disp.astype(np.float32),
-                "self_ade": float(self_disp.mean()) if self_disp.size else float("nan"),
-                "self_fde": float(self_disp[-1]) if self_disp.size else float("nan"),
+                "rollout_x": replay["rollout_x"],
+                "rollout_y": replay["rollout_y"],
+                "rollout_heading": replay["rollout_heading"],
+                "self_displacement_per_step": replay["self_displacement_per_step"],
+                "self_ade": replay["self_ade"],
+                "self_fde": replay["self_fde"],
             }
         except Exception as exc:
             return {"source_map": source_bin.name, "status": "unavailable", "error": str(exc)}
@@ -284,6 +334,43 @@ def _pair_metrics(car_side: dict, truck_side: dict) -> dict:
         "ade": float(displacement.mean()) if displacement.size else float("nan"),
         "fde": float(displacement[-1]) if displacement.size else float("nan"),
     }
+
+
+def _truck_context_replay(truck_bin: Path, car_side: dict, truck_side: dict) -> dict:
+    if car_side["status"] != "ok" or truck_side["status"] != "ok":
+        return {"status": "unavailable"}
+
+    staged = _stage_map(truck_bin)
+    map_dir = Path(staged.name)
+    try:
+        truck_gt = {
+            "x": truck_side["gt_x"],
+            "y": truck_side["gt_y"],
+        }
+        truck_branch = _replay_action_sequence(map_dir, truck_side["actions"], gt=truck_gt)
+        car_branch = _replay_action_sequence(map_dir, car_side["actions"], gt=truck_gt)
+        pair_similarity = _pair_metrics(
+            {
+                "status": "ok",
+                "rollout_x": car_branch["rollout_x"],
+                "rollout_y": car_branch["rollout_y"],
+            },
+            {
+                "status": "ok",
+                "rollout_x": truck_branch["rollout_x"],
+                "rollout_y": truck_branch["rollout_y"],
+            },
+        )
+        return {
+            "status": "ok",
+            "truck_branch": truck_branch,
+            "car_branch": car_branch,
+            "pair_similarity": pair_similarity,
+        }
+    except Exception as exc:
+        return {"status": "unavailable", "error": str(exc)}
+    finally:
+        staged.cleanup()
 
 
 def export_paired_fits(car_root: Path, truck_root: Path, output_path: Path, max_maps: int | None = None) -> Path:
@@ -328,6 +415,7 @@ def export_paired_fits(car_root: Path, truck_root: Path, output_path: Path, max_
             "car": car_side,
             "truck": truck_side,
             "pair_similarity": _pair_metrics(car_side, truck_side),
+            "truck_context_replay": _truck_context_replay(truck_root / map_name, car_side, truck_side),
         }
 
     torch.save(payload, output_path)
@@ -338,6 +426,11 @@ def export_paired_fits(car_root: Path, truck_root: Path, output_path: Path, max_
             1
             for pair in payload["pairs"].values()
             if pair["car"]["status"] == "ok" and pair["truck"]["status"] == "ok"
+        ),
+        "successful_truck_context_replays": sum(
+            1
+            for pair in payload["pairs"].values()
+            if pair["truck_context_replay"]["status"] == "ok"
         ),
     }
     output_path.with_suffix(".json").write_text(json.dumps(summary, indent=2))
