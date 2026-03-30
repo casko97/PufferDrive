@@ -13,7 +13,7 @@ def test_build_truck_context_preferences_from_synthetic_export(tmp_path):
     obs_dim = 4
     replay_len = 8
     pair_payload = {
-        "metadata": {},
+        "metadata": {"fit_settings": {"dt": 0.1}},
         "pairs": {
             "map_000.bin": {
                 "truck_context_replay": {
@@ -42,7 +42,13 @@ def test_build_truck_context_preferences_from_synthetic_export(tmp_path):
     torch.save(pair_payload, export_path)
 
     output_path = tmp_path / "preferences.pt"
-    build_truck_context_preferences(export_path, output_path, window_len=4, stride=4)
+    build_truck_context_preferences(
+        export_path,
+        output_path,
+        window_len=4,
+        min_time_diff_seconds=0.0,
+        max_start_distance_m=100.0,
+    )
 
     payload = torch.load(output_path, map_location="cpu")
     assert payload["metadata"]["total_windows"] == 2
@@ -88,8 +94,10 @@ def test_build_truck_context_preferences_cli_smoke(tmp_path):
             str(pref_path),
             "--window-len",
             "32",
-            "--stride",
-            "32",
+            "--min-time-diff-seconds",
+            "0.0",
+            "--max-start-distance-m",
+            "100.0",
         ],
         capture_output=True,
         text=True,
@@ -99,3 +107,57 @@ def test_build_truck_context_preferences_cli_smoke(tmp_path):
     payload = torch.load(pref_path, map_location="cpu")
     assert payload["metadata"]["window_len"] == 32
     assert payload["preferred_sa"].shape[0] >= 1
+    assert pref_path.with_suffix(".json").exists()
+
+
+def test_dynamic_window_shift_selection_prefers_smallest_valid_gap(tmp_path):
+    export_path = tmp_path / "synthetic_shift_export.pt"
+    obs_dim = 2
+    replay_len = 12
+    truck_rollout_x = np.array([0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0], dtype=np.float32)
+    truck_rollout_y = np.zeros(replay_len + 1, dtype=np.float32)
+    car_rollout_x = np.array([0.0, 1.0, 2.0, 13.0, 14.0, 5.2, 6.1, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0], dtype=np.float32)
+    car_rollout_y = np.zeros(replay_len + 1, dtype=np.float32)
+    pair_payload = {
+        "metadata": {"fit_settings": {"dt": 0.1}},
+        "pairs": {
+            "map_000.bin": {
+                "truck_context_replay": {
+                    "status": "ok",
+                    "pair_similarity": {"ade": 1.0, "fde": 0.0},
+                    "truck_branch": {
+                        "obs": np.zeros((replay_len, obs_dim), dtype=np.float32),
+                        "actions": np.arange(replay_len, dtype=np.int32),
+                        "rollout_x": truck_rollout_x,
+                        "rollout_y": truck_rollout_y,
+                        "self_ade": 0.1,
+                        "self_fde": 0.1,
+                    },
+                    "car_branch": {
+                        "obs": np.ones((replay_len, obs_dim), dtype=np.float32),
+                        "actions": np.arange(replay_len, dtype=np.int32),
+                        "rollout_x": car_rollout_x,
+                        "rollout_y": car_rollout_y,
+                        "self_ade": 0.2,
+                        "self_fde": 0.2,
+                    },
+                }
+            }
+        },
+    }
+    torch.save(pair_payload, export_path)
+
+    output_path = tmp_path / "preferences.pt"
+    build_truck_context_preferences(
+        export_path,
+        output_path,
+        window_len=2,
+        min_time_diff_seconds=0.3,
+        max_start_distance_m=1.0,
+    )
+
+    payload = torch.load(output_path, map_location="cpu")
+    starts = [entry["timestep_start"] for entry in payload["window_metadata"]]
+    assert starts == [0, 5, 8]
+    assert payload["window_metadata"][1]["shift_steps_from_previous"] == 5
+    assert payload["window_metadata"][1]["window_start_distance_m"] <= 1.0

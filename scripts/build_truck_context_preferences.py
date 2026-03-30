@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 
 import numpy as np
@@ -10,7 +11,8 @@ import torch
 DEFAULT_INPUT = Path("outputs/offline_fits/nuplan_boston_test10_paired_fits.pt")
 DEFAULT_OUTPUT = Path("outputs/preferences/nuplan_boston_test10_truck_context_preferences.pt")
 DEFAULT_WINDOW_LEN = 32
-DEFAULT_STRIDE = 32
+DEFAULT_MAX_START_DISTANCE_M = 1.0
+DEFAULT_MIN_TIME_DIFF_SECONDS = 2.0
 
 
 def _branch_to_sa(branch: dict) -> np.ndarray:
@@ -21,14 +23,74 @@ def _branch_to_sa(branch: dict) -> np.ndarray:
     return np.concatenate([obs, actions], axis=-1)
 
 
+def _select_window_starts(
+    aligned_steps: int,
+    window_len: int,
+    min_gap_steps: int,
+    max_start_distance_m: float,
+    truck_rollout_x: np.ndarray,
+    truck_rollout_y: np.ndarray,
+    car_rollout_x: np.ndarray,
+    car_rollout_y: np.ndarray,
+) -> list[tuple[int, int, float]]:
+    if aligned_steps < window_len:
+        return []
+
+    starts: list[tuple[int, int, float]] = []
+    current_start = 0
+    starts.append(
+        (
+            current_start,
+            0,
+            float(
+                np.sqrt(
+                    (truck_rollout_x[current_start] - car_rollout_x[current_start]) ** 2
+                    + (truck_rollout_y[current_start] - car_rollout_y[current_start]) ** 2
+                )
+            ),
+        )
+    )
+
+    while True:
+        search_start = current_start + min_gap_steps
+        search_end = aligned_steps - window_len
+        if search_start > search_end:
+            break
+
+        next_start = None
+        next_distance = None
+        for candidate in range(search_start, search_end + 1):
+            start_distance = float(
+                np.sqrt(
+                    (truck_rollout_x[candidate] - car_rollout_x[candidate]) ** 2
+                    + (truck_rollout_y[candidate] - car_rollout_y[candidate]) ** 2
+                )
+            )
+            if start_distance <= max_start_distance_m:
+                next_start = candidate
+                next_distance = start_distance
+                break
+
+        if next_start is None or next_distance is None:
+            break
+
+        starts.append((next_start, next_start - current_start, next_distance))
+        current_start = next_start
+
+    return starts
+
+
 def build_truck_context_preferences(
     export_path: Path,
     output_path: Path,
     window_len: int = DEFAULT_WINDOW_LEN,
-    stride: int = DEFAULT_STRIDE,
+    max_start_distance_m: float = DEFAULT_MAX_START_DISTANCE_M,
+    min_time_diff_seconds: float = DEFAULT_MIN_TIME_DIFF_SECONDS,
 ) -> Path:
     payload = torch.load(export_path, map_location="cpu")
     pairs = payload["pairs"]
+    dt = float(payload["metadata"]["fit_settings"]["dt"])
+    min_gap_steps = int(np.ceil(min_time_diff_seconds / dt))
 
     pref_segments = []
     rej_segments = []
@@ -54,7 +116,17 @@ def build_truck_context_preferences(
         car_rollout_x = np.asarray(car_branch["rollout_x"], dtype=np.float32)
         car_rollout_y = np.asarray(car_branch["rollout_y"], dtype=np.float32)
 
-        for start in range(0, aligned_steps - window_len + 1, stride):
+        window_starts = _select_window_starts(
+            aligned_steps=aligned_steps,
+            window_len=window_len,
+            min_gap_steps=min_gap_steps,
+            max_start_distance_m=max_start_distance_m,
+            truck_rollout_x=truck_rollout_x,
+            truck_rollout_y=truck_rollout_y,
+            car_rollout_x=car_rollout_x,
+            car_rollout_y=car_rollout_y,
+        )
+        for start, shift_steps, start_distance in window_starts:
             end = start + window_len
             pref_segments.append(preferred_sa[start:end])
             rej_segments.append(rejected_sa[start:end])
@@ -77,6 +149,9 @@ def build_truck_context_preferences(
                     "map_name": map_name,
                     "timestep_start": int(start),
                     "timestep_end": int(end),
+                    "shift_steps_from_previous": int(shift_steps),
+                    "shift_seconds_from_previous": float(shift_steps * dt),
+                    "window_start_distance_m": float(start_distance),
                     "window_pair_ade": float(displacement.mean()) if displacement.size else float("nan"),
                     "window_pair_fde": float(displacement[-1]) if displacement.size else float("nan"),
                     "truck_context_aligned_steps": int(aligned_steps),
@@ -105,7 +180,10 @@ def build_truck_context_preferences(
         "metadata": {
             "source_export": str(export_path),
             "window_len": int(window_len),
-            "stride": int(stride),
+            "min_time_diff_seconds": float(min_time_diff_seconds),
+            "min_gap_steps": int(min_gap_steps),
+            "max_start_distance_m": float(max_start_distance_m),
+            "dt": float(dt),
             "obs_dim": int(ds),
             "action_dim": int(da),
             "preferred_label": 0,
@@ -119,6 +197,19 @@ def build_truck_context_preferences(
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     torch.save(out_payload, output_path)
+    summary = {
+        "output_path": str(output_path),
+        "source_export": str(export_path),
+        "window_len": int(window_len),
+        "min_time_diff_seconds": float(min_time_diff_seconds),
+        "min_gap_steps": int(min_gap_steps),
+        "max_start_distance_m": float(max_start_distance_m),
+        "dt": float(dt),
+        "obs_dim": int(ds),
+        "action_dim": int(da),
+        "total_windows": int(len(pref_segments)),
+    }
+    output_path.with_suffix(".json").write_text(json.dumps(summary, indent=2))
     return output_path
 
 
@@ -143,14 +234,16 @@ def main():
     parser.add_argument("--input", type=Path, default=DEFAULT_INPUT)
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
     parser.add_argument("--window-len", type=int, default=DEFAULT_WINDOW_LEN)
-    parser.add_argument("--stride", type=int, default=DEFAULT_STRIDE)
+    parser.add_argument("--max-start-distance-m", type=float, default=DEFAULT_MAX_START_DISTANCE_M)
+    parser.add_argument("--min-time-diff-seconds", type=float, default=DEFAULT_MIN_TIME_DIFF_SECONDS)
     args = parser.parse_args()
 
     output_path = build_truck_context_preferences(
         export_path=args.input,
         output_path=args.output,
         window_len=args.window_len,
-        stride=args.stride,
+        max_start_distance_m=args.max_start_distance_m,
+        min_time_diff_seconds=args.min_time_diff_seconds,
     )
     print(output_path)
 
