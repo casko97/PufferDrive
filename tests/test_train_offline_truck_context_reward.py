@@ -1,10 +1,5 @@
 from pathlib import Path
 
-import pytest
-
-pytest.importorskip("scipy")
-pytest.importorskip("loralib")
-
 from scripts.train_offline_truck_context_reward import train_offline_truck_context_reward
 
 
