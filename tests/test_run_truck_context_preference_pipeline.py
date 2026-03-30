@@ -51,6 +51,8 @@ def test_pipeline_fit_and_preferences_stages(tmp_path):
             "0.0",
             "--max-start-distance-m",
             "100.0",
+            "--observation-mode",
+            "sdc_only_with_trailer",
         ],
         capture_output=True,
         text=True,
@@ -61,3 +63,4 @@ def test_pipeline_fit_and_preferences_stages(tmp_path):
 
     payload = torch.load(pref_output, map_location="cpu")
     assert payload["metadata"]["total_windows"] >= 1
+    assert payload["metadata"]["observation_mode"] == "sdc_only_with_trailer"

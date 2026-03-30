@@ -4,6 +4,7 @@ import argparse
 import json
 from pathlib import Path
 import sys
+import warnings
 
 import numpy as np
 import torch
@@ -44,6 +45,28 @@ def train_offline_truck_context_reward(
     action_dim = int(meta["action_dim"])
     size_segment = int(meta["window_len"])
     total_windows = int(meta["total_windows"])
+    preferred = np.asarray(payload["preferred_sa"], dtype=np.float32)
+    rejected = np.asarray(payload["rejected_sa"], dtype=np.float32)
+    if preferred.ndim != 3 or rejected.ndim != 3:
+        raise ValueError("cached preferences must be rank-3")
+    if preferred.shape != rejected.shape:
+        raise ValueError(f"preferred/rejected shape mismatch: {preferred.shape} vs {rejected.shape}")
+    action_type = meta.get("action_type")
+    action_encoding = meta.get("action_encoding")
+    if action_type == "discrete" and action_encoding != "one_hot":
+        warnings.warn("scalar discrete action input is not supported; expected one-hot discrete actions", stacklevel=2)
+        raise ValueError(f"unsupported discrete action encoding: {action_encoding!r}")
+    if action_type is not None and action_type != "discrete":
+        raise ValueError(f"unsupported action_type in preference payload: {action_type!r}")
+    if preferred.shape[0] != total_windows:
+        raise ValueError(f"total_windows mismatch: metadata says {total_windows}, tensor has {preferred.shape[0]}")
+    if preferred.shape[1] != size_segment:
+        raise ValueError(f"window_len mismatch: metadata says {size_segment}, tensor has {preferred.shape[1]}")
+    if preferred.shape[2] != obs_dim + action_dim:
+        raise ValueError(
+            f"feature dimension mismatch: metadata says {obs_dim}+{action_dim}={obs_dim + action_dim}, "
+            f"tensor has {preferred.shape[2]}"
+        )
     if total_windows <= 0:
         raise ValueError(f"No preference windows available in {preference_path}")
 

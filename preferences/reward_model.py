@@ -9,12 +9,12 @@ import torch.optim as optim
 import itertools
 import tqdm
 import copy
-import scipy.stats as st
 import os
 import time
-import loralib as lora
-
-from scipy.stats import norm
+try:
+    import loralib as lora
+except ModuleNotFoundError:
+    lora = None
 
 device = 'cpu'
 
@@ -27,6 +27,8 @@ def gen_net(in_size=1, out_size=1, H=128, n_layers=3, activation='tanh', use_lor
             in_size = H
         net.append(nn.Linear(in_size, out_size))
     else:
+        if lora is None:
+            raise RuntimeError("loralib is required when use_lora=True")
         for i in range(n_layers):
             net.append(lora.Linear(in_size, H, r=rank, lora_alpha=lora_alpha))
             net.append(nn.LeakyReLU())

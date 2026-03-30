@@ -31,6 +31,8 @@ def main():
     parser.add_argument("--window-len", type=int, default=32)
     parser.add_argument("--max-start-distance-m", type=float, default=1.0)
     parser.add_argument("--min-gap-seconds", type=float, default=2.0)
+    parser.add_argument("--observation-mode", type=str, default="default")
+    parser.add_argument("--action-type", type=str, default="discrete")
     parser.add_argument("--max-maps", type=int, default=0)
     parser.add_argument("--ensemble-size", type=int, default=1)
     parser.add_argument("--rounds", type=int, default=1)
@@ -64,6 +66,8 @@ def main():
             window_len=args.window_len,
             max_start_distance_m=args.max_start_distance_m,
             min_time_diff_seconds=args.min_gap_seconds,
+            observation_mode=args.observation_mode,
+            action_type=args.action_type,
         )
         print(pref_output)
 
