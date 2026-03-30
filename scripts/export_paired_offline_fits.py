@@ -9,7 +9,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from pufferlib.ocean.drive.drive import binding
+from pufferlib.ocean.drive.drive import binding, postprocess_sdc_only_with_trailer_observations
 
 FIT_BEAM_WIDTH = 8
 FIT_MATCH_WEIGHT_LATERAL = 2.5
@@ -39,12 +39,24 @@ OFFLINE_FIT_INIT_STEPS = 0
 CAR_ROOT = Path("pufferlib/resources/drive/binaries/nuplanCarBostonTest10")
 TRUCK_ROOT = Path("pufferlib/resources/drive/binaries/nuplanTruckBostonTest10")
 DEFAULT_OUTPUT = Path("outputs/offline_fits/nuplan_boston_test10_paired_fits.pt")
+OBS_MODE_DEFAULT = "default"
+OBS_MODE_EXTENDED = "sdc_only_with_trailer"
 
 
 def _obs_dim() -> int:
     return (
         binding.EGO_FEATURES_CLASSIC
         + (binding.MAX_AGENTS - 1) * binding.PARTNER_FEATURES
+        + binding.MAX_ROAD_SEGMENT_OBSERVATIONS * binding.ROAD_FEATURES
+    )
+
+
+def _obs_dim_extended() -> int:
+    return (
+        binding.EGO_FEATURES_CLASSIC
+        + 1
+        + 4
+        + (binding.MAX_AGENTS - 1) * (binding.PARTNER_FEATURES + 1)
         + binding.MAX_ROAD_SEGMENT_OBSERVATIONS * binding.ROAD_FEATURES
     )
 
@@ -133,10 +145,42 @@ def _extract_ground_truth(env_handle, active_count: int):
     }
 
 
-def _record_observation(env_handle, active_count: int) -> np.ndarray:
+def _record_observation(env_handle, active_count: int) -> dict:
     timestep_obs = np.zeros((active_count, _obs_dim()), dtype=np.float32)
     binding.env_copy_observations(env_handle, timestep_obs)
-    return timestep_obs[0].copy()
+    ego_types = np.zeros(active_count, dtype=np.int32)
+    partner_types = np.zeros((active_count, binding.MAX_AGENTS - 1), dtype=np.int32)
+    trailer_features = {
+        "rel_x": np.zeros(active_count, dtype=np.float32),
+        "rel_y": np.zeros(active_count, dtype=np.float32),
+        "rel_heading_x": np.zeros(active_count, dtype=np.float32),
+        "rel_heading_y": np.zeros(active_count, dtype=np.float32),
+    }
+    binding.get_global_agent_types(env_handle, ego_types)
+    binding.get_partner_types(env_handle, partner_types)
+    binding.get_ego_trailer_obs_features(
+        env_handle,
+        trailer_features["rel_x"],
+        trailer_features["rel_y"],
+        trailer_features["rel_heading_x"],
+        trailer_features["rel_heading_y"],
+    )
+    extended_obs = postprocess_sdc_only_with_trailer_observations(
+        sim_observations=timestep_obs,
+        ego_types=ego_types,
+        partner_types=partner_types,
+        ego_trailer_features=trailer_features,
+        base_ego_features=binding.EGO_FEATURES_CLASSIC,
+        base_partner_features=binding.PARTNER_FEATURES,
+        max_partner_objects=binding.MAX_AGENTS - 1,
+        max_road_objects=binding.MAX_ROAD_SEGMENT_OBSERVATIONS,
+        road_features=binding.ROAD_FEATURES,
+        type_classes=binding.POLICY_TYPE_CLASS_COUNT,
+    )
+    return {
+        OBS_MODE_DEFAULT: timestep_obs[0].copy(),
+        OBS_MODE_EXTENDED: extended_obs[0].copy(),
+    }
 
 
 def _record_agent_state(env_handle):
@@ -184,6 +228,7 @@ def _replay_action_sequence(map_dir: Path, fit_actions: np.ndarray, gt: dict | N
             raise RuntimeError("no_active_agents")
 
         rollout_obs = []
+        rollout_obs_ext = []
         rollout_actions = []
         rollout_timestep = []
         start_x, start_y, start_heading = _record_agent_state(env_handle)
@@ -192,7 +237,9 @@ def _replay_action_sequence(map_dir: Path, fit_actions: np.ndarray, gt: dict | N
         rollout_heading = [start_heading]
 
         for step_idx, action in enumerate(fit_actions):
-            rollout_obs.append(_record_observation(env_handle, active_count))
+            obs_record = _record_observation(env_handle, active_count)
+            rollout_obs.append(obs_record[OBS_MODE_DEFAULT])
+            rollout_obs_ext.append(obs_record[OBS_MODE_EXTENDED])
             rollout_actions.append(int(action))
             rollout_timestep.append(OFFLINE_FIT_INIT_STEPS + step_idx)
 
@@ -212,6 +259,12 @@ def _replay_action_sequence(map_dir: Path, fit_actions: np.ndarray, gt: dict | N
             "obs": np.stack(rollout_obs).astype(np.float32)
             if rollout_obs
             else np.zeros((0, _obs_dim()), dtype=np.float32),
+            "obs_default": np.stack(rollout_obs).astype(np.float32)
+            if rollout_obs
+            else np.zeros((0, _obs_dim()), dtype=np.float32),
+            "obs_sdc_only_with_trailer": np.stack(rollout_obs_ext).astype(np.float32)
+            if rollout_obs_ext
+            else np.zeros((0, _obs_dim_extended()), dtype=np.float32),
             "actions": np.asarray(rollout_actions, dtype=np.int32),
             "timestep": np.asarray(rollout_timestep, dtype=np.int32),
             "rollout_x": np.asarray(rollout_x, dtype=np.float32),
@@ -279,9 +332,12 @@ def _fit_side(source_bin: Path) -> dict:
                 )
 
                 logged_obs = []
+                logged_obs_ext = []
                 for step_idx in range(int(num_steps)):
                     binding.env_set_logged_timestep(env_handle, OFFLINE_FIT_INIT_STEPS + step_idx)
-                    logged_obs.append(_record_observation(env_handle, active_count))
+                    obs_record = _record_observation(env_handle, active_count)
+                    logged_obs.append(obs_record[OBS_MODE_DEFAULT])
+                    logged_obs_ext.append(obs_record[OBS_MODE_EXTENDED])
             finally:
                 binding.env_close(env_handle)
 
@@ -296,6 +352,12 @@ def _fit_side(source_bin: Path) -> dict:
                 "logged_obs": np.stack(logged_obs).astype(np.float32)
                 if logged_obs
                 else np.zeros((0, _obs_dim()), dtype=np.float32),
+                "logged_obs_default": np.stack(logged_obs).astype(np.float32)
+                if logged_obs
+                else np.zeros((0, _obs_dim()), dtype=np.float32),
+                "logged_obs_sdc_only_with_trailer": np.stack(logged_obs_ext).astype(np.float32)
+                if logged_obs_ext
+                else np.zeros((0, _obs_dim_extended()), dtype=np.float32),
                 "logged_timestep": np.arange(OFFLINE_FIT_INIT_STEPS, OFFLINE_FIT_INIT_STEPS + int(num_steps), dtype=np.int32),
                 "match_cost_step": step_costs[:num_steps].astype(np.float32),
                 "match_cost_lateral_step": step_lat_costs[:num_steps].astype(np.float32),
@@ -389,6 +451,7 @@ def export_paired_fits(car_root: Path, truck_root: Path, output_path: Path, max_
                 "termination_mode": OFFLINE_FIT_TERMINATION_MODE,
                 "dt": OFFLINE_FIT_DT,
                 "episode_length": OFFLINE_FIT_EPISODE_LENGTH,
+                "saved_observation_modes": [OBS_MODE_DEFAULT, OBS_MODE_EXTENDED],
             },
             "optimizer": {
                 "beam_width": FIT_BEAM_WIDTH,
