@@ -34,6 +34,60 @@ DEFAULT_SDC_RUNTIME_TRUCK_REF_BIN = (
 )
 
 
+def postprocess_sdc_only_with_trailer_observations(
+    sim_observations,
+    ego_types,
+    partner_types,
+    ego_trailer_features,
+    base_ego_features,
+    base_partner_features,
+    max_partner_objects,
+    max_road_objects,
+    road_features,
+    type_classes,
+):
+    base_partner_dim = max_partner_objects * base_partner_features
+    base_road_start = base_ego_features + base_partner_dim
+    road_dim = max_road_objects * road_features
+
+    aug_ego = base_ego_features + 1 + _EGO_TRAILER_STATE_FEATURES
+    aug_partner = base_partner_features + 1
+    aug_partner_dim = max_partner_objects * aug_partner
+    aug_road_start = aug_ego + aug_partner_dim
+
+    observations = np.zeros((sim_observations.shape[0], aug_ego + aug_partner_dim + road_dim), dtype=np.float32)
+    observations[:, :base_ego_features] = sim_observations[:, :base_ego_features]
+
+    sim_partner = sim_observations[:, base_ego_features:base_road_start].reshape(
+        sim_observations.shape[0], max_partner_objects, base_partner_features
+    )
+    aug_partner_view = observations[:, aug_ego:aug_road_start].reshape(
+        sim_observations.shape[0], max_partner_objects, aug_partner
+    )
+    aug_partner_view[:, :, :base_partner_features] = sim_partner
+    observations[:, aug_road_start : aug_road_start + road_dim] = sim_observations[
+        :, base_road_start : base_road_start + road_dim
+    ]
+
+    policy_type_max = type_classes - 1
+    ego_types = np.clip(ego_types, _POLICY_TYPE_PADDED, policy_type_max).astype(np.float32)
+    partner_types = np.clip(partner_types, _POLICY_TYPE_PADDED, policy_type_max).astype(np.float32)
+
+    ego_type_idx = base_ego_features
+    observations[:, ego_type_idx] = ego_types
+    trailer_feature_start = ego_type_idx + 1
+    observations[:, trailer_feature_start] = ego_trailer_features["rel_x"]
+    observations[:, trailer_feature_start + 1] = ego_trailer_features["rel_y"]
+    observations[:, trailer_feature_start + 2] = ego_trailer_features["rel_heading_x"]
+    observations[:, trailer_feature_start + 3] = ego_trailer_features["rel_heading_y"]
+
+    occupied_partner_slots = np.any(np.abs(sim_partner) > _EMPTY_PARTNER_EPS, axis=2)
+    aug_partner_view[:, :, base_partner_features] = np.where(
+        occupied_partner_slots, partner_types, _POLICY_TYPE_PADDED
+    ).astype(np.float32)
+    return observations
+
+
 def _as_bool(value):
     if isinstance(value, bool):
         return value
@@ -535,49 +589,18 @@ class Drive(pufferlib.PufferEnv):
     def _postprocess_observations(self):
         if getattr(self, "observation_mode", 0) != 1:
             return
-
-        base_ego = self._base_ego_features
-        base_partner = self._base_partner_features
-        partner_count = self.max_partner_objects
-        base_partner_dim = partner_count * base_partner
-        base_road_start = base_ego + base_partner_dim
-        road_dim = self.max_road_objects * self.road_features
-
-        aug_ego = self.ego_features
-        aug_partner = self.partner_features
-        aug_partner_dim = partner_count * aug_partner
-        aug_road_start = aug_ego + aug_partner_dim
-
-        self.observations[:] = 0.0
-        self.observations[:, :base_ego] = self._sim_observations[:, :base_ego]
-
-        sim_partner = self._sim_observations[:, base_ego:base_road_start].reshape(
-            self.num_agents, partner_count, base_partner
+        self.observations[:] = postprocess_sdc_only_with_trailer_observations(
+            sim_observations=self._sim_observations,
+            ego_types=self.get_global_agent_types(),
+            partner_types=self.get_partner_types(),
+            ego_trailer_features=self.get_ego_trailer_obs_features(),
+            base_ego_features=self._base_ego_features,
+            base_partner_features=self._base_partner_features,
+            max_partner_objects=self.max_partner_objects,
+            max_road_objects=self.max_road_objects,
+            road_features=self.road_features,
+            type_classes=self.type_classes,
         )
-        aug_partner_view = self.observations[:, aug_ego:aug_road_start].reshape(self.num_agents, partner_count, aug_partner)
-        aug_partner_view[:, :, :base_partner] = sim_partner
-        self.observations[:, aug_road_start : aug_road_start + road_dim] = self._sim_observations[
-            :, base_road_start : base_road_start + road_dim
-        ]
-
-        policy_type_max = self.type_classes - 1
-        ego_types = np.clip(self.get_global_agent_types(), _POLICY_TYPE_PADDED, policy_type_max).astype(np.float32)
-        partner_types = np.clip(self.get_partner_types(), _POLICY_TYPE_PADDED, policy_type_max).astype(np.float32)
-        ego_trailer_features = self.get_ego_trailer_obs_features()
-
-        ego_type_idx = base_ego
-        self.observations[:, ego_type_idx] = ego_types
-        trailer_feature_start = ego_type_idx + 1
-        self.observations[:, trailer_feature_start] = ego_trailer_features["rel_x"]
-        self.observations[:, trailer_feature_start + 1] = ego_trailer_features["rel_y"]
-        self.observations[:, trailer_feature_start + 2] = ego_trailer_features["rel_heading_x"]
-        self.observations[:, trailer_feature_start + 3] = ego_trailer_features["rel_heading_y"]
-
-        # Populate partner type channel only for occupied partner slots.
-        occupied_partner_slots = np.any(np.abs(sim_partner) > _EMPTY_PARTNER_EPS, axis=2)
-        aug_partner_view[:, :, base_partner] = np.where(
-            occupied_partner_slots, partner_types, _POLICY_TYPE_PADDED
-        ).astype(np.float32)
 
     def get_ground_truth_trajectories(self):
         """Get ground truth trajectories for all active agents.
