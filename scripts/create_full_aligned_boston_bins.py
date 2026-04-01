@@ -3,14 +3,21 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import shlex
+import sys
 from copy import deepcopy
 from pathlib import Path
 
 import numpy as np
 import torch
 
-from scripts.build_truck_context_preferences import build_truck_context_preferences
-from scripts.export_paired_offline_fits import export_paired_fits
+from scripts.build_truck_context_preferences import (
+    PREFERENCES_FORMAT_SHARDED,
+    build_truck_context_preferences,
+    iter_preference_shards,
+    load_preference_manifest,
+)
+from scripts.export_paired_offline_fits import export_paired_fits, iter_paired_fit_shards
 from pufferlib.ocean.drive.drive import save_map_binary
 
 LOGGER = logging.getLogger("create_full_aligned_boston_bins")
@@ -27,6 +34,37 @@ def configure_logging(verbose: bool = False) -> None:
 def load_json(path: Path) -> dict:
     with path.open("r") as file_obj:
         return json.load(file_obj)
+
+
+def build_filter_cli_command(
+    preference_path: Path,
+    fit_export_path: Path,
+    output_path: Path,
+    max_optimization_mean_cost: float | None = None,
+    min_ade: float | None = None,
+    max_ade: float | None = None,
+    max_fde: float | None = None,
+) -> str:
+    cmd = [
+        sys.executable,
+        "-m",
+        "scripts.create_full_aligned_boston_bins",
+        "--preference-input",
+        str(preference_path),
+        "--fit-input",
+        str(fit_export_path),
+        "--filtered-preference-output",
+        str(output_path),
+    ]
+    if max_optimization_mean_cost is not None:
+        cmd.extend(["--filter-max-optimization-mean-cost", str(max_optimization_mean_cost)])
+    if min_ade is not None:
+        cmd.extend(["--filter-min-ade", str(min_ade)])
+    if max_ade is not None:
+        cmd.extend(["--filter-max-ade", str(max_ade)])
+    if max_fde is not None:
+        cmd.extend(["--filter-max-fde", str(max_fde)])
+    return shlex.join(cmd)
 
 
 def normalize_ego_to_front(map_data: dict) -> dict:
@@ -245,88 +283,145 @@ def filter_preference_windows(
         max_ade,
         max_fde,
     )
-    preference_payload = torch.load(preference_path, map_location="cpu")
-    fit_payload = torch.load(fit_export_path, map_location="cpu")
+    allowed_maps: dict[str, dict[str, float]] = {}
+    for _fit_metadata, pairs, shard_info in iter_paired_fit_shards(fit_export_path):
+        LOGGER.info(
+            "Evaluating fit shard for filtering | path=%s map_count=%s",
+            shard_info.get("path"),
+            shard_info.get("map_count"),
+        )
+        for map_name, pair in pairs.items():
+            truck_side = pair.get("truck", {})
+            car_side = pair.get("car", {})
+            if truck_side.get("status") != "ok" or car_side.get("status") != "ok":
+                continue
 
-    preferred_sa = np.asarray(preference_payload["preferred_sa"], dtype=np.float32)
-    rejected_sa = np.asarray(preference_payload["rejected_sa"], dtype=np.float32)
-    labels = np.asarray(preference_payload["labels"], dtype=np.float32)
-    window_metadata = list(preference_payload.get("window_metadata", []))
-    pairs = fit_payload["pairs"]
+            truck_mean_cost = _mean_optimization_cost(truck_side)
+            car_mean_cost = _mean_optimization_cost(car_side)
+            truck_ade = float(truck_side.get("self_ade", float("inf")))
+            car_ade = float(car_side.get("self_ade", float("inf")))
+            truck_fde = float(truck_side.get("self_fde", float("inf")))
+            car_fde = float(car_side.get("self_fde", float("inf")))
 
-    keep_indices: list[int] = []
-    kept_window_metadata: list[dict] = []
-    filtered_out = 0
+            passes = True
+            if max_optimization_mean_cost is not None:
+                passes = passes and truck_mean_cost < max_optimization_mean_cost and car_mean_cost < max_optimization_mean_cost
+            if min_ade is not None:
+                passes = passes and truck_ade > min_ade and car_ade > min_ade
+            if max_ade is not None:
+                passes = passes and truck_ade < max_ade and car_ade < max_ade
+            if max_fde is not None:
+                passes = passes and truck_fde < max_fde and car_fde < max_fde
 
-    for idx, window_meta in enumerate(window_metadata):
-        map_name = window_meta["map_name"]
-        pair = pairs.get(map_name)
-        if pair is None:
-            filtered_out += 1
-            continue
-
-        truck_side = pair.get("truck", {})
-        car_side = pair.get("car", {})
-        if truck_side.get("status") != "ok" or car_side.get("status") != "ok":
-            filtered_out += 1
-            continue
-
-        truck_mean_cost = _mean_optimization_cost(truck_side)
-        car_mean_cost = _mean_optimization_cost(car_side)
-        truck_ade = float(truck_side.get("self_ade", float("inf")))
-        car_ade = float(car_side.get("self_ade", float("inf")))
-        truck_fde = float(truck_side.get("self_fde", float("inf")))
-        car_fde = float(car_side.get("self_fde", float("inf")))
-
-        passes = True
-        if max_optimization_mean_cost is not None:
-            passes = passes and truck_mean_cost < max_optimization_mean_cost and car_mean_cost < max_optimization_mean_cost
-        if min_ade is not None:
-            passes = passes and truck_ade > min_ade and car_ade > min_ade
-        if max_ade is not None:
-            passes = passes and truck_ade < max_ade and car_ade < max_ade
-        if max_fde is not None:
-            passes = passes and truck_fde < max_fde and car_fde < max_fde
-
-        if passes:
-            keep_indices.append(idx)
-            enriched_meta = dict(window_meta)
-            enriched_meta["truck_optimization_mean_cost"] = truck_mean_cost
-            enriched_meta["car_optimization_mean_cost"] = car_mean_cost
-            kept_window_metadata.append(enriched_meta)
-        else:
-            filtered_out += 1
-
-    if keep_indices:
-        preferred_sa = preferred_sa[np.asarray(keep_indices, dtype=np.int64)]
-        rejected_sa = rejected_sa[np.asarray(keep_indices, dtype=np.int64)]
-        labels = labels[np.asarray(keep_indices, dtype=np.int64)]
-    else:
-        preferred_sa = preferred_sa[:0]
-        rejected_sa = rejected_sa[:0]
-        labels = labels[:0]
-
-    filtered_payload = dict(preference_payload)
-    filtered_metadata = dict(preference_payload.get("metadata", {}))
-    filtered_metadata["filtering"] = {
-        "source_preference_path": str(preference_path),
-        "source_fit_export_path": str(fit_export_path),
-        "max_optimization_mean_cost": max_optimization_mean_cost,
-        "min_ade": min_ade,
-        "max_ade": max_ade,
-        "max_fde": max_fde,
-        "kept_windows": int(len(keep_indices)),
-        "filtered_out_windows": int(filtered_out),
-    }
-    filtered_metadata["total_windows"] = int(len(keep_indices))
-    filtered_payload["metadata"] = filtered_metadata
-    filtered_payload["preferred_sa"] = preferred_sa
-    filtered_payload["rejected_sa"] = rejected_sa
-    filtered_payload["labels"] = labels
-    filtered_payload["window_metadata"] = kept_window_metadata
+            if passes:
+                allowed_maps[map_name] = {
+                    "truck_optimization_mean_cost": truck_mean_cost,
+                    "car_optimization_mean_cost": car_mean_cost,
+                }
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    torch.save(filtered_payload, output_path)
+    shard_dir = output_path.parent / f"{output_path.stem}_shards"
+    preference_manifest = load_preference_manifest(preference_path)
+    preference_is_sharded = preference_manifest.get("format") == PREFERENCES_FORMAT_SHARDED
+    shard_infos: list[dict] = []
+    kept_windows = 0
+    filtered_out = 0
+    shard_index = 0
+    first_payload_metadata: dict | None = None
+
+    for preference_payload, shard_info in iter_preference_shards(preference_path):
+        if first_payload_metadata is None:
+            first_payload_metadata = dict(preference_payload.get("metadata", {}))
+        preferred_sa = np.asarray(preference_payload["preferred_sa"], dtype=np.float32)
+        rejected_sa = np.asarray(preference_payload["rejected_sa"], dtype=np.float32)
+        labels = np.asarray(preference_payload["labels"], dtype=np.float32)
+        window_metadata = list(preference_payload.get("window_metadata", []))
+
+        keep_indices: list[int] = []
+        kept_window_metadata: list[dict] = []
+        for idx, window_meta in enumerate(window_metadata):
+            fit_meta = allowed_maps.get(window_meta["map_name"])
+            if fit_meta is None:
+                filtered_out += 1
+                continue
+            keep_indices.append(idx)
+            enriched_meta = dict(window_meta)
+            enriched_meta.update(fit_meta)
+            kept_window_metadata.append(enriched_meta)
+
+        if keep_indices:
+            keep_index_array = np.asarray(keep_indices, dtype=np.int64)
+            preferred_kept = preferred_sa[keep_index_array]
+            rejected_kept = rejected_sa[keep_index_array]
+            labels_kept = labels[keep_index_array]
+        else:
+            preferred_kept = preferred_sa[:0]
+            rejected_kept = rejected_sa[:0]
+            labels_kept = labels[:0]
+
+        kept_count = int(len(preferred_kept))
+        kept_windows += kept_count
+        filtered_metadata = dict(preference_payload.get("metadata", {}))
+        filtered_metadata["filtering"] = {
+            "source_preference_path": str(preference_path),
+            "source_fit_export_path": str(fit_export_path),
+            "max_optimization_mean_cost": max_optimization_mean_cost,
+            "min_ade": min_ade,
+            "max_ade": max_ade,
+            "max_fde": max_fde,
+            "kept_windows": kept_count,
+            "filtered_out_windows": int(len(window_metadata) - kept_count),
+        }
+        filtered_metadata["total_windows"] = kept_count
+
+        if preference_is_sharded:
+            if kept_count == 0:
+                LOGGER.info(
+                    "Skipping empty filtered preference shard | source_path=%s filtered_out=%d",
+                    shard_info.get("path"),
+                    len(window_metadata),
+                )
+                continue
+            shard_dir.mkdir(parents=True, exist_ok=True)
+            shard_index += 1
+            shard_path = shard_dir / f"{output_path.stem}.part{shard_index:05d}.pt"
+            torch.save(
+                {
+                    "metadata": filtered_metadata,
+                    "preferred_sa": preferred_kept,
+                    "rejected_sa": rejected_kept,
+                    "labels": labels_kept,
+                    "window_metadata": kept_window_metadata,
+                },
+                shard_path,
+            )
+            shard_infos.append(
+                {
+                    "path": str(shard_path),
+                    "window_count": kept_count,
+                    "start_index": int(kept_windows - kept_count),
+                    "end_index": int(kept_windows),
+                }
+            )
+            LOGGER.info(
+                "Filtered preference shard | shard=%d kept=%d filtered_out=%d output=%s",
+                shard_index,
+                    kept_count,
+                    len(window_metadata) - kept_count,
+                    shard_path,
+                )
+        else:
+            torch.save(
+                {
+                    "metadata": filtered_metadata,
+                    "preferred_sa": preferred_kept,
+                    "rejected_sa": rejected_kept,
+                    "labels": labels_kept,
+                    "window_metadata": kept_window_metadata,
+                },
+                output_path,
+            )
+
     summary = {
         "output_path": str(output_path),
         "source_preference_path": str(preference_path),
@@ -335,15 +430,65 @@ def filter_preference_windows(
         "min_ade": min_ade,
         "max_ade": max_ade,
         "max_fde": max_fde,
-        "kept_windows": int(len(keep_indices)),
+        "kept_windows": int(kept_windows),
         "filtered_out_windows": int(filtered_out),
+        "shard_count": int(len(shard_infos) if shard_infos else 1),
     }
+
+    if shard_infos:
+        manifest_metadata = dict(first_payload_metadata or {})
+        manifest_metadata["filtering"] = {
+            "source_preference_path": str(preference_path),
+            "source_fit_export_path": str(fit_export_path),
+            "max_optimization_mean_cost": max_optimization_mean_cost,
+            "min_ade": min_ade,
+            "max_ade": max_ade,
+            "max_fde": max_fde,
+            "kept_windows": int(kept_windows),
+            "filtered_out_windows": int(filtered_out),
+        }
+        manifest_metadata["total_windows"] = int(kept_windows)
+        torch.save(
+            {
+                "format": PREFERENCES_FORMAT_SHARDED,
+                "metadata": manifest_metadata,
+                "shards": shard_infos,
+            },
+            output_path,
+        )
+    elif preference_is_sharded:
+        manifest_metadata = dict(first_payload_metadata or {})
+        manifest_metadata["filtering"] = {
+            "source_preference_path": str(preference_path),
+            "source_fit_export_path": str(fit_export_path),
+            "max_optimization_mean_cost": max_optimization_mean_cost,
+            "min_ade": min_ade,
+            "max_ade": max_ade,
+            "max_fde": max_fde,
+            "kept_windows": int(kept_windows),
+            "filtered_out_windows": int(filtered_out),
+        }
+        manifest_metadata["total_windows"] = int(kept_windows)
+        feature_dim = int(manifest_metadata.get("obs_dim", 0)) + int(manifest_metadata.get("action_dim", 0))
+        window_len = int(manifest_metadata.get("window_len", 0))
+        torch.save(
+            {
+                "metadata": manifest_metadata,
+                "preferred_sa": np.zeros((0, window_len, feature_dim), dtype=np.float32),
+                "rejected_sa": np.zeros((0, window_len, feature_dim), dtype=np.float32),
+                "labels": np.zeros((0, 1), dtype=np.float32),
+                "window_metadata": [],
+            },
+            output_path,
+        )
+
     output_path.with_suffix(".json").write_text(json.dumps(summary, indent=2))
     LOGGER.info(
-        "Finished filtering preference windows | kept=%d filtered_out=%d output=%s",
-        len(keep_indices),
+        "Finished filtering preference windows | kept=%d filtered_out=%d output=%s shard_count=%d",
+        kept_windows,
         filtered_out,
         output_path,
+        len(shard_infos) if shard_infos else 1,
     )
     return output_path
 
@@ -356,18 +501,16 @@ def main() -> None:
         "--truck-source-dir",
         dest="truck_source_dirs",
         action="append",
-        required=True,
         help="Truck JSON source directory. Pass once per batch.",
     )
     parser.add_argument(
         "--car-source-dir",
         dest="car_source_dirs",
         action="append",
-        required=True,
         help="Car JSON source directory. Pass once per batch in the same order as --truck-source-dir.",
     )
-    parser.add_argument("--truck-output-dir", required=True, help="Destination folder for truck binary files.")
-    parser.add_argument("--car-output-dir", required=True, help="Destination folder for car binary files.")
+    parser.add_argument("--truck-output-dir", help="Destination folder for truck binary files.")
+    parser.add_argument("--car-output-dir", help="Destination folder for car binary files.")
     parser.add_argument(
         "--limit-per-batch",
         type=int,
@@ -403,6 +546,18 @@ def main() -> None:
         help="Optional output path for the filtered preference-learning artifact (.pt). If omitted, a sibling *_filtered.pt path is used.",
     )
     parser.add_argument(
+        "--preference-input",
+        type=Path,
+        default=None,
+        help="Existing preference artifact (.pt) to filter directly without rebuilding bins or preferences.",
+    )
+    parser.add_argument(
+        "--fit-input",
+        type=Path,
+        default=None,
+        help="Existing paired offline fit artifact (.pt) to use when filtering an existing preference artifact.",
+    )
+    parser.add_argument(
         "--artifact-manifest-output",
         type=Path,
         default=None,
@@ -413,6 +568,10 @@ def main() -> None:
     parser.add_argument("--min-gap-seconds", type=float, default=2.0)
     parser.add_argument("--observation-mode", type=str, default="default")
     parser.add_argument("--action-type", type=str, default="discrete")
+    parser.add_argument("--fit-chunk-size", type=int, default=256)
+    parser.add_argument("--fit-log-every", type=int, default=25)
+    parser.add_argument("--preference-chunk-size", type=int, default=256)
+    parser.add_argument("--preference-map-log-every", type=int, default=50)
     parser.add_argument(
         "--verbose",
         action="store_true",
@@ -446,8 +605,63 @@ def main() -> None:
     configure_logging(verbose=args.verbose)
     LOGGER.info("Parsed pipeline arguments")
 
+    filter_only_mode = args.preference_input is not None or args.fit_input is not None
+    if filter_only_mode:
+        if args.preference_input is None or args.fit_input is None:
+            raise ValueError("--preference-input and --fit-input must be provided together")
+        if args.truck_source_dirs or args.car_source_dirs or args.truck_output_dir or args.car_output_dir:
+            LOGGER.info("Filter-only mode enabled; skipping aligned-bin creation inputs")
+        if not any(
+            value is not None
+            for value in (
+                args.filter_max_optimization_mean_cost,
+                args.filter_min_ade,
+                args.filter_max_ade,
+                args.filter_max_fde,
+            )
+        ):
+            raise ValueError("filter-only mode requires at least one --filter-* threshold")
+
+        filtered_preference_output = args.filtered_preference_output
+        if filtered_preference_output is None:
+            filtered_preference_output = args.preference_input.with_name(f"{args.preference_input.stem}_filtered.pt")
+
+        LOGGER.info(
+            "Running filter-only preference pass | preference_input=%s fit_input=%s output=%s",
+            args.preference_input,
+            args.fit_input,
+            filtered_preference_output,
+        )
+        LOGGER.info(
+            "Filter-only rerun command | command=%s",
+            build_filter_cli_command(
+                preference_path=args.preference_input,
+                fit_export_path=args.fit_input,
+                output_path=filtered_preference_output,
+                max_optimization_mean_cost=args.filter_max_optimization_mean_cost,
+                min_ade=args.filter_min_ade,
+                max_ade=args.filter_max_ade,
+                max_fde=args.filter_max_fde,
+            ),
+        )
+        filtered_preference_output = filter_preference_windows(
+            preference_path=args.preference_input,
+            fit_export_path=args.fit_input,
+            output_path=filtered_preference_output,
+            max_optimization_mean_cost=args.filter_max_optimization_mean_cost,
+            min_ade=args.filter_min_ade,
+            max_ade=args.filter_max_ade,
+            max_fde=args.filter_max_fde,
+        )
+        print(f"filtered_preference_output={filtered_preference_output}")
+        return
+
     if args.run_preference_build and not args.run_fit_export:
         raise ValueError("--run-preference-build requires --run-fit-export")
+    if not args.truck_source_dirs or not args.car_source_dirs:
+        raise ValueError("--truck-source-dir and --car-source-dir are required unless using --preference-input/--fit-input")
+    if not args.truck_output_dir or not args.car_output_dir:
+        raise ValueError("--truck-output-dir and --car-output-dir are required unless using --preference-input/--fit-input")
 
     truck_manifest_path, car_manifest_path = build_aligned_bins(
         truck_source_dirs=[Path(path) for path in args.truck_source_dirs],
@@ -477,6 +691,7 @@ def main() -> None:
             value is not None
             for value in (
                 args.filter_max_optimization_mean_cost,
+                args.filter_min_ade,
                 args.filter_max_ade,
                 args.filter_max_fde,
             )
@@ -501,6 +716,10 @@ def main() -> None:
         "min_gap_seconds": float(args.min_gap_seconds),
         "observation_mode": args.observation_mode,
         "action_type": args.action_type,
+        "fit_chunk_size": int(args.fit_chunk_size),
+        "fit_log_every": int(args.fit_log_every),
+        "preference_chunk_size": int(args.preference_chunk_size),
+        "preference_map_log_every": int(args.preference_map_log_every),
         "filter_max_optimization_mean_cost": args.filter_max_optimization_mean_cost,
         "filter_min_ade": args.filter_min_ade,
         "filter_max_ade": args.filter_max_ade,
@@ -513,6 +732,8 @@ def main() -> None:
             car_root=Path(args.car_output_dir),
             truck_root=Path(args.truck_output_dir),
             output_path=fit_output,
+            chunk_size=args.fit_chunk_size,
+            log_every=args.fit_log_every,
         )
         artifact_manifest["fit_output"] = str(fit_output)
         artifact_manifest["fit_summary_json"] = str(fit_output.with_suffix(".json"))
@@ -535,6 +756,8 @@ def main() -> None:
             min_time_diff_seconds=args.min_gap_seconds,
             observation_mode=args.observation_mode,
             action_type=args.action_type,
+            chunk_size=args.preference_chunk_size,
+            map_log_every=args.preference_map_log_every,
         )
         artifact_manifest["preference_output"] = str(preference_output)
         artifact_manifest["preference_summary_json"] = str(preference_output.with_suffix(".json"))
