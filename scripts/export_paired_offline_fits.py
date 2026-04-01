@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import shutil
 import tempfile
 from pathlib import Path
@@ -10,6 +11,8 @@ import numpy as np
 import torch
 
 from pufferlib.ocean.drive.drive import binding, postprocess_sdc_only_with_trailer_observations
+
+LOGGER = logging.getLogger("export_paired_offline_fits")
 
 FIT_BEAM_WIDTH = 8
 FIT_MATCH_WEIGHT_LATERAL = 2.5
@@ -35,6 +38,11 @@ OFFLINE_FIT_GOAL_SPEED = 100.0
 OFFLINE_FIT_DT = 0.1
 OFFLINE_FIT_EPISODE_LENGTH = 91
 OFFLINE_FIT_INIT_STEPS = 0
+
+PAIRED_FITS_FORMAT_MONOLITHIC = "paired_fits_v1"
+PAIRED_FITS_FORMAT_SHARDED = "sharded_paired_fits_v1"
+DEFAULT_CHUNK_SIZE = 256
+DEFAULT_LOG_EVERY = 25
 
 CAR_ROOT = Path("pufferlib/resources/drive/binaries/nuplanCarBostonTest10")
 TRUCK_ROOT = Path("pufferlib/resources/drive/binaries/nuplanTruckBostonTest10")
@@ -66,6 +74,128 @@ def _discover_shared_maps(car_root: Path, truck_root: Path, max_maps: int | None
     if max_maps is not None and max_maps > 0:
         shared = shared[:max_maps]
     return shared
+
+
+def _iter_chunks(items: list[str], chunk_size: int):
+    effective_chunk_size = max(1, int(chunk_size))
+    for start in range(0, len(items), effective_chunk_size):
+        end = min(len(items), start + effective_chunk_size)
+        yield start, end, items[start:end]
+
+
+def _fit_settings_metadata() -> dict[str, object]:
+    return {
+        "control_mode": OFFLINE_FIT_CONTROL_MODE,
+        "goal_behavior": OFFLINE_FIT_GOAL_BEHAVIOR,
+        "collision_behavior": OFFLINE_FIT_COLLISION_BEHAVIOR,
+        "offroad_behavior": OFFLINE_FIT_OFFROAD_BEHAVIOR,
+        "termination_mode": OFFLINE_FIT_TERMINATION_MODE,
+        "dt": OFFLINE_FIT_DT,
+        "episode_length": OFFLINE_FIT_EPISODE_LENGTH,
+        "saved_observation_modes": [OBS_MODE_DEFAULT, OBS_MODE_EXTENDED],
+    }
+
+
+def _optimizer_metadata() -> dict[str, object]:
+    return {
+        "beam_width": FIT_BEAM_WIDTH,
+        "match_weight_lateral": FIT_MATCH_WEIGHT_LATERAL,
+        "match_weight_longitudinal": FIT_MATCH_WEIGHT_LONGITUDINAL,
+        "match_weight_heading": FIT_MATCH_WEIGHT_HEADING,
+        "match_weight_speed": FIT_MATCH_WEIGHT_SPEED,
+        "match_weight_steer_change": FIT_MATCH_WEIGHT_STEER_CHANGE,
+        "match_weight_accel_change": FIT_MATCH_WEIGHT_ACCEL_CHANGE,
+        "match_weight_reverse": FIT_MATCH_WEIGHT_REVERSE,
+        "match_weight_progress": FIT_MATCH_WEIGHT_PROGRESS,
+    }
+
+
+def _build_export_metadata(car_root: Path, truck_root: Path, shared_maps: list[str]) -> dict[str, object]:
+    return {
+        "car_root": str(car_root),
+        "truck_root": str(truck_root),
+        "shared_maps": shared_maps,
+        "fit_settings": _fit_settings_metadata(),
+        "optimizer": _optimizer_metadata(),
+    }
+
+
+def load_paired_fit_manifest(export_path: Path) -> dict:
+    payload = torch.load(export_path, map_location="cpu")
+    if isinstance(payload, dict) and payload.get("format") == PAIRED_FITS_FORMAT_SHARDED:
+        return payload
+    if isinstance(payload, dict) and "pairs" in payload and "metadata" in payload:
+        return {
+            "format": PAIRED_FITS_FORMAT_MONOLITHIC,
+            "metadata": payload["metadata"],
+            "shards": [
+                {
+                    "path": str(export_path),
+                    "map_count": int(len(payload["pairs"])),
+                    "start_index": 0,
+                    "end_index": int(len(payload["pairs"])),
+                }
+            ],
+        }
+    raise ValueError(f"unsupported paired fit payload at {export_path}")
+
+
+def iter_paired_fit_shards(export_path: Path):
+    manifest = load_paired_fit_manifest(export_path)
+    if manifest["format"] == PAIRED_FITS_FORMAT_MONOLITHIC:
+        payload = torch.load(export_path, map_location="cpu")
+        yield manifest["metadata"], payload["pairs"], manifest["shards"][0]
+        return
+
+    for shard_info in manifest.get("shards", []):
+        shard_path = Path(shard_info["path"])
+        if not shard_path.exists():
+            candidate_same_dir = export_path.parent / shard_path.name
+            candidate_sibling_dir = export_path.parent / f"{export_path.stem}_shards" / shard_path.name
+            if candidate_same_dir.exists():
+                shard_path = candidate_same_dir
+            elif candidate_sibling_dir.exists():
+                shard_path = candidate_sibling_dir
+        LOGGER.info(
+            "Loading paired fit shard | path=%s map_count=%s",
+            shard_path,
+            shard_info.get("map_count"),
+        )
+        shard_payload = torch.load(shard_path, map_location="cpu")
+        yield manifest["metadata"], shard_payload["pairs"], shard_info
+
+
+def _summarize_pairs(pairs: dict[str, dict]) -> dict[str, int]:
+    return {
+        "map_count": int(len(pairs)),
+        "successful_pairs": int(
+            sum(
+                1
+                for pair in pairs.values()
+                if pair["car"]["status"] == "ok" and pair["truck"]["status"] == "ok"
+            )
+        ),
+        "successful_truck_context_replays": int(
+            sum(1 for pair in pairs.values() if pair["truck_context_replay"]["status"] == "ok")
+        ),
+    }
+
+
+def _write_paired_fit_summary(
+    output_path: Path,
+    shared_map_count: int,
+    successful_pairs: int,
+    successful_truck_context_replays: int,
+    shard_count: int,
+) -> None:
+    summary = {
+        "output_path": str(output_path),
+        "shared_map_count": int(shared_map_count),
+        "successful_pairs": int(successful_pairs),
+        "successful_truck_context_replays": int(successful_truck_context_replays),
+        "shard_count": int(shard_count),
+    }
+    output_path.with_suffix(".json").write_text(json.dumps(summary, indent=2))
 
 
 def _init_env(map_dir: Path):
@@ -435,68 +565,152 @@ def _truck_context_replay(truck_bin: Path, car_side: dict, truck_side: dict) -> 
         staged.cleanup()
 
 
-def export_paired_fits(car_root: Path, truck_root: Path, output_path: Path, max_maps: int | None = None) -> Path:
+def export_paired_fits(
+    car_root: Path,
+    truck_root: Path,
+    output_path: Path,
+    max_maps: int | None = None,
+    chunk_size: int = DEFAULT_CHUNK_SIZE,
+    log_every: int = DEFAULT_LOG_EVERY,
+) -> Path:
     shared_maps = _discover_shared_maps(car_root, truck_root, max_maps=max_maps)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    payload: dict[str, object] = {
-        "metadata": {
-            "car_root": str(car_root),
-            "truck_root": str(truck_root),
-            "shared_maps": shared_maps,
-            "fit_settings": {
-                "control_mode": OFFLINE_FIT_CONTROL_MODE,
-                "goal_behavior": OFFLINE_FIT_GOAL_BEHAVIOR,
-                "collision_behavior": OFFLINE_FIT_COLLISION_BEHAVIOR,
-                "offroad_behavior": OFFLINE_FIT_OFFROAD_BEHAVIOR,
-                "termination_mode": OFFLINE_FIT_TERMINATION_MODE,
-                "dt": OFFLINE_FIT_DT,
-                "episode_length": OFFLINE_FIT_EPISODE_LENGTH,
-                "saved_observation_modes": [OBS_MODE_DEFAULT, OBS_MODE_EXTENDED],
-            },
-            "optimizer": {
-                "beam_width": FIT_BEAM_WIDTH,
-                "match_weight_lateral": FIT_MATCH_WEIGHT_LATERAL,
-                "match_weight_longitudinal": FIT_MATCH_WEIGHT_LONGITUDINAL,
-                "match_weight_heading": FIT_MATCH_WEIGHT_HEADING,
-                "match_weight_speed": FIT_MATCH_WEIGHT_SPEED,
-                "match_weight_steer_change": FIT_MATCH_WEIGHT_STEER_CHANGE,
-                "match_weight_accel_change": FIT_MATCH_WEIGHT_ACCEL_CHANGE,
-                "match_weight_reverse": FIT_MATCH_WEIGHT_REVERSE,
-                "match_weight_progress": FIT_MATCH_WEIGHT_PROGRESS,
-                "match_weight_steer_flip": FIT_MATCH_WEIGHT_STEER_FLIP,
-                "match_weight_ref_accel": FIT_MATCH_WEIGHT_REF_ACCEL,
-                "match_weight_ref_steer": FIT_MATCH_WEIGHT_REF_STEER,
-            },
-        },
-        "pairs": {},
-    }
+    metadata = _build_export_metadata(car_root, truck_root, shared_maps)
+    effective_chunk_size = max(1, int(chunk_size))
+    effective_log_every = max(1, int(log_every))
 
-    for map_name in shared_maps:
-        car_side = _fit_side(car_root / map_name)
-        truck_side = _fit_side(truck_root / map_name)
-        payload["pairs"][map_name] = {
-            "car": car_side,
-            "truck": truck_side,
-            "pair_similarity": _pair_metrics(car_side, truck_side),
-            "truck_context_replay": _truck_context_replay(truck_root / map_name, car_side, truck_side),
+    LOGGER.info(
+        "Preparing paired offline fit export | shared_maps=%d chunk_size=%d log_every=%d output=%s",
+        len(shared_maps),
+        effective_chunk_size,
+        effective_log_every,
+        output_path,
+    )
+
+    if len(shared_maps) <= effective_chunk_size:
+        pairs: dict[str, dict] = {}
+        for map_index, map_name in enumerate(shared_maps, start=1):
+            car_side = _fit_side(car_root / map_name)
+            truck_side = _fit_side(truck_root / map_name)
+            pairs[map_name] = {
+                "car": car_side,
+                "truck": truck_side,
+                "pair_similarity": _pair_metrics(car_side, truck_side),
+                "truck_context_replay": _truck_context_replay(truck_root / map_name, car_side, truck_side),
+            }
+            if map_index % effective_log_every == 0 or map_index == len(shared_maps):
+                LOGGER.info("Paired fit progress | processed=%d/%d", map_index, len(shared_maps))
+
+        payload: dict[str, object] = {
+            "format": PAIRED_FITS_FORMAT_MONOLITHIC,
+            "metadata": metadata,
+            "pairs": pairs,
         }
+        torch.save(payload, output_path)
+        summary = _summarize_pairs(pairs)
+        _write_paired_fit_summary(
+            output_path=output_path,
+            shared_map_count=len(shared_maps),
+            successful_pairs=summary["successful_pairs"],
+            successful_truck_context_replays=summary["successful_truck_context_replays"],
+            shard_count=1,
+        )
+        LOGGER.info(
+            "Finished paired offline fit export | output=%s shared_maps=%d shard_count=1",
+            output_path,
+            len(shared_maps),
+        )
+        return output_path
 
-    torch.save(payload, output_path)
-    summary = {
-        "output_path": str(output_path),
-        "shared_map_count": len(shared_maps),
-        "successful_pairs": sum(
-            1
-            for pair in payload["pairs"].values()
-            if pair["car"]["status"] == "ok" and pair["truck"]["status"] == "ok"
-        ),
-        "successful_truck_context_replays": sum(
-            1
-            for pair in payload["pairs"].values()
-            if pair["truck_context_replay"]["status"] == "ok"
-        ),
+    shard_dir = output_path.parent / f"{output_path.stem}_shards"
+    shard_dir.mkdir(parents=True, exist_ok=True)
+    manifest: dict[str, object] = {
+        "format": PAIRED_FITS_FORMAT_SHARDED,
+        "metadata": metadata,
+        "shards": [],
     }
-    output_path.with_suffix(".json").write_text(json.dumps(summary, indent=2))
+    total_successful_pairs = 0
+    total_successful_truck_context_replays = 0
+    total_chunks = (len(shared_maps) + effective_chunk_size - 1) // effective_chunk_size
+
+    for chunk_index, (start_index, end_index, chunk_maps) in enumerate(
+        _iter_chunks(shared_maps, effective_chunk_size),
+        start=1,
+    ):
+        LOGGER.info(
+            "Starting paired fit shard | shard=%d/%d maps=%d range=[%d,%d)",
+            chunk_index,
+            total_chunks,
+            len(chunk_maps),
+            start_index,
+            end_index,
+        )
+        chunk_pairs: dict[str, dict] = {}
+        for local_index, map_name in enumerate(chunk_maps, start=1):
+            car_side = _fit_side(car_root / map_name)
+            truck_side = _fit_side(truck_root / map_name)
+            chunk_pairs[map_name] = {
+                "car": car_side,
+                "truck": truck_side,
+                "pair_similarity": _pair_metrics(car_side, truck_side),
+                "truck_context_replay": _truck_context_replay(truck_root / map_name, car_side, truck_side),
+            }
+            overall_index = start_index + local_index
+            if local_index % effective_log_every == 0 or local_index == len(chunk_maps):
+                LOGGER.info(
+                    "Paired fit shard progress | shard=%d/%d local=%d/%d overall=%d/%d",
+                    chunk_index,
+                    total_chunks,
+                    local_index,
+                    len(chunk_maps),
+                    overall_index,
+                    len(shared_maps),
+                )
+
+        shard_path = shard_dir / f"{output_path.stem}.part{chunk_index:05d}.pt"
+        torch.save(
+            {
+                "format": "paired_fit_shard_v1",
+                "map_names": chunk_maps,
+                "pairs": chunk_pairs,
+            },
+            shard_path,
+        )
+        chunk_summary = _summarize_pairs(chunk_pairs)
+        total_successful_pairs += chunk_summary["successful_pairs"]
+        total_successful_truck_context_replays += chunk_summary["successful_truck_context_replays"]
+        manifest["shards"].append(
+            {
+                "path": str(shard_path),
+                "map_count": int(len(chunk_maps)),
+                "start_index": int(start_index),
+                "end_index": int(end_index),
+                "successful_pairs": int(chunk_summary["successful_pairs"]),
+                "successful_truck_context_replays": int(chunk_summary["successful_truck_context_replays"]),
+            }
+        )
+        LOGGER.info(
+            "Finished paired fit shard | shard=%d/%d output=%s maps=%d",
+            chunk_index,
+            total_chunks,
+            shard_path,
+            len(chunk_maps),
+        )
+
+    torch.save(manifest, output_path)
+    _write_paired_fit_summary(
+        output_path=output_path,
+        shared_map_count=len(shared_maps),
+        successful_pairs=total_successful_pairs,
+        successful_truck_context_replays=total_successful_truck_context_replays,
+        shard_count=len(manifest["shards"]),
+    )
+    LOGGER.info(
+        "Finished paired offline fit export | output=%s shared_maps=%d shard_count=%d",
+        output_path,
+        len(shared_maps),
+        len(manifest["shards"]),
+    )
     return output_path
 
 
@@ -506,13 +720,23 @@ def main():
     parser.add_argument("--truck-root", type=Path, default=TRUCK_ROOT)
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
     parser.add_argument("--max-maps", type=int, default=0)
+    parser.add_argument("--chunk-size", type=int, default=DEFAULT_CHUNK_SIZE)
+    parser.add_argument("--log-every", type=int, default=DEFAULT_LOG_EVERY)
+    parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args()
+
+    logging.basicConfig(
+        level=logging.DEBUG if args.verbose else logging.INFO,
+        format="%(asctime)s | %(levelname)s | %(message)s",
+    )
 
     output_path = export_paired_fits(
         args.car_root,
         args.truck_root,
         args.output,
         max_maps=(args.max_maps if args.max_maps > 0 else None),
+        chunk_size=args.chunk_size,
+        log_every=args.log_every,
     )
     print(output_path)
 
