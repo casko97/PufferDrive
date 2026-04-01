@@ -751,7 +751,7 @@ class RewardModel:
         
         return len(labels)
     
-    def train_reward(self):
+    def train_reward(self, return_metrics=False):
         if self.use_lora:
             for member in self.ensemble:
                 lora.mark_only_lora_as_trainable(member)
@@ -808,7 +808,16 @@ class RewardModel:
             self.opt.step()
         
         ensemble_acc = ensemble_acc / total
-        
+        ensemble_loss = np.array(
+            [float(np.mean(member_losses)) if len(member_losses) > 0 else float("nan") for member_losses in ensemble_losses],
+            dtype=np.float32,
+        )
+
+        if return_metrics:
+            return {
+                "acc": ensemble_acc,
+                "loss": ensemble_loss,
+            }
         return ensemble_acc
     
     def train_soft_reward(self):
