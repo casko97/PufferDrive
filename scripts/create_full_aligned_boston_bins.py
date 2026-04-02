@@ -566,6 +566,12 @@ def main() -> None:
     parser.add_argument("--window-len", type=int, default=32)
     parser.add_argument("--max-start-distance-m", type=float, default=1.0)
     parser.add_argument("--min-gap-seconds", type=float, default=2.0)
+    parser.add_argument(
+        "--turning-threshold-deg",
+        type=float,
+        default=None,
+        help="Optional pre-window scenario filter: keep only maps whose wrapped start/end heading delta exceeds this many degrees.",
+    )
     parser.add_argument("--observation-mode", type=str, default="default")
     parser.add_argument("--action-type", type=str, default="discrete")
     parser.add_argument("--fit-chunk-size", type=int, default=256)
@@ -716,6 +722,7 @@ def main() -> None:
         "min_gap_seconds": float(args.min_gap_seconds),
         "observation_mode": args.observation_mode,
         "action_type": args.action_type,
+        "turning_threshold_deg": args.turning_threshold_deg,
         "fit_chunk_size": int(args.fit_chunk_size),
         "fit_log_every": int(args.fit_log_every),
         "preference_chunk_size": int(args.preference_chunk_size),
@@ -754,6 +761,7 @@ def main() -> None:
             window_len=args.window_len,
             max_start_distance_m=args.max_start_distance_m,
             min_time_diff_seconds=args.min_gap_seconds,
+            turning_threshold_deg=args.turning_threshold_deg,
             observation_mode=args.observation_mode,
             action_type=args.action_type,
             chunk_size=args.preference_chunk_size,
