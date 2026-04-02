@@ -274,3 +274,90 @@ def test_dynamic_window_shift_selection_prefers_smallest_valid_gap(tmp_path):
     assert starts == [0, 5, 8]
     assert payload["window_metadata"][1]["shift_steps_from_previous"] == 5
     assert payload["window_metadata"][1]["window_start_distance_m"] <= 1.0
+
+
+def test_build_truck_context_preferences_can_filter_turning_scenarios(tmp_path):
+    export_path = tmp_path / "turning_export.pt"
+    replay_len = 6
+    obs_dim = 3
+    base_obs = np.zeros((replay_len, obs_dim), dtype=np.float32)
+    turn_heading = np.array([0.0, 0.2, 0.5, 0.9, 1.2, 1.45], dtype=np.float32)
+    straight_heading = np.array([0.0, 0.05, 0.08, 0.1, 0.12, 0.14], dtype=np.float32)
+    pair_payload = {
+        "metadata": {"fit_settings": {"dt": 0.1}},
+        "pairs": {
+            "map_turn.bin": {
+                "truck": {"gt_heading": turn_heading},
+                "truck_context_replay": {
+                    "status": "ok",
+                    "pair_similarity": {"ade": 0.5, "fde": 0.5},
+                    "truck_branch": {
+                        "obs": base_obs,
+                        "obs_default": base_obs,
+                        "obs_sdc_only_with_trailer": np.zeros((replay_len, obs_dim + 2), dtype=np.float32),
+                        "actions": np.arange(replay_len, dtype=np.int32),
+                        "rollout_x": np.arange(replay_len + 1, dtype=np.float32),
+                        "rollout_y": np.zeros(replay_len + 1, dtype=np.float32),
+                        "self_ade": 0.1,
+                        "self_fde": 0.2,
+                    },
+                    "car_branch": {
+                        "obs": base_obs + 1.0,
+                        "obs_default": base_obs + 1.0,
+                        "obs_sdc_only_with_trailer": np.ones((replay_len, obs_dim + 2), dtype=np.float32),
+                        "actions": np.arange(replay_len, dtype=np.int32) + 10,
+                        "rollout_x": np.arange(replay_len + 1, dtype=np.float32),
+                        "rollout_y": np.zeros(replay_len + 1, dtype=np.float32),
+                        "self_ade": 0.3,
+                        "self_fde": 0.4,
+                    },
+                },
+            },
+            "map_straight.bin": {
+                "truck": {"gt_heading": straight_heading},
+                "truck_context_replay": {
+                    "status": "ok",
+                    "pair_similarity": {"ade": 0.5, "fde": 0.5},
+                    "truck_branch": {
+                        "obs": base_obs,
+                        "obs_default": base_obs,
+                        "obs_sdc_only_with_trailer": np.zeros((replay_len, obs_dim + 2), dtype=np.float32),
+                        "actions": np.arange(replay_len, dtype=np.int32),
+                        "rollout_x": np.arange(replay_len + 1, dtype=np.float32),
+                        "rollout_y": np.zeros(replay_len + 1, dtype=np.float32),
+                        "self_ade": 0.1,
+                        "self_fde": 0.2,
+                    },
+                    "car_branch": {
+                        "obs": base_obs + 2.0,
+                        "obs_default": base_obs + 2.0,
+                        "obs_sdc_only_with_trailer": np.full((replay_len, obs_dim + 2), 2.0, dtype=np.float32),
+                        "actions": np.arange(replay_len, dtype=np.int32) + 20,
+                        "rollout_x": np.arange(replay_len + 1, dtype=np.float32),
+                        "rollout_y": np.zeros(replay_len + 1, dtype=np.float32),
+                        "self_ade": 0.3,
+                        "self_fde": 0.4,
+                    },
+                },
+            },
+        },
+    }
+    torch.save(pair_payload, export_path)
+
+    output_path = tmp_path / "turning_preferences.pt"
+    build_truck_context_preferences(
+        export_path,
+        output_path,
+        window_len=3,
+        min_time_diff_seconds=0.0,
+        max_start_distance_m=100.0,
+        turning_threshold_deg=45.0,
+        observation_mode="obs",
+    )
+
+    payload = torch.load(output_path, map_location="cpu")
+    map_names = {entry["map_name"] for entry in payload["window_metadata"]}
+    assert map_names == {"map_turn.bin"}
+    assert payload["metadata"]["turning_threshold_deg"] == 45.0
+    assert payload["metadata"]["turning_filtered_map_count"] == 1
+    assert payload["window_metadata"][0]["scenario_delta_heading_deg"] > 45.0

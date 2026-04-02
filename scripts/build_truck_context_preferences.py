@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import math
 from pathlib import Path
 import warnings
 
@@ -40,6 +41,28 @@ EXPECTED_OBS_DIM_BY_KEY = {
     "obs_default": 1120,
     "obs_sdc_only_with_trailer": 1156,
 }
+
+
+def _wrap_angle(angle: float) -> float:
+    return (angle + math.pi) % (2.0 * math.pi) - math.pi
+
+
+def _scenario_heading_delta_deg(pair: dict, replay: dict) -> float | None:
+    truck_side = pair.get("truck", {})
+    heading_candidates = (
+        truck_side.get("gt_heading"),
+        truck_side.get("rollout_heading"),
+        replay.get("truck_branch", {}).get("rollout_heading"),
+    )
+    for heading_sequence in heading_candidates:
+        if heading_sequence is None:
+            continue
+        heading = np.asarray(heading_sequence, dtype=np.float32).reshape(-1)
+        if heading.size < 2:
+            continue
+        delta_rad = _wrap_angle(float(heading[-1]) - float(heading[0]))
+        return float(np.degrees(delta_rad))
+    return None
 
 
 def _resolve_observation_key(observation_mode: str) -> str:
@@ -232,6 +255,8 @@ def _write_preference_summary(output_path: Path, metadata: dict, total_windows: 
         "dt": float(metadata["dt"]),
         "obs_dim": int(metadata["obs_dim"]),
         "action_dim": int(metadata["action_dim"]),
+        "turning_threshold_deg": metadata.get("turning_threshold_deg"),
+        "turning_filtered_map_count": int(metadata.get("turning_filtered_map_count", 0)),
         "total_windows": int(total_windows),
         "shard_count": int(shard_count),
     }
@@ -266,6 +291,7 @@ def build_truck_context_preferences(
     window_len: int = DEFAULT_WINDOW_LEN,
     max_start_distance_m: float = DEFAULT_MAX_START_DISTANCE_M,
     min_time_diff_seconds: float = DEFAULT_MIN_TIME_DIFF_SECONDS,
+    turning_threshold_deg: float | None = None,
     observation_mode: str = DEFAULT_OBSERVATION_MODE,
     action_type: str = DEFAULT_ACTION_TYPE,
     discrete_action_count: int = DEFAULT_DISCRETE_ACTION_COUNT,
@@ -289,6 +315,7 @@ def build_truck_context_preferences(
     metadata = []
     feature_dim: int | None = None
     processed_maps = 0
+    turning_filtered_map_count = 0
     total_windows = 0
     shard_index = 0
     shard_infos: list[dict] = []
@@ -323,6 +350,19 @@ def build_truck_context_preferences(
             processed_maps += 1
             replay = pair.get("truck_context_replay", {"status": "unavailable"})
             if replay.get("status") != "ok":
+                if processed_maps % effective_map_log_every == 0:
+                    _log_progress()
+                continue
+
+            scenario_delta_heading_deg = _scenario_heading_delta_deg(pair, replay)
+            if (
+                turning_threshold_deg is not None
+                and (
+                    scenario_delta_heading_deg is None
+                    or abs(scenario_delta_heading_deg) <= float(turning_threshold_deg)
+                )
+            ):
+                turning_filtered_map_count += 1
                 if processed_maps % effective_map_log_every == 0:
                     _log_progress()
                 continue
@@ -409,6 +449,8 @@ def build_truck_context_preferences(
                         "truck_self_fde": float(truck_branch["self_fde"]),
                         "car_on_truck_ade": float(car_branch["self_ade"]),
                         "car_on_truck_fde": float(car_branch["self_fde"]),
+                        "scenario_delta_heading_deg": scenario_delta_heading_deg,
+                        "turning_threshold_deg": float(turning_threshold_deg) if turning_threshold_deg is not None else None,
                     }
                 )
 
@@ -431,6 +473,10 @@ def build_truck_context_preferences(
                         "dt": float(dt),
                         "obs_dim": int(feature_dim - discrete_action_count),
                         "action_dim": int(discrete_action_count),
+                        "turning_threshold_deg": (
+                            float(turning_threshold_deg) if turning_threshold_deg is not None else None
+                        ),
+                        "turning_filtered_map_count": int(turning_filtered_map_count),
                         "preferred_label": 0,
                         "total_windows": int(len(pref_segments)),
                     }
@@ -485,6 +531,8 @@ def build_truck_context_preferences(
         "dt": float(dt),
         "obs_dim": int(ds),
         "action_dim": int(da),
+        "turning_threshold_deg": float(turning_threshold_deg) if turning_threshold_deg is not None else None,
+        "turning_filtered_map_count": int(turning_filtered_map_count),
         "preferred_label": 0,
         "total_windows": int(total_windows + len(pref_segments)),
     }
@@ -602,6 +650,12 @@ def main():
     parser.add_argument("--window-len", type=int, default=DEFAULT_WINDOW_LEN)
     parser.add_argument("--max-start-distance-m", type=float, default=DEFAULT_MAX_START_DISTANCE_M)
     parser.add_argument("--min-time-diff-seconds", type=float, default=DEFAULT_MIN_TIME_DIFF_SECONDS)
+    parser.add_argument(
+        "--turning-threshold-deg",
+        type=float,
+        default=None,
+        help="Optional wrapped heading-delta threshold; keep only scenarios with abs(end_heading - start_heading) above this many degrees.",
+    )
     parser.add_argument("--observation-mode", type=str, default=DEFAULT_OBSERVATION_MODE)
     parser.add_argument("--action-type", type=str, default=DEFAULT_ACTION_TYPE)
     parser.add_argument("--chunk-size", type=int, default=DEFAULT_PREFERENCE_CHUNK_SIZE)
@@ -620,6 +674,7 @@ def main():
         window_len=args.window_len,
         max_start_distance_m=args.max_start_distance_m,
         min_time_diff_seconds=args.min_time_diff_seconds,
+        turning_threshold_deg=args.turning_threshold_deg,
         observation_mode=args.observation_mode,
         action_type=args.action_type,
         chunk_size=args.chunk_size,
