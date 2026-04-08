@@ -66,3 +66,50 @@ This will launch separate training runs for each value in the list, which cab be
 - Architecture search
 - Running multiple random seeds
 - Ablation studies
+
+## Preference reward finetuning
+
+Preference reward shaping is configured at the trainer level, not in `Drive.step()`. When enabled, PPO uses:
+
+```text
+r_total = r_task + beta * mean(r_i) - lambda_uncertainty * std(r_i)
+```
+
+The runtime loader validates that the reward model metadata matches the active environment configuration before training starts. In particular, the saved reward model and the live env must agree on:
+
+- `observation_mode`
+- observation dimension
+- action encoding
+- action dimension
+
+If they do not match, training fails early with a clear error instead of silently scoring the wrong features.
+
+For the currently saved offline preference models in `outputs/reward_model/...`, the expected runtime setup is the default observation path:
+
+```ini
+[env]
+observation_mode = "default"
+action_type = discrete
+```
+
+Suggested staged smoke runs:
+
+1. `configs/conf1_discrete_preference_reward_smoke_off.ini`
+2. `configs/conf1_discrete_preference_reward_smoke_beta0.ini`
+3. `configs/conf1_discrete_preference_reward_smoke_beta005.ini`
+
+These let you verify, in order:
+
+1. the new plumbing is a no-op when disabled
+2. the reward model loads and logs correctly with `beta = 0`
+3. the combined reward changes as expected with small shaping enabled
+
+Example packaged launch:
+
+```bash
+python scripts/run_packaged_drive_train.py \
+  --config configs/conf1_discrete_preference_reward_smoke_beta0.ini \
+  --enable-wandb \
+  --wandb-project pufferdrive \
+  --wandb-group preference-reward-smoke
+```

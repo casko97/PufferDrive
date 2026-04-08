@@ -4,9 +4,13 @@ import json
 import struct
 import os
 import hashlib
+import math
+import shutil
+import tempfile
 import pufferlib
 from pufferlib.ocean.drive import binding
 from multiprocessing import Pool, cpu_count
+from pathlib import Path
 from tqdm import tqdm
 
 _POLICY_TYPE_PADDED = 0
@@ -32,6 +36,10 @@ _NON_KINEMATIC_PARAM_CACHE = {}
 DEFAULT_SDC_RUNTIME_TRUCK_REF_BIN = (
     "tests/artifacts/drive/traversing_traffic_light_intersection__97be27351e915863__97be27351e915863.bin"
 )
+_SCENARIO_FILTER_ALL = "all"
+_SCENARIO_FILTER_TURNING = "turning"
+_SCENARIO_FILTER_STRAIGHT = "straight"
+_SCENARIO_FILTER_CHOICES = {_SCENARIO_FILTER_ALL, _SCENARIO_FILTER_TURNING, _SCENARIO_FILTER_STRAIGHT}
 
 
 def postprocess_sdc_only_with_trailer_observations(
@@ -150,6 +158,228 @@ def _load_non_kinematic_vehicle_params_from_bin(binary_path):
     return params
 
 
+def _normalize_optional_path(value):
+    if value is None:
+        return None
+    if isinstance(value, str):
+        stripped = value.strip()
+        if stripped == "" or stripped.lower() == "none":
+            return None
+        return stripped
+    return str(value)
+
+
+def _wrap_angle(angle: float) -> float:
+    return (angle + math.pi) % (2 * math.pi) - math.pi
+
+
+def _read_i32(file_obj) -> int:
+    buf = file_obj.read(4)
+    if len(buf) != 4:
+        raise EOFError("unexpected EOF while reading int32")
+    return struct.unpack("<i", buf)[0]
+
+
+def _read_f32_array(file_obj, size: int) -> tuple[float, ...]:
+    buf = file_obj.read(4 * size)
+    if len(buf) != 4 * size:
+        raise EOFError("unexpected EOF while reading float32 array")
+    return struct.unpack(f"<{size}f", buf)
+
+
+def _read_i32_array(file_obj, size: int) -> tuple[int, ...]:
+    buf = file_obj.read(4 * size)
+    if len(buf) != 4 * size:
+        raise EOFError("unexpected EOF while reading int32 array")
+    return struct.unpack(f"<{size}i", buf)
+
+
+def classify_map_turning(map_path: Path, threshold_deg: float) -> dict[str, object]:
+    with map_path.open("rb") as file_obj:
+        sdc_track_index = _read_i32(file_obj)
+        num_tracks_to_predict = _read_i32(file_obj)
+        file_obj.seek(4 * num_tracks_to_predict, 1)
+        num_objects = _read_i32(file_obj)
+        num_roads = _read_i32(file_obj)
+
+        if not (0 <= sdc_track_index < num_objects):
+            raise ValueError(f"invalid sdc_track_index={sdc_track_index} for {map_path}")
+
+        start_heading = None
+        end_heading = None
+
+        for obj_idx in range(num_objects):
+            _scenario_id = _read_i32(file_obj)
+            _entity_type = _read_i32(file_obj)
+            _entity_id = _read_i32(file_obj)
+            trajectory_length = _read_i32(file_obj)
+
+            file_obj.seek(4 * trajectory_length * 6, 1)
+            headings = _read_f32_array(file_obj, trajectory_length)
+            valids = _read_i32_array(file_obj, trajectory_length)
+            file_obj.seek((6 * 4) + 4, 1)
+
+            if obj_idx == sdc_track_index:
+                valid_indices = [i for i, valid in enumerate(valids) if valid]
+                if not valid_indices:
+                    raise ValueError(f"SDC has no valid timesteps in {map_path}")
+                start_heading = headings[valid_indices[0]]
+                end_heading = headings[valid_indices[-1]]
+
+        for _ in range(num_roads):
+            _scenario_id = _read_i32(file_obj)
+            _entity_type = _read_i32(file_obj)
+            _entity_id = _read_i32(file_obj)
+            array_size = _read_i32(file_obj)
+            file_obj.seek(4 * array_size * 3, 1)
+            file_obj.seek((6 * 4) + 4, 1)
+
+    delta_heading_rad = _wrap_angle(float(end_heading) - float(start_heading))
+    delta_heading_deg = math.degrees(delta_heading_rad)
+    bucket = _SCENARIO_FILTER_TURNING if abs(delta_heading_deg) > threshold_deg else _SCENARIO_FILTER_STRAIGHT
+    return {
+        "map_name": map_path.name,
+        "map_path": str(map_path.resolve()),
+        "bucket": bucket,
+        "delta_heading_deg": float(delta_heading_deg),
+    }
+
+
+def _load_turning_manifest_rows(manifest_path: Path) -> dict[str, dict[str, object]]:
+    with manifest_path.open("r", encoding="utf-8") as file_obj:
+        payload = json.load(file_obj)
+
+    rows = {}
+    for scenario in payload.get("scenarios", []):
+        map_name = scenario.get("map_name")
+        bucket = scenario.get("turning_bucket")
+        if not map_name or bucket not in (_SCENARIO_FILTER_TURNING, _SCENARIO_FILTER_STRAIGHT):
+            continue
+        rows[str(map_name)] = {
+            "map_name": str(map_name),
+            "bucket": bucket,
+            "delta_heading_deg": float(scenario.get("delta_heading_deg", 0.0)),
+            "source": str(manifest_path),
+        }
+    return rows
+
+
+def _load_manifest_candidate_paths(manifest_path: Path, source_dir: Path, num_maps: int) -> list[Path]:
+    with manifest_path.open("r", encoding="utf-8") as file_obj:
+        payload = json.load(file_obj)
+
+    candidates = []
+    for scenario in payload.get("scenarios", [])[: int(num_maps)]:
+        map_name = scenario.get("map_name")
+        if not map_name:
+            continue
+        candidate_path = source_dir / str(map_name)
+        if not candidate_path.exists():
+            raise FileNotFoundError(f"Expected manifest-referenced map file not found: {candidate_path}")
+        candidates.append(candidate_path)
+    return candidates
+
+
+def _copy_or_link(src: Path, dst: Path) -> None:
+    try:
+        os.symlink(src, dst)
+    except OSError:
+        shutil.copy2(src, dst)
+
+
+def build_filtered_map_dir(
+    map_dir: str,
+    num_maps: int,
+    scenario_filter: str,
+    threshold_deg: float,
+    manifest_path: str | None = None,
+) -> tuple[str, int, dict[str, object]]:
+    if scenario_filter == _SCENARIO_FILTER_ALL:
+        return map_dir, num_maps, {
+            "scenario_filter": scenario_filter,
+            "threshold_deg": threshold_deg,
+            "selected_count": int(num_maps),
+            "selected_maps": [],
+            "temporary_map_dir": None,
+        }
+
+    source_dir = Path(map_dir).resolve()
+    manifest_rows = {}
+    manifest_candidate_paths = None
+    normalized_manifest_path = _normalize_optional_path(manifest_path)
+    if normalized_manifest_path is not None:
+        manifest_file = Path(normalized_manifest_path)
+        manifest_rows = _load_turning_manifest_rows(manifest_file)
+        manifest_candidate_paths = _load_manifest_candidate_paths(manifest_file, source_dir, num_maps)
+    else:
+        default_manifest = source_dir / "selection_manifest.json"
+        if default_manifest.exists():
+            manifest_rows = _load_turning_manifest_rows(default_manifest)
+            manifest_candidate_paths = _load_manifest_candidate_paths(default_manifest, source_dir, num_maps)
+
+    if manifest_candidate_paths is not None:
+        candidate_paths = manifest_candidate_paths
+    else:
+        candidate_paths = []
+        for map_idx in range(int(num_maps)):
+            candidate_path = source_dir / f"map_{map_idx:03d}.bin"
+            if not candidate_path.exists():
+                raise FileNotFoundError(f"Expected map file for scenario filtering not found: {candidate_path}")
+            candidate_paths.append(candidate_path)
+
+    selected_rows = []
+    for candidate_path in candidate_paths:
+        manifest_row = manifest_rows.get(candidate_path.name)
+        if manifest_row is not None:
+            row = dict(manifest_row)
+            row.setdefault("map_path", str(candidate_path.resolve()))
+            row.setdefault("map_name", candidate_path.name)
+        else:
+            row = classify_map_turning(candidate_path, threshold_deg)
+        if row["bucket"] == scenario_filter:
+            selected_rows.append(row)
+
+    if not selected_rows:
+        raise ValueError(
+            "Scenario filter did not match any maps: "
+            f"filter={scenario_filter} threshold_deg={threshold_deg} map_dir={source_dir} num_maps={num_maps}"
+        )
+
+    temp_dir = Path(tempfile.mkdtemp(prefix=f"puffer_drive_{scenario_filter}_maps_"))
+    selected_manifest = {
+        "source_map_dir": str(source_dir),
+        "scenario_filter": scenario_filter,
+        "threshold_deg": float(threshold_deg),
+        "selected_count": len(selected_rows),
+        "maps": [],
+    }
+    for new_idx, row in enumerate(selected_rows):
+        src_path = Path(str(row["map_path"]))
+        dst_name = f"map_{new_idx:03d}.bin"
+        dst_path = temp_dir / dst_name
+        _copy_or_link(src_path, dst_path)
+        selected_manifest["maps"].append(
+            {
+                "filtered_map_name": dst_name,
+                "original_map_name": row["map_name"],
+                "original_map_path": str(src_path),
+                "bucket": row["bucket"],
+                "delta_heading_deg": float(row.get("delta_heading_deg", 0.0)),
+            }
+        )
+
+    with (temp_dir / "scenario_filter_manifest.json").open("w", encoding="utf-8") as file_obj:
+        json.dump(selected_manifest, file_obj, indent=2)
+
+    return str(temp_dir), len(selected_rows), {
+        "scenario_filter": scenario_filter,
+        "threshold_deg": float(threshold_deg),
+        "selected_count": len(selected_rows),
+        "selected_maps": selected_manifest["maps"],
+        "temporary_map_dir": str(temp_dir),
+    }
+
+
 class Drive(pufferlib.PufferEnv):
     def __init__(
         self,
@@ -184,6 +414,9 @@ class Drive(pufferlib.PufferEnv):
         control_mode="control_vehicles",
         observation_mode="default",
         map_dir="resources/drive/binaries/training",
+        scenario_filter="all",
+        scenario_filter_threshold_deg=45.0,
+        scenario_filter_manifest_path=None,
         sequential_map_sampling=False,
         sdc_runtime_truck_override=False,
         sdc_runtime_truck_ref_bin=None,
@@ -193,7 +426,6 @@ class Drive(pufferlib.PufferEnv):
         # env
         self.dt = dt
         self.render_mode = render_mode
-        self.num_maps = num_maps
         self.report_interval = report_interval
         self.reward_vehicle_collision = reward_vehicle_collision
         self.reward_offroad_collision = reward_offroad_collision
@@ -234,7 +466,28 @@ class Drive(pufferlib.PufferEnv):
         self.init_mode_str = init_mode
         self.control_mode_str = control_mode
         self.observation_mode_str = observation_mode
-        self.map_dir = map_dir
+        self.scenario_filter = str(scenario_filter).strip().lower()
+        if self.scenario_filter not in _SCENARIO_FILTER_CHOICES:
+            raise ValueError(
+                "scenario_filter must be one of "
+                f"{sorted(_SCENARIO_FILTER_CHOICES)}. Got: {scenario_filter}"
+            )
+        self.scenario_filter_threshold_deg = float(scenario_filter_threshold_deg)
+        self.scenario_filter_manifest_path = _normalize_optional_path(scenario_filter_manifest_path)
+        self._temporary_map_dir = None
+        self.original_map_dir = map_dir
+        self.original_num_maps = int(num_maps)
+        filtered_map_dir, filtered_num_maps, filter_metadata = build_filtered_map_dir(
+            map_dir=map_dir,
+            num_maps=num_maps,
+            scenario_filter=self.scenario_filter,
+            threshold_deg=self.scenario_filter_threshold_deg,
+            manifest_path=self.scenario_filter_manifest_path,
+        )
+        self.map_dir = filtered_map_dir
+        self.num_maps = int(filtered_num_maps)
+        self.scenario_filter_metadata = filter_metadata
+        self._temporary_map_dir = filter_metadata.get("temporary_map_dir")
         self.force_zero_trailer_articulation_at_init = _as_bool(force_zero_trailer_articulation_at_init)
         self.non_kinematic_vehicle_params_override = None
         if isinstance(sdc_runtime_truck_ref_bin, str):
@@ -316,25 +569,25 @@ class Drive(pufferlib.PufferEnv):
         self._action_type_flag = 0 if action_type == "discrete" else 1
 
         # Check if resources directory exists
-        binary_path = f"{map_dir}/map_000.bin"
+        binary_path = f"{self.map_dir}/map_000.bin"
         if not os.path.exists(binary_path):
             raise FileNotFoundError(
                 f"Required directory {binary_path} not found. Please ensure the Drive maps are downloaded and installed correctly per docs."
             )
 
         # Check maps availability
-        available_maps = len([name for name in os.listdir(map_dir) if name.endswith(".bin")])
-        if num_maps > available_maps:
+        available_maps = len([name for name in os.listdir(self.map_dir) if name.endswith(".bin")])
+        if self.num_maps > available_maps:
             raise ValueError(
-                f"num_maps ({num_maps}) exceeds available maps in directory ({available_maps}). Please reduce num_maps or add more maps to resources/drive/binaries."
+                f"num_maps ({self.num_maps}) exceeds available maps in directory ({available_maps}). Please reduce num_maps or add more maps to resources/drive/binaries."
             )
         self.max_controlled_agents = int(max_controlled_agents)
 
         # Iterate through all maps to count total agents that can be initialized for each map
         agent_offsets, map_ids, num_envs = binding.shared(
-            map_dir=map_dir,
+            map_dir=self.map_dir,
             num_agents=num_agents,
-            num_maps=num_maps,
+            num_maps=self.num_maps,
             dynamics_model=_DYNAMICS_MODEL_IDS[dynamics_model],
             init_mode=self.init_mode,
             control_mode=self.control_mode,
@@ -390,7 +643,7 @@ class Drive(pufferlib.PufferEnv):
                 init_steps=init_steps,
                 init_mode=self.init_mode,
                 control_mode=self.control_mode,
-                map_dir=map_dir,
+                map_dir=self.map_dir,
                 non_kinematic_vehicle_params_override=self.non_kinematic_vehicle_params_override,
                 force_zero_trailer_articulation_at_init=int(self.force_zero_trailer_articulation_at_init),
             )
@@ -669,6 +922,9 @@ class Drive(pufferlib.PufferEnv):
 
     def close(self):
         binding.vec_close(self.c_envs)
+        if self._temporary_map_dir is not None and os.path.isdir(self._temporary_map_dir):
+            shutil.rmtree(self._temporary_map_dir, ignore_errors=True)
+            self._temporary_map_dir = None
 
 
 def calculate_area(p1, p2, p3):
