@@ -35,6 +35,7 @@ import pufferlib.sweep
 import pufferlib.vector
 import pufferlib.pytorch
 import pufferlib.utils
+from pufferlib.preference_reward import PreferenceRewardManager
 
 try:
     from pufferlib import _C
@@ -220,6 +221,13 @@ class PuffeRL:
         self.stats = defaultdict(list)
         self.last_stats = defaultdict(list)
         self.losses = {}
+        self.preference_reward = PreferenceRewardManager.from_config(
+            config.get("preference_reward"),
+            env_config=config.get("env_config", {}),
+            observation_space=vecenv.single_observation_space,
+            action_space=vecenv.single_action_space,
+            device=device,
+        )
 
         # Dashboard
         self.model_size = sum(p.numel() for p in policy.parameters() if p.requires_grad)
@@ -283,6 +291,16 @@ class PuffeRL:
                 logits, value = self.policy.forward_eval(o_device, state)
                 action, logprob, _ = pufferlib.pytorch.sample_logits(logits)
                 r = torch.clamp(r, -1, 1)
+                if self.preference_reward is not None:
+                    shaped_reward, pref_metrics = self.preference_reward.shape_rewards(
+                        r.detach().cpu().numpy(),
+                        o.detach().cpu().numpy(),
+                        action.detach().cpu().numpy(),
+                        global_step=self.global_step,
+                    )
+                    r = torch.as_tensor(shaped_reward, device=device, dtype=r.dtype)
+                    for key, metric_value in pref_metrics.items():
+                        self.stats[key].append(metric_value)
 
             profile("eval_copy", epoch)
             with torch.no_grad():
@@ -544,6 +562,21 @@ class PuffeRL:
 
         device = config["device"]
         agent_steps = int(dist_sum(self.global_step, device))
+        reward_aliases = {}
+        reward_keys = (
+            "task_reward",
+            "preference_reward_mean",
+            "preference_reward_std",
+            "preference_reward_raw",
+            "preference_reward_shaped",
+            "combined_reward",
+            "preference_reward_applied",
+            "preference_reward_calibration_progress",
+        )
+        for key in reward_keys:
+            if key in self.stats:
+                reward_aliases[f"reward/{key}"] = self.stats[key]
+
         logs = {
             "SPS": dist_sum(self.sps, device),
             "agent_steps": agent_steps,
@@ -551,6 +584,7 @@ class PuffeRL:
             "epoch": int(dist_sum(self.epoch, device)),
             "learning_rate": self.optimizer.param_groups[0]["lr"],
             **{f"environment/{k}": v for k, v in self.stats.items()},
+            **reward_aliases,
             **{f"losses/{k}": v for k, v in self.losses.items()},
             **{f"performance/{k}": v["elapsed"] for k, v in self.profile},
             # **{f'environment/{k}': dist_mean(v, device) for k, v in self.stats.items()},
@@ -997,7 +1031,13 @@ def train(env_name, args=None, vecenv=None, policy=None, logger=None):
     elif args["wandb"]:
         logger = WandbLogger(args)
 
-    train_config = dict(**args["train"], env=env_name, eval=args.get("eval", {}))
+    train_config = dict(
+        **args["train"],
+        env=env_name,
+        eval=args.get("eval", {}),
+        env_config=args.get("env", {}),
+        preference_reward=args.get("preference_reward", {}),
+    )
     pufferl = PuffeRL(train_config, vecenv, policy, logger)
 
     all_logs = []
@@ -1512,6 +1552,13 @@ def load_config(env_name, config_dir=None):
 
     # Dynamic help menu from config
     def puffer_type(value):
+        lowered = str(value).strip().lower()
+        if lowered == "true":
+            return True
+        if lowered == "false":
+            return False
+        if lowered == "none":
+            return None
         try:
             return ast.literal_eval(value)
         except:

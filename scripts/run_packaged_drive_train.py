@@ -48,7 +48,7 @@ def _overlay_args(base_args: dict[str, Any], packaged: dict[str, dict[str, Any]]
     for key, value in packaged.get("base", {}).items():
         args[key] = value
 
-    for section in ("vec", "env", "policy", "rnn", "train", "eval", "bc", "bc_train", "sweep"):
+    for section in ("vec", "env", "policy", "rnn", "train", "eval", "bc", "bc_train", "sweep", "preference_reward"):
         if section in packaged:
             args.setdefault(section, {})
             args[section].update(packaged[section])
@@ -71,6 +71,7 @@ def main() -> None:
     parser.add_argument("--wandb-group", type=str, default=None, help="Optional wandb group override")
     parser.add_argument("--wandb-name", type=str, default=None, help="Optional wandb run name override")
     parser.add_argument("--tag", type=str, default=None, help="Optional run tag")
+    parser.add_argument("--load-model-path", type=str, default=None, help="Optional checkpoint override")
     args_ns = parser.parse_args()
 
     config_path = args_ns.config.resolve()
@@ -95,6 +96,8 @@ def main() -> None:
         args["wandb_name"] = args_ns.wandb_name
     if args_ns.tag is not None:
         args["tag"] = args_ns.tag
+    if args_ns.load_model_path is not None:
+        args["load_model_path"] = args_ns.load_model_path
 
     pufferl.train("puffer_drive", args=args)
 
