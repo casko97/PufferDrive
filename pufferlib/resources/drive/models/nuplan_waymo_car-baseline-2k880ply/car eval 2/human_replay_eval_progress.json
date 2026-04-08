@@ -1,0 +1,9 @@
+{
+  "checkpoint": "/home/casko/phd-code/PufferDrive/pufferlib/resources/drive/models/nuplan_waymo_car-baseline-2k880ply/puffer_drive_2k880ply.pt",
+  "completed_maps": 65,
+  "config": "/home/casko/phd-code/PufferDrive/pufferlib/resources/drive/models/nuplan_waymo_car-baseline-2k880ply/car eval 2/conf1_discrete_human_replay_eval.ini",
+  "processed_maps": 100,
+  "skipped_maps": 35,
+  "status": "completed",
+  "total_maps": 100
+}

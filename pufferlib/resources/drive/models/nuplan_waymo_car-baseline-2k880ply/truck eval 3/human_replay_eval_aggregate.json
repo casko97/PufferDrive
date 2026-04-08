@@ -1,0 +1,24 @@
+{
+  "aggregate_metrics_mean_over_maps": {
+    "collision_rate": 0.2916666666666667,
+    "collisions_per_agent": 15.5,
+    "completion_rate": 0.5416666666666666,
+    "dnf_rate": 0.041666666666666664,
+    "episode_length": 90.0,
+    "episode_return": -7.809955248686795,
+    "goals_reached_this_episode": 0.5416666666666666,
+    "goals_sampled_this_episode": 1.0,
+    "lane_alignment_rate": 0.8541666666666666,
+    "n": 1.0,
+    "offroad_per_agent": 1.1666666666666667,
+    "offroad_rate": 0.1875,
+    "score": 0.5416666666666666,
+    "speed_at_goal": 10.360385902225971
+  },
+  "checkpoint": "/home/casko/phd-code/PufferDrive/pufferlib/resources/drive/models/nuplan_waymo_car-baseline-2k880ply/puffer_drive_2k880ply.pt",
+  "config": "/home/casko/phd-code/PufferDrive/pufferlib/resources/drive/models/nuplan_waymo_car-baseline-2k880ply/truck eval 3/conf1_discrete_human_replay_eval.ini",
+  "map_dir": "/home/casko/phd-code/PufferDrive/pufferlib/resources/drive/binaries/validation",
+  "mode": "human_replay_eval",
+  "num_maps_evaluated": 48,
+  "num_maps_skipped": 52
+}
