@@ -813,6 +813,7 @@ def train_offline_truck_context_reward(
         "rounds": rounds,
         "train_fraction": float(train_fraction),
         "split_seed": int(split_seed),
+        "activation": activation,
         "init_from_dir": str(init_from_dir) if init_from_dir is not None else None,
         "init_checkpoint_stem": init_checkpoint_stem if init_from_dir is not None else None,
         "round_acc": [acc.tolist() for acc in round_acc],
