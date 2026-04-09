@@ -1,12 +1,41 @@
 #include <Python.h>
+#include <time.h>
+
+static int startup_timing_enabled = 0;
+static double startup_timing_load_map_binary = 0.0;
+static double startup_timing_set_means = 0.0;
+static double startup_timing_init_grid_map = 0.0;
+static double startup_timing_init_neighbor_offsets = 0.0;
+static double startup_timing_cache_neighbor_offsets = 0.0;
+static double startup_timing_set_active_agents = 0.0;
+static double startup_timing_remove_bad_trajectories = 0.0;
+static double startup_timing_set_start_position = 0.0;
+static double startup_timing_invalid_initial_trailer_state = 0.0;
+static double startup_timing_init_goal_positions = 0.0;
+static double startup_timing_alloc_logs = 0.0;
+static long startup_timing_init_calls = 0;
+
+static double elapsed_seconds(struct timespec start, struct timespec end) {
+    return (double)(end.tv_sec - start.tv_sec) + (double)(end.tv_nsec - start.tv_nsec) / 1000000000.0;
+}
+
 #include "drive.h"
 #define Env Drive
 #define MY_SHARED
 #define MY_PUT
 static PyObject *vec_has_invalid_initial_trailer_state(PyObject *self, PyObject *args);
+static PyObject *inspect_map(PyObject *self, PyObject *args, PyObject *kwargs);
+static PyObject *startup_timing_enable(PyObject *self, PyObject *args);
+static PyObject *startup_timing_reset(PyObject *self, PyObject *args);
+static PyObject *startup_timing_get(PyObject *self, PyObject *args);
 #define MY_METHODS                                                                                                     \
     {"vec_has_invalid_initial_trailer_state", vec_has_invalid_initial_trailer_state, METH_VARARGS,                   \
-     "Return True if any sub-environment has invalid initial trailer state"}
+     "Return True if any sub-environment has invalid initial trailer state"},                                         \
+        {"inspect_map", (PyCFunction)inspect_map, METH_VARARGS | METH_KEYWORDS,                                      \
+         "Inspect a single map path and return initialization metadata"},                                             \
+        {"startup_timing_enable", startup_timing_enable, METH_VARARGS, "Enable or disable startup timing hooks"},    \
+        {"startup_timing_reset", startup_timing_reset, METH_NOARGS, "Reset startup timing accumulators"},            \
+        {"startup_timing_get", startup_timing_get, METH_NOARGS, "Get startup timing accumulators"}
 #include "../env_binding.h"
 
 static int unpack_non_kinematic_override(PyObject *kwargs, float *dst, int *enabled) {
@@ -108,6 +137,8 @@ static int my_put(Env *env, PyObject *args, PyObject *kwargs) {
 }
 
 static PyObject *my_shared(PyObject *self, PyObject *args, PyObject *kwargs) {
+    // Legacy helper retained for compatibility. The primary Drive runtime no longer
+    // depends on this dataset-wide prescan path for startup, resampling, or eval.
     char *map_dir = unpack_str(kwargs, "map_dir");
     int num_agents = unpack(kwargs, "num_agents");
     int num_maps = unpack(kwargs, "num_maps");
@@ -115,6 +146,7 @@ static PyObject *my_shared(PyObject *self, PyObject *args, PyObject *kwargs) {
     int init_mode = unpack(kwargs, "init_mode");
     int control_mode = unpack(kwargs, "control_mode");
     int init_steps = unpack(kwargs, "init_steps");
+    int max_controlled_agents = unpack(kwargs, "max_controlled_agents");
     int goal_behavior = unpack(kwargs, "goal_behavior");
     float goal_target_distance = unpack(kwargs, "goal_target_distance");
     int sequential_map_sampling = unpack(kwargs, "sequential_map_sampling");
@@ -143,6 +175,7 @@ static PyObject *my_shared(PyObject *self, PyObject *args, PyObject *kwargs) {
         env->control_mode = control_mode;
         env->init_steps = init_steps;
         env->dynamics_model = dynamics_model;
+        env->max_controlled_agents = max_controlled_agents;
         env->goal_behavior = goal_behavior;
         env->goal_target_distance = goal_target_distance;
         env->override_non_kinematic_vehicle_params = override_non_kinematic;
@@ -172,6 +205,7 @@ static PyObject *my_shared(PyObject *self, PyObject *args, PyObject *kwargs) {
                     free(env->active_agent_indices);
                     free(env->static_agent_indices);
                     free(env->expert_static_agent_indices);
+                    free(env->tracks_to_predict_indices);
                     free(env);
                     Py_DECREF(agent_offsets);
                     Py_DECREF(map_ids);
@@ -195,6 +229,7 @@ static PyObject *my_shared(PyObject *self, PyObject *args, PyObject *kwargs) {
             free(env->active_agent_indices);
             free(env->static_agent_indices);
             free(env->expert_static_agent_indices);
+            free(env->tracks_to_predict_indices);
             free(env);
             continue;
         }
@@ -214,6 +249,7 @@ static PyObject *my_shared(PyObject *self, PyObject *args, PyObject *kwargs) {
         free(env->active_agent_indices);
         free(env->static_agent_indices);
         free(env->expert_static_agent_indices);
+        free(env->tracks_to_predict_indices);
         free(env);
     }
     // printf("Generated %d environments to cover %d agents (requested %d agents)\n", env_count, total_agent_count,
@@ -303,6 +339,8 @@ static int my_init(Env *env, PyObject *args, PyObject *kwargs) {
     env->goal_target_distance = (float)unpack(kwargs, "goal_target_distance");
     env->goal_radius = (float)unpack(kwargs, "goal_radius");
     env->goal_speed = (float)unpack(kwargs, "goal_speed");
+    env->vision_range = kwargs && PyDict_GetItemString(kwargs, "vision_range") ? (int)unpack(kwargs, "vision_range")
+                                                                               : conf.vision_range;
     env->force_zero_trailer_articulation_at_init = (int)unpack(kwargs, "force_zero_trailer_articulation_at_init");
     env->override_non_kinematic_vehicle_params = 0;
     for (int i = 0; i < 13; i++) {
@@ -312,14 +350,19 @@ static int my_init(Env *env, PyObject *args, PyObject *kwargs) {
                                       &env->override_non_kinematic_vehicle_params) != 0) {
         return -1;
     }
-    char *map_dir = unpack_str(kwargs, "map_dir");
-    int map_id = unpack(kwargs, "map_id");
+    char *map_path = kwargs && PyDict_GetItemString(kwargs, "map_path") ? unpack_str(kwargs, "map_path") : NULL;
+    char *map_dir = kwargs && PyDict_GetItemString(kwargs, "map_dir") ? unpack_str(kwargs, "map_dir") : NULL;
+    int map_id = kwargs && PyDict_GetItemString(kwargs, "map_id") ? unpack(kwargs, "map_id") : 0;
     int max_agents = unpack(kwargs, "max_agents");
     int init_steps = unpack(kwargs, "init_steps");
     char map_file[512];
-    snprintf(map_file, sizeof(map_file), "%s/map_%03d.bin", map_dir, map_id);
     env->num_agents = max_agents;
-    env->map_name = strdup(map_file);
+    if (map_path != NULL && map_path[0] != '\0') {
+        env->map_name = strdup(map_path);
+    } else {
+        snprintf(map_file, sizeof(map_file), "%s/map_%03d.bin", map_dir, map_id);
+        env->map_name = strdup(map_file);
+    }
     env->init_steps = init_steps;
     env->timestep = init_steps;
     init(env);
@@ -345,6 +388,71 @@ static int my_log(PyObject *dict, Log *log) {
     return 0;
 }
 
+static PyObject *inspect_map(PyObject *self, PyObject *args, PyObject *kwargs) {
+    char *map_path = unpack_str(kwargs, "map_path");
+    int dynamics_model = unpack(kwargs, "dynamics_model");
+    int init_mode = unpack(kwargs, "init_mode");
+    int control_mode = unpack(kwargs, "control_mode");
+    int init_steps = unpack(kwargs, "init_steps");
+    int max_controlled_agents = unpack(kwargs, "max_controlled_agents");
+    int goal_behavior = unpack(kwargs, "goal_behavior");
+    float goal_target_distance = unpack(kwargs, "goal_target_distance");
+    float non_kinematic_override[13] = {0};
+    int override_non_kinematic = 0;
+    if (unpack_non_kinematic_override(kwargs, non_kinematic_override, &override_non_kinematic) != 0) {
+        return NULL;
+    }
+    int force_zero_trailer_articulation_at_init = unpack(kwargs, "force_zero_trailer_articulation_at_init");
+
+    Drive *env = calloc(1, sizeof(Drive));
+    env->map_name = strdup(map_path);
+    env->init_mode = init_mode;
+    env->control_mode = control_mode;
+    env->init_steps = init_steps;
+    env->dynamics_model = dynamics_model;
+    env->max_controlled_agents = max_controlled_agents;
+    env->goal_behavior = goal_behavior;
+    env->goal_target_distance = goal_target_distance;
+    env->override_non_kinematic_vehicle_params = override_non_kinematic;
+    env->force_zero_trailer_articulation_at_init = force_zero_trailer_articulation_at_init;
+    if (override_non_kinematic) {
+        for (int j = 0; j < 13; j++) {
+            env->non_kinematic_vehicle_params_override[j] = non_kinematic_override[j];
+        }
+    }
+
+    env->entities = load_map_binary(map_path, env);
+    if (env->entities == NULL) {
+        free(env->map_name);
+        free(env);
+        PyErr_SetString(PyExc_FileNotFoundError, map_path);
+        return NULL;
+    }
+
+    set_active_agents(env);
+    set_start_position(env);
+    int invalid_initial_trailer_state = has_invalid_initial_sdc_trailer_collision(env);
+    int active_agent_count = env->active_agent_count;
+
+    PyObject *result = PyDict_New();
+    PyDict_SetItemString(result, "active_agent_count", PyLong_FromLong(active_agent_count));
+    PyDict_SetItemString(result, "invalid_initial_trailer_state", invalid_initial_trailer_state ? Py_True : Py_False);
+    PyDict_SetItemString(result, "valid_for_sampling",
+                         (active_agent_count > 0 && !invalid_initial_trailer_state) ? Py_True : Py_False);
+
+    for (int j = 0; j < env->num_entities; j++) {
+        free_entity(&env->entities[j]);
+    }
+    free(env->entities);
+    free(env->active_agent_indices);
+    free(env->static_agent_indices);
+    free(env->expert_static_agent_indices);
+    free(env->tracks_to_predict_indices);
+    free(env->map_name);
+    free(env);
+    return result;
+}
+
 static PyObject *vec_has_invalid_initial_trailer_state(PyObject *self, PyObject *args) {
     VecEnv *vec = unpack_vecenv(args);
     if (!vec) {
@@ -356,4 +464,52 @@ static PyObject *vec_has_invalid_initial_trailer_state(PyObject *self, PyObject 
         }
     }
     Py_RETURN_FALSE;
+}
+
+static PyObject *startup_timing_enable(PyObject *self, PyObject *args) {
+    int enabled = 0;
+    if (!PyArg_ParseTuple(args, "p", &enabled)) {
+        return NULL;
+    }
+    startup_timing_enabled = enabled;
+    Py_RETURN_NONE;
+}
+
+static PyObject *startup_timing_reset(PyObject *self, PyObject *args) {
+    startup_timing_load_map_binary = 0.0;
+    startup_timing_set_means = 0.0;
+    startup_timing_init_grid_map = 0.0;
+    startup_timing_init_neighbor_offsets = 0.0;
+    startup_timing_cache_neighbor_offsets = 0.0;
+    startup_timing_set_active_agents = 0.0;
+    startup_timing_remove_bad_trajectories = 0.0;
+    startup_timing_set_start_position = 0.0;
+    startup_timing_invalid_initial_trailer_state = 0.0;
+    startup_timing_init_goal_positions = 0.0;
+    startup_timing_alloc_logs = 0.0;
+    startup_timing_init_calls = 0;
+    Py_RETURN_NONE;
+}
+
+static PyObject *startup_timing_get(PyObject *self, PyObject *args) {
+    PyObject *dict = PyDict_New();
+    if (!dict) {
+        return NULL;
+    }
+
+    PyDict_SetItemString(dict, "enabled", startup_timing_enabled ? Py_True : Py_False);
+    PyDict_SetItemString(dict, "init_calls", PyLong_FromLong(startup_timing_init_calls));
+    PyDict_SetItemString(dict, "load_map_binary", PyFloat_FromDouble(startup_timing_load_map_binary));
+    PyDict_SetItemString(dict, "set_means", PyFloat_FromDouble(startup_timing_set_means));
+    PyDict_SetItemString(dict, "init_grid_map", PyFloat_FromDouble(startup_timing_init_grid_map));
+    PyDict_SetItemString(dict, "init_neighbor_offsets", PyFloat_FromDouble(startup_timing_init_neighbor_offsets));
+    PyDict_SetItemString(dict, "cache_neighbor_offsets", PyFloat_FromDouble(startup_timing_cache_neighbor_offsets));
+    PyDict_SetItemString(dict, "set_active_agents", PyFloat_FromDouble(startup_timing_set_active_agents));
+    PyDict_SetItemString(dict, "remove_bad_trajectories", PyFloat_FromDouble(startup_timing_remove_bad_trajectories));
+    PyDict_SetItemString(dict, "set_start_position", PyFloat_FromDouble(startup_timing_set_start_position));
+    PyDict_SetItemString(dict, "invalid_initial_trailer_state",
+                         PyFloat_FromDouble(startup_timing_invalid_initial_trailer_state));
+    PyDict_SetItemString(dict, "init_goal_positions", PyFloat_FromDouble(startup_timing_init_goal_positions));
+    PyDict_SetItemString(dict, "alloc_logs", PyFloat_FromDouble(startup_timing_alloc_logs));
+    return dict;
 }

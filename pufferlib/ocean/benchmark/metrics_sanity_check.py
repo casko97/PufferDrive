@@ -92,6 +92,8 @@ def main():
     config["env"]["map_dir"] = config["eval"]["map_dir"]
     config["env"]["num_maps"] = config["eval"]["wosac_num_maps"]
     config["env"]["sequential_map_sampling"] = True
+    config["env"]["map_schedule"] = "sequential"
+    config["env"]["map_allow_live_duplicates"] = False
 
     config["env"]["init_mode"] = config["eval"]["wosac_init_mode"]
     config["env"]["control_mode"] = config["eval"]["wosac_control_mode"]

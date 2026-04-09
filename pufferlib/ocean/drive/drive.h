@@ -328,6 +328,7 @@ struct Drive {
     int timestep;
     int init_steps;
     int dynamics_model;
+    int vision_range;
     GridMap *grid_map;
     int *neighbor_offsets;
     int episode_length;
@@ -2106,24 +2107,107 @@ void init_goal_positions(Drive *env) {
 void init(Drive *env) {
     env->human_agent_idx = 0;
     env->timestep = 0;
-    env->entities = load_map_binary(env->map_name, env);
-    set_means(env);
-    init_grid_map(env);
-    env->grid_map->vision_range = 21; // TODO: Why is this hardcoded?
-    init_neighbor_offsets(env);
-    cache_neighbor_offsets(env);
+    if (startup_timing_enabled) {
+        startup_timing_init_calls++;
+        struct timespec t0, t1;
+
+        clock_gettime(CLOCK_MONOTONIC, &t0);
+        env->entities = load_map_binary(env->map_name, env);
+        clock_gettime(CLOCK_MONOTONIC, &t1);
+        startup_timing_load_map_binary += elapsed_seconds(t0, t1);
+
+        clock_gettime(CLOCK_MONOTONIC, &t0);
+        set_means(env);
+        clock_gettime(CLOCK_MONOTONIC, &t1);
+        startup_timing_set_means += elapsed_seconds(t0, t1);
+
+        clock_gettime(CLOCK_MONOTONIC, &t0);
+        init_grid_map(env);
+        clock_gettime(CLOCK_MONOTONIC, &t1);
+        startup_timing_init_grid_map += elapsed_seconds(t0, t1);
+    } else {
+        env->entities = load_map_binary(env->map_name, env);
+        set_means(env);
+        init_grid_map(env);
+    }
+    int vision_range = env->vision_range > 0 ? env->vision_range : 21;
+    if (vision_range < 3) {
+        vision_range = 3;
+    }
+    if (vision_range % 2 == 0) {
+        vision_range -= 1;
+    }
+    env->grid_map->vision_range = vision_range;
+    if (startup_timing_enabled) {
+        struct timespec t0, t1;
+
+        clock_gettime(CLOCK_MONOTONIC, &t0);
+        init_neighbor_offsets(env);
+        clock_gettime(CLOCK_MONOTONIC, &t1);
+        startup_timing_init_neighbor_offsets += elapsed_seconds(t0, t1);
+
+        clock_gettime(CLOCK_MONOTONIC, &t0);
+        cache_neighbor_offsets(env);
+        clock_gettime(CLOCK_MONOTONIC, &t1);
+        startup_timing_cache_neighbor_offsets += elapsed_seconds(t0, t1);
+    } else {
+        init_neighbor_offsets(env);
+        cache_neighbor_offsets(env);
+    }
     env->logs_capacity = 0;
-    set_active_agents(env);
+    if (startup_timing_enabled) {
+        struct timespec t0, t1;
+
+        clock_gettime(CLOCK_MONOTONIC, &t0);
+        set_active_agents(env);
+        clock_gettime(CLOCK_MONOTONIC, &t1);
+        startup_timing_set_active_agents += elapsed_seconds(t0, t1);
+    } else {
+        set_active_agents(env);
+    }
     env->logs_capacity = env->active_agent_count;
-    remove_bad_trajectories(env);
-    set_start_position(env);
-    env->invalid_initial_trailer_state = has_invalid_initial_sdc_trailer_collision(env);
+    if (startup_timing_enabled) {
+        struct timespec t0, t1;
+
+        clock_gettime(CLOCK_MONOTONIC, &t0);
+        remove_bad_trajectories(env);
+        clock_gettime(CLOCK_MONOTONIC, &t1);
+        startup_timing_remove_bad_trajectories += elapsed_seconds(t0, t1);
+
+        clock_gettime(CLOCK_MONOTONIC, &t0);
+        set_start_position(env);
+        clock_gettime(CLOCK_MONOTONIC, &t1);
+        startup_timing_set_start_position += elapsed_seconds(t0, t1);
+
+        clock_gettime(CLOCK_MONOTONIC, &t0);
+        env->invalid_initial_trailer_state = has_invalid_initial_sdc_trailer_collision(env);
+        clock_gettime(CLOCK_MONOTONIC, &t1);
+        startup_timing_invalid_initial_trailer_state += elapsed_seconds(t0, t1);
+    } else {
+        remove_bad_trajectories(env);
+        set_start_position(env);
+        env->invalid_initial_trailer_state = has_invalid_initial_sdc_trailer_collision(env);
+    }
     if (env->invalid_initial_trailer_state) {
         raise_error_with_message(ERROR_INITIALIZATION_FAILED,
                                  "Invalid initial state: SDC trailer collision/off-road at scenario start");
     }
-    init_goal_positions(env);
-    env->logs = (Log *)calloc(env->active_agent_count, sizeof(Log));
+    if (startup_timing_enabled) {
+        struct timespec t0, t1;
+
+        clock_gettime(CLOCK_MONOTONIC, &t0);
+        init_goal_positions(env);
+        clock_gettime(CLOCK_MONOTONIC, &t1);
+        startup_timing_init_goal_positions += elapsed_seconds(t0, t1);
+
+        clock_gettime(CLOCK_MONOTONIC, &t0);
+        env->logs = (Log *)calloc(env->active_agent_count, sizeof(Log));
+        clock_gettime(CLOCK_MONOTONIC, &t1);
+        startup_timing_alloc_logs += elapsed_seconds(t0, t1);
+    } else {
+        init_goal_positions(env);
+        env->logs = (Log *)calloc(env->active_agent_count, sizeof(Log));
+    }
 }
 
 void c_close(Drive *env) {

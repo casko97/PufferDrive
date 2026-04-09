@@ -6,7 +6,9 @@ import os
 import hashlib
 import math
 import shutil
-import tempfile
+import time
+from dataclasses import dataclass
+from typing import Any
 import pufferlib
 from pufferlib.ocean.drive import binding
 from multiprocessing import Pool, cpu_count
@@ -36,10 +38,16 @@ _NON_KINEMATIC_PARAM_CACHE = {}
 DEFAULT_SDC_RUNTIME_TRUCK_REF_BIN = (
     "tests/artifacts/drive/traversing_traffic_light_intersection__97be27351e915863__97be27351e915863.bin"
 )
-_SCENARIO_FILTER_ALL = "all"
-_SCENARIO_FILTER_TURNING = "turning"
-_SCENARIO_FILTER_STRAIGHT = "straight"
-_SCENARIO_FILTER_CHOICES = {_SCENARIO_FILTER_ALL, _SCENARIO_FILTER_TURNING, _SCENARIO_FILTER_STRAIGHT}
+
+
+def _startup_debug_enabled() -> bool:
+    value = os.environ.get("PUFFERDRIVE_STARTUP_DEBUG", "")
+    return value.strip().lower() in ("1", "true", "yes", "on")
+
+
+def _startup_debug(message: str) -> None:
+    if _startup_debug_enabled():
+        print(f"[pufferdrive-startup] {message}", flush=True)
 
 
 def postprocess_sdc_only_with_trailer_observations(
@@ -169,215 +177,248 @@ def _normalize_optional_path(value):
     return str(value)
 
 
-def _wrap_angle(angle: float) -> float:
-    return (angle + math.pi) % (2 * math.pi) - math.pi
-
-
-def _read_i32(file_obj) -> int:
-    buf = file_obj.read(4)
-    if len(buf) != 4:
-        raise EOFError("unexpected EOF while reading int32")
-    return struct.unpack("<i", buf)[0]
-
-
-def _read_f32_array(file_obj, size: int) -> tuple[float, ...]:
-    buf = file_obj.read(4 * size)
-    if len(buf) != 4 * size:
-        raise EOFError("unexpected EOF while reading float32 array")
-    return struct.unpack(f"<{size}f", buf)
-
-
-def _read_i32_array(file_obj, size: int) -> tuple[int, ...]:
-    buf = file_obj.read(4 * size)
-    if len(buf) != 4 * size:
-        raise EOFError("unexpected EOF while reading int32 array")
-    return struct.unpack(f"<{size}i", buf)
-
-
-def classify_map_turning(map_path: Path, threshold_deg: float) -> dict[str, object]:
-    with map_path.open("rb") as file_obj:
-        sdc_track_index = _read_i32(file_obj)
-        num_tracks_to_predict = _read_i32(file_obj)
-        file_obj.seek(4 * num_tracks_to_predict, 1)
-        num_objects = _read_i32(file_obj)
-        num_roads = _read_i32(file_obj)
-
-        if not (0 <= sdc_track_index < num_objects):
-            raise ValueError(f"invalid sdc_track_index={sdc_track_index} for {map_path}")
-
-        start_heading = None
-        end_heading = None
-
-        for obj_idx in range(num_objects):
-            _scenario_id = _read_i32(file_obj)
-            _entity_type = _read_i32(file_obj)
-            _entity_id = _read_i32(file_obj)
-            trajectory_length = _read_i32(file_obj)
-
-            file_obj.seek(4 * trajectory_length * 6, 1)
-            headings = _read_f32_array(file_obj, trajectory_length)
-            valids = _read_i32_array(file_obj, trajectory_length)
-            file_obj.seek((6 * 4) + 4, 1)
-
-            if obj_idx == sdc_track_index:
-                valid_indices = [i for i, valid in enumerate(valids) if valid]
-                if not valid_indices:
-                    raise ValueError(f"SDC has no valid timesteps in {map_path}")
-                start_heading = headings[valid_indices[0]]
-                end_heading = headings[valid_indices[-1]]
-
-        for _ in range(num_roads):
-            _scenario_id = _read_i32(file_obj)
-            _entity_type = _read_i32(file_obj)
-            _entity_id = _read_i32(file_obj)
-            array_size = _read_i32(file_obj)
-            file_obj.seek(4 * array_size * 3, 1)
-            file_obj.seek((6 * 4) + 4, 1)
-
-    delta_heading_rad = _wrap_angle(float(end_heading) - float(start_heading))
-    delta_heading_deg = math.degrees(delta_heading_rad)
-    bucket = _SCENARIO_FILTER_TURNING if abs(delta_heading_deg) > threshold_deg else _SCENARIO_FILTER_STRAIGHT
-    return {
-        "map_name": map_path.name,
-        "map_path": str(map_path.resolve()),
-        "bucket": bucket,
-        "delta_heading_deg": float(delta_heading_deg),
-    }
-
-
-def _load_turning_manifest_rows(manifest_path: Path) -> dict[str, dict[str, object]]:
-    with manifest_path.open("r", encoding="utf-8") as file_obj:
-        payload = json.load(file_obj)
-
-    rows = {}
-    for scenario in payload.get("scenarios", []):
-        map_name = scenario.get("map_name")
-        bucket = scenario.get("turning_bucket")
-        if not map_name or bucket not in (_SCENARIO_FILTER_TURNING, _SCENARIO_FILTER_STRAIGHT):
-            continue
-        rows[str(map_name)] = {
-            "map_name": str(map_name),
-            "bucket": bucket,
-            "delta_heading_deg": float(scenario.get("delta_heading_deg", 0.0)),
-            "source": str(manifest_path),
-        }
-    return rows
-
-
-def _load_manifest_candidate_paths(manifest_path: Path, source_dir: Path, num_maps: int) -> list[Path]:
-    with manifest_path.open("r", encoding="utf-8") as file_obj:
-        payload = json.load(file_obj)
-
-    candidates = []
-    for scenario in payload.get("scenarios", [])[: int(num_maps)]:
-        map_name = scenario.get("map_name")
-        if not map_name:
-            continue
-        candidate_path = source_dir / str(map_name)
-        if not candidate_path.exists():
-            raise FileNotFoundError(f"Expected manifest-referenced map file not found: {candidate_path}")
-        candidates.append(candidate_path)
-    return candidates
-
-
-def _copy_or_link(src: Path, dst: Path) -> None:
+def _stable_int(value: Any, default: int = 0) -> int:
+    if value is None:
+        return int(default)
     try:
-        os.symlink(src, dst)
-    except OSError:
-        shutil.copy2(src, dst)
+        return int(value)
+    except (TypeError, ValueError):
+        return int(default)
 
 
-def build_filtered_map_dir(
-    map_dir: str,
-    num_maps: int,
-    scenario_filter: str,
-    threshold_deg: float,
-    manifest_path: str | None = None,
-) -> tuple[str, int, dict[str, object]]:
-    if scenario_filter == _SCENARIO_FILTER_ALL:
-        return map_dir, num_maps, {
-            "scenario_filter": scenario_filter,
-            "threshold_deg": threshold_deg,
-            "selected_count": int(num_maps),
-            "selected_maps": [],
-            "temporary_map_dir": None,
+@dataclass(frozen=True)
+class MapDatasetEntry:
+    dataset_id: int
+    map_path: str
+    relative_path: str
+    source_name: str | None = None
+
+
+class MapDatasetCatalog:
+    def __init__(self, dataset_root: str, entries: list[MapDatasetEntry], manifest_path: str | None = None):
+        if not entries:
+            raise ValueError(f"No map binaries found in dataset: {dataset_root}")
+        self.dataset_root = str(Path(dataset_root).resolve())
+        self.entries = list(entries)
+        self.manifest_path = manifest_path
+
+    @classmethod
+    def from_map_dir(cls, map_dir: str) -> "MapDatasetCatalog":
+        dataset_root = Path(map_dir).resolve()
+        if not dataset_root.exists():
+            raise FileNotFoundError(f"Map dataset directory not found: {dataset_root}")
+
+        manifest_path = dataset_root / "dataset_manifest.json"
+        if manifest_path.exists():
+            with manifest_path.open("r", encoding="utf-8") as file_obj:
+                payload = json.load(file_obj)
+            rows = payload.get("maps") or payload.get("entries") or []
+            entries = []
+            for idx, row in enumerate(rows):
+                relative_path = row.get("relative_path") or row.get("path") or row.get("map_name")
+                if not relative_path:
+                    continue
+                map_path = (dataset_root / relative_path).resolve()
+                if not map_path.exists():
+                    raise FileNotFoundError(f"Manifest-referenced map file not found: {map_path}")
+                entries.append(
+                    MapDatasetEntry(
+                        dataset_id=_stable_int(row.get("map_id"), idx),
+                        map_path=str(map_path),
+                        relative_path=str(Path(relative_path)),
+                        source_name=row.get("source_name"),
+                    )
+                )
+            return cls(str(dataset_root), entries, manifest_path=str(manifest_path))
+
+        entries = []
+        for idx, map_path in enumerate(sorted(dataset_root.glob("*.bin"))):
+            entries.append(
+                MapDatasetEntry(
+                    dataset_id=idx,
+                    map_path=str(map_path.resolve()),
+                    relative_path=map_path.name,
+                    source_name=map_path.name,
+                )
+            )
+        return cls(str(dataset_root), entries, manifest_path=None)
+
+    def limit(self, num_maps: int) -> list[MapDatasetEntry]:
+        requested = int(num_maps)
+        if requested <= 0:
+            raise ValueError(f"num_maps must be > 0, got {requested}")
+        if requested > len(self.entries):
+            raise ValueError(
+                f"num_maps ({requested}) exceeds available maps in directory ({len(self.entries)}). "
+                "Please reduce num_maps or add more maps."
+            )
+        return list(self.entries[:requested])
+
+
+class MapValidationCache:
+    def __init__(self, dataset_root: str, signature: dict[str, Any]):
+        self.dataset_root = Path(dataset_root).resolve()
+        self.signature = json.dumps(signature, sort_keys=True, separators=(",", ":"))
+        self.cache_path = self.dataset_root / ".pufferdrive_map_validation_cache.json"
+        self._payload = {"version": 1, "entries": {}}
+        if self.cache_path.exists():
+            try:
+                with self.cache_path.open("r", encoding="utf-8") as file_obj:
+                    payload = json.load(file_obj)
+                if isinstance(payload, dict) and isinstance(payload.get("entries"), dict):
+                    self._payload = payload
+            except (OSError, json.JSONDecodeError):
+                self._payload = {"version": 1, "entries": {}}
+
+    @staticmethod
+    def build_signature(
+        *,
+        dynamics_model: str,
+        init_mode: int,
+        control_mode: int,
+        init_steps: int,
+        max_controlled_agents: int,
+        goal_behavior: int,
+        goal_target_distance: float,
+        force_zero_trailer_articulation_at_init: bool,
+        non_kinematic_vehicle_params_override: tuple[float, ...] | None,
+    ) -> dict[str, Any]:
+        return {
+            "dynamics_model": str(dynamics_model),
+            "init_mode": int(init_mode),
+            "control_mode": int(control_mode),
+            "init_steps": int(init_steps),
+            "max_controlled_agents": int(max_controlled_agents),
+            "goal_behavior": int(goal_behavior),
+            "goal_target_distance": float(goal_target_distance),
+            "force_zero_trailer_articulation_at_init": bool(force_zero_trailer_articulation_at_init),
+            "non_kinematic_vehicle_params_override": list(non_kinematic_vehicle_params_override)
+            if non_kinematic_vehicle_params_override is not None
+            else None,
         }
 
-    source_dir = Path(map_dir).resolve()
-    manifest_rows = {}
-    manifest_candidate_paths = None
-    normalized_manifest_path = _normalize_optional_path(manifest_path)
-    if normalized_manifest_path is not None:
-        manifest_file = Path(normalized_manifest_path)
-        manifest_rows = _load_turning_manifest_rows(manifest_file)
-        manifest_candidate_paths = _load_manifest_candidate_paths(manifest_file, source_dir, num_maps)
-    else:
-        default_manifest = source_dir / "selection_manifest.json"
-        if default_manifest.exists():
-            manifest_rows = _load_turning_manifest_rows(default_manifest)
-            manifest_candidate_paths = _load_manifest_candidate_paths(default_manifest, source_dir, num_maps)
+    def _entry_key(self, map_path: str) -> str:
+        try:
+            return str(Path(map_path).resolve().relative_to(self.dataset_root))
+        except ValueError:
+            return str(Path(map_path).resolve())
 
-    if manifest_candidate_paths is not None:
-        candidate_paths = manifest_candidate_paths
-    else:
-        candidate_paths = []
-        for map_idx in range(int(num_maps)):
-            candidate_path = source_dir / f"map_{map_idx:03d}.bin"
-            if not candidate_path.exists():
-                raise FileNotFoundError(f"Expected map file for scenario filtering not found: {candidate_path}")
-            candidate_paths.append(candidate_path)
+    def get(self, map_path: str) -> dict[str, Any] | None:
+        row = self._payload["entries"].get(self._entry_key(map_path))
+        if not row or row.get("signature") != self.signature:
+            return None
+        return {
+            "active_agent_count": int(row.get("active_agent_count", 0)),
+            "valid_for_sampling": bool(row.get("valid_for_sampling", False)),
+            "invalid_initial_trailer_state": bool(row.get("invalid_initial_trailer_state", False)),
+        }
 
-    selected_rows = []
-    for candidate_path in candidate_paths:
-        manifest_row = manifest_rows.get(candidate_path.name)
-        if manifest_row is not None:
-            row = dict(manifest_row)
-            row.setdefault("map_path", str(candidate_path.resolve()))
-            row.setdefault("map_name", candidate_path.name)
-        else:
-            row = classify_map_turning(candidate_path, threshold_deg)
-        if row["bucket"] == scenario_filter:
-            selected_rows.append(row)
+    def set(self, map_path: str, metadata: dict[str, Any]) -> None:
+        self._payload["entries"][self._entry_key(map_path)] = {
+            "signature": self.signature,
+            "active_agent_count": int(metadata.get("active_agent_count", 0)),
+            "valid_for_sampling": bool(metadata.get("valid_for_sampling", False)),
+            "invalid_initial_trailer_state": bool(metadata.get("invalid_initial_trailer_state", False)),
+        }
+        self.flush()
 
-    if not selected_rows:
-        raise ValueError(
-            "Scenario filter did not match any maps: "
-            f"filter={scenario_filter} threshold_deg={threshold_deg} map_dir={source_dir} num_maps={num_maps}"
-        )
+    def flush(self) -> None:
+        with self.cache_path.open("w", encoding="utf-8") as file_obj:
+            json.dump(self._payload, file_obj, indent=2, sort_keys=True)
 
-    temp_dir = Path(tempfile.mkdtemp(prefix=f"puffer_drive_{scenario_filter}_maps_"))
-    selected_manifest = {
-        "source_map_dir": str(source_dir),
-        "scenario_filter": scenario_filter,
-        "threshold_deg": float(threshold_deg),
-        "selected_count": len(selected_rows),
-        "maps": [],
-    }
-    for new_idx, row in enumerate(selected_rows):
-        src_path = Path(str(row["map_path"]))
-        dst_name = f"map_{new_idx:03d}.bin"
-        dst_path = temp_dir / dst_name
-        _copy_or_link(src_path, dst_path)
-        selected_manifest["maps"].append(
-            {
-                "filtered_map_name": dst_name,
-                "original_map_name": row["map_name"],
-                "original_map_path": str(src_path),
-                "bucket": row["bucket"],
-                "delta_heading_deg": float(row.get("delta_heading_deg", 0.0)),
-            }
-        )
 
-    with (temp_dir / "scenario_filter_manifest.json").open("w", encoding="utf-8") as file_obj:
-        json.dump(selected_manifest, file_obj, indent=2)
+class MapScheduler:
+    def __init__(
+        self,
+        entries: list[MapDatasetEntry],
+        *,
+        schedule: str = "shuffle_once_per_epoch",
+        seed: int | None = None,
+        allow_live_duplicates: bool = False,
+    ):
+        if schedule not in {"shuffle_once_per_epoch", "sequential", "random_with_replacement"}:
+            raise ValueError(f"Unsupported map_schedule: {schedule}")
+        self.entries = list(entries)
+        self.schedule = schedule
+        self.allow_live_duplicates = bool(allow_live_duplicates)
+        self._rng = np.random.default_rng(seed)
+        self._order = list(range(len(self.entries)))
+        self._cursor = 0
+        if self.schedule == "shuffle_once_per_epoch":
+            self._rng.shuffle(self._order)
 
-    return str(temp_dir), len(selected_rows), {
-        "scenario_filter": scenario_filter,
-        "threshold_deg": float(threshold_deg),
-        "selected_count": len(selected_rows),
-        "selected_maps": selected_manifest["maps"],
-        "temporary_map_dir": str(temp_dir),
-    }
+    def _next_entry(self) -> MapDatasetEntry:
+        if not self.entries:
+            raise ValueError("MapScheduler requires at least one dataset entry")
+        if self.schedule == "random_with_replacement":
+            return self.entries[int(self._rng.integers(0, len(self.entries)))]
+        if self._cursor >= len(self._order):
+            self._cursor = 0
+            if self.schedule == "shuffle_once_per_epoch":
+                self._rng.shuffle(self._order)
+        entry = self.entries[self._order[self._cursor]]
+        self._cursor += 1
+        return entry
+
+    def select_for_agent_budget(
+        self,
+        num_agents: int,
+        inspect_entry,
+    ) -> list[tuple[MapDatasetEntry, dict[str, Any]]]:
+        if num_agents <= 0:
+            raise ValueError(f"num_agents must be > 0, got {num_agents}")
+        selected = []
+        selected_ids = set()
+        total_agents = 0
+        max_attempts = len(self.entries) if not self.allow_live_duplicates else max(len(self.entries), num_agents * 2)
+        attempts = 0
+
+        while total_agents < int(num_agents) and attempts < max_attempts:
+            entry = self._next_entry()
+            attempts += 1
+            if not self.allow_live_duplicates and entry.dataset_id in selected_ids:
+                continue
+            metadata = inspect_entry(entry)
+            if not metadata["valid_for_sampling"] or metadata["active_agent_count"] <= 0:
+                continue
+            selected.append((entry, metadata))
+            selected_ids.add(entry.dataset_id)
+            total_agents += int(metadata["active_agent_count"])
+
+        if total_agents <= 0:
+            raise ValueError("No valid maps available for the current initialization settings")
+        return selected
+
+    def select_all_valid(
+        self,
+        inspect_entry,
+    ) -> list[tuple[MapDatasetEntry, dict[str, Any]]]:
+        selected = []
+        for entry in self.entries:
+            metadata = inspect_entry(entry)
+            if metadata["valid_for_sampling"] and metadata["active_agent_count"] > 0:
+                selected.append((entry, metadata))
+        if not selected:
+            raise ValueError("No valid maps available for sequential map sampling")
+        return selected
+
+
+def _compute_agent_offsets(
+    selected_entries: list[tuple[MapDatasetEntry, dict[str, Any]]],
+    requested_num_agents: int | None = None,
+) -> tuple[list[int], list[int], int]:
+    agent_offsets = [0]
+    map_ids = []
+    total_agents = 0
+    for entry, metadata in selected_entries:
+        map_ids.append(entry.dataset_id)
+        total_agents += int(metadata["active_agent_count"])
+        if requested_num_agents is not None and total_agents >= int(requested_num_agents):
+            total_agents = int(requested_num_agents)
+            agent_offsets.append(total_agents)
+            break
+        agent_offsets.append(total_agents)
+    return agent_offsets, map_ids, len(map_ids)
 
 
 class Drive(pufferlib.PufferEnv):
@@ -399,6 +440,7 @@ class Drive(pufferlib.PufferEnv):
         collision_behavior=0,
         offroad_behavior=0,
         dt=0.1,
+        vision_range=21,
         episode_length=None,
         termination_mode=None,
         resample_frequency=91,
@@ -414,10 +456,13 @@ class Drive(pufferlib.PufferEnv):
         control_mode="control_vehicles",
         observation_mode="default",
         map_dir="resources/drive/binaries/training",
-        scenario_filter="all",
-        scenario_filter_threshold_deg=45.0,
+        scenario_filter=None,
+        scenario_filter_threshold_deg=None,
         scenario_filter_manifest_path=None,
         sequential_map_sampling=False,
+        map_schedule="shuffle_once_per_epoch",
+        map_allow_live_duplicates=False,
+        map_scheduler_seed=None,
         sdc_runtime_truck_override=False,
         sdc_runtime_truck_ref_bin=None,
         force_truck_params_from_ref_bin=None,
@@ -425,6 +470,7 @@ class Drive(pufferlib.PufferEnv):
     ):
         # env
         self.dt = dt
+        self.vision_range = int(vision_range)
         self.render_mode = render_mode
         self.report_interval = report_interval
         self.reward_vehicle_collision = reward_vehicle_collision
@@ -466,28 +512,16 @@ class Drive(pufferlib.PufferEnv):
         self.init_mode_str = init_mode
         self.control_mode_str = control_mode
         self.observation_mode_str = observation_mode
-        self.scenario_filter = str(scenario_filter).strip().lower()
-        if self.scenario_filter not in _SCENARIO_FILTER_CHOICES:
-            raise ValueError(
-                "scenario_filter must be one of "
-                f"{sorted(_SCENARIO_FILTER_CHOICES)}. Got: {scenario_filter}"
-            )
-        self.scenario_filter_threshold_deg = float(scenario_filter_threshold_deg)
-        self.scenario_filter_manifest_path = _normalize_optional_path(scenario_filter_manifest_path)
-        self._temporary_map_dir = None
+        self.scenario_filter = scenario_filter
+        self.scenario_filter_threshold_deg = scenario_filter_threshold_deg
+        self.scenario_filter_manifest_path = scenario_filter_manifest_path
         self.original_map_dir = map_dir
         self.original_num_maps = int(num_maps)
-        filtered_map_dir, filtered_num_maps, filter_metadata = build_filtered_map_dir(
-            map_dir=map_dir,
-            num_maps=num_maps,
-            scenario_filter=self.scenario_filter,
-            threshold_deg=self.scenario_filter_threshold_deg,
-            manifest_path=self.scenario_filter_manifest_path,
-        )
-        self.map_dir = filtered_map_dir
-        self.num_maps = int(filtered_num_maps)
-        self.scenario_filter_metadata = filter_metadata
-        self._temporary_map_dir = filter_metadata.get("temporary_map_dir")
+        self.sequential_map_sampling = _as_bool(sequential_map_sampling)
+        requested_map_schedule = str(map_schedule).strip().lower()
+        self.map_schedule = "sequential" if self.sequential_map_sampling else requested_map_schedule
+        self.map_allow_live_duplicates = False if self.sequential_map_sampling else _as_bool(map_allow_live_duplicates)
+        self.map_scheduler_seed = seed if map_scheduler_seed is None else int(map_scheduler_seed)
         self.force_zero_trailer_articulation_at_init = _as_bool(force_zero_trailer_articulation_at_init)
         self.non_kinematic_vehicle_params_override = None
         if isinstance(sdc_runtime_truck_ref_bin, str):
@@ -568,94 +602,82 @@ class Drive(pufferlib.PufferEnv):
 
         self._action_type_flag = 0 if action_type == "discrete" else 1
 
-        # Check if resources directory exists
-        binary_path = f"{self.map_dir}/map_000.bin"
-        if not os.path.exists(binary_path):
-            raise FileNotFoundError(
-                f"Required directory {binary_path} not found. Please ensure the Drive maps are downloaded and installed correctly per docs."
-            )
-
-        # Check maps availability
-        available_maps = len([name for name in os.listdir(self.map_dir) if name.endswith(".bin")])
-        if self.num_maps > available_maps:
-            raise ValueError(
-                f"num_maps ({self.num_maps}) exceeds available maps in directory ({available_maps}). Please reduce num_maps or add more maps to resources/drive/binaries."
-            )
+        catalog_started_at = time.perf_counter()
+        self.map_catalog = MapDatasetCatalog.from_map_dir(map_dir)
+        self.selected_map_entries = self.map_catalog.limit(num_maps)
+        self.map_dir = self.map_catalog.dataset_root
+        self.num_maps = len(self.selected_map_entries)
         self.max_controlled_agents = int(max_controlled_agents)
-
-        # Iterate through all maps to count total agents that can be initialized for each map
-        agent_offsets, map_ids, num_envs = binding.shared(
-            map_dir=self.map_dir,
-            num_agents=num_agents,
-            num_maps=self.num_maps,
-            dynamics_model=_DYNAMICS_MODEL_IDS[dynamics_model],
-            init_mode=self.init_mode,
-            control_mode=self.control_mode,
-            init_steps=self.init_steps,
-            max_controlled_agents=self.max_controlled_agents,
-            goal_behavior=self.goal_behavior,
-            goal_target_distance=self.goal_target_distance,
-            sequential_map_sampling=sequential_map_sampling,
-            non_kinematic_vehicle_params_override=self.non_kinematic_vehicle_params_override,
-            force_zero_trailer_articulation_at_init=int(self.force_zero_trailer_articulation_at_init),
+        self._map_validation_cache = MapValidationCache(
+            self.map_catalog.dataset_root,
+            MapValidationCache.build_signature(
+                dynamics_model=self.dynamics_model,
+                init_mode=self.init_mode,
+                control_mode=self.control_mode,
+                init_steps=self.init_steps,
+                max_controlled_agents=self.max_controlled_agents,
+                goal_behavior=self.goal_behavior,
+                goal_target_distance=self.goal_target_distance,
+                force_zero_trailer_articulation_at_init=self.force_zero_trailer_articulation_at_init,
+                non_kinematic_vehicle_params_override=self.non_kinematic_vehicle_params_override,
+            ),
+        )
+        self._map_scheduler = MapScheduler(
+            self.selected_map_entries,
+            schedule=self.map_schedule,
+            seed=self.map_scheduler_seed,
+            allow_live_duplicates=self.map_allow_live_duplicates,
+        )
+        _startup_debug(
+            "map_catalog "
+            f"dataset_root={self.map_catalog.dataset_root} requested_num_maps={self.original_num_maps} "
+            f"selected_count={self.num_maps} manifest={self.map_catalog.manifest_path} "
+            f"elapsed_s={time.perf_counter() - catalog_started_at:.3f}"
         )
 
-        # agent_offsets[-1] works in both cases, just making it explicit that num_agents is ignored if sequential_map_sampling is True
-        self.num_agents = num_agents if not sequential_map_sampling else agent_offsets[-1]
+        selected_entries = self._select_live_maps(
+            requested_num_agents=num_agents,
+            sequential_map_sampling=self.sequential_map_sampling,
+        )
+        agent_offsets, map_ids, num_envs = _compute_agent_offsets(
+            selected_entries,
+            requested_num_agents=None if self.sequential_map_sampling else num_agents,
+        )
+        self.num_agents = agent_offsets[-1]
         self.agent_offsets = agent_offsets
         self.map_ids = map_ids
         self.num_envs = num_envs
+        self._live_map_entries = [entry for entry, _ in selected_entries]
         super().__init__(buf=buf)
         self._sim_observations = self.observations
         if self.observation_mode == 1:
             self._sim_observations = np.zeros((self.num_agents, self._sim_num_obs), dtype=np.float32)
-        env_ids = []
-        for i in range(num_envs):
-            cur = agent_offsets[i]
-            nxt = agent_offsets[i + 1]
-            env_id = binding.env_init(
-                self._sim_observations[cur:nxt],
-                self.actions[cur:nxt],
-                self.rewards[cur:nxt],
-                self.terminals[cur:nxt],
-                self.truncations[cur:nxt],
-                seed,
-                action_type=self._action_type_flag,
-                human_agent_idx=human_agent_idx,
-                reward_vehicle_collision=reward_vehicle_collision,
-                reward_offroad_collision=reward_offroad_collision,
-                reward_goal=reward_goal,
-                reward_goal_post_respawn=reward_goal_post_respawn,
-                goal_radius=goal_radius,
-                goal_speed=goal_speed,
-                goal_behavior=self.goal_behavior,
-                goal_target_distance=self.goal_target_distance,
-                collision_behavior=self.collision_behavior,
-                offroad_behavior=self.offroad_behavior,
-                dt=dt,
-                dynamics_model=_DYNAMICS_MODEL_IDS[dynamics_model],
-                episode_length=(int(episode_length) if episode_length is not None else None),
-                termination_mode=(int(self.termination_mode) if self.termination_mode is not None else 0),
-                max_controlled_agents=self.max_controlled_agents,
-                map_id=map_ids[i],
-                max_agents=nxt - cur,
-                ini_file="pufferlib/config/ocean/drive.ini",
-                init_steps=init_steps,
-                init_mode=self.init_mode,
-                control_mode=self.control_mode,
-                map_dir=self.map_dir,
-                non_kinematic_vehicle_params_override=self.non_kinematic_vehicle_params_override,
-                force_zero_trailer_articulation_at_init=int(self.force_zero_trailer_articulation_at_init),
-            )
-            env_ids.append(env_id)
-
-        self.c_envs = binding.vectorize(*env_ids)
+        self.c_envs = self._build_vector_env(self._live_map_entries, self.agent_offsets, seed)
 
     def _resample_vector_envs(self, seed):
         binding.vec_close(self.c_envs)
-        agent_offsets, map_ids, num_envs = binding.shared(
-            num_agents=self.num_agents,
-            num_maps=self.num_maps,
+        selected_entries = self._select_live_maps(
+            requested_num_agents=self.num_agents,
+            sequential_map_sampling=self.sequential_map_sampling,
+        )
+        agent_offsets, map_ids, num_envs = _compute_agent_offsets(
+            selected_entries,
+            requested_num_agents=None if self.sequential_map_sampling else self.num_agents,
+        )
+        self.agent_offsets = agent_offsets
+        self.map_ids = map_ids
+        self.num_envs = num_envs
+        self._live_map_entries = [entry for entry, _ in selected_entries]
+        self.c_envs = self._build_vector_env(self._live_map_entries, self.agent_offsets, seed)
+        binding.vec_reset(self.c_envs, seed)
+
+    def _inspect_map_entry(self, entry: MapDatasetEntry) -> dict[str, Any]:
+        cached = self._map_validation_cache.get(entry.map_path)
+        if cached is not None:
+            return cached
+
+        metadata = binding.inspect_map(
+            map_path=entry.map_path,
             dynamics_model=_DYNAMICS_MODEL_IDS[self.dynamics_model],
             init_mode=self.init_mode,
             control_mode=self.control_mode,
@@ -663,17 +685,37 @@ class Drive(pufferlib.PufferEnv):
             max_controlled_agents=self.max_controlled_agents,
             goal_behavior=self.goal_behavior,
             goal_target_distance=self.goal_target_distance,
-            goal_speed=self.goal_speed,
-            map_dir=self.map_dir,
-            sequential_map_sampling=False,
             non_kinematic_vehicle_params_override=self.non_kinematic_vehicle_params_override,
             force_zero_trailer_articulation_at_init=int(self.force_zero_trailer_articulation_at_init),
         )
-        self.agent_offsets = agent_offsets
-        self.map_ids = map_ids
-        self.num_envs = num_envs
+        normalized = {
+            "active_agent_count": int(metadata.get("active_agent_count", 0)),
+            "valid_for_sampling": bool(metadata.get("valid_for_sampling", False)),
+            "invalid_initial_trailer_state": bool(metadata.get("invalid_initial_trailer_state", False)),
+        }
+        self._map_validation_cache.set(entry.map_path, normalized)
+        return normalized
+
+    def _select_live_maps(self, requested_num_agents: int, sequential_map_sampling: bool):
+        started_at = time.perf_counter()
+        if sequential_map_sampling:
+            selected_entries = self._map_scheduler.select_all_valid(self._inspect_map_entry)
+        else:
+            selected_entries = self._map_scheduler.select_for_agent_budget(
+                requested_num_agents,
+                self._inspect_map_entry,
+            )
+        total_agents = sum(int(metadata["active_agent_count"]) for _, metadata in selected_entries)
+        _startup_debug(
+            "map_selection "
+            f"sequential={int(sequential_map_sampling)} selected_maps={len(selected_entries)} "
+            f"total_agents={total_agents} elapsed_s={time.perf_counter() - started_at:.3f}"
+        )
+        return selected_entries
+
+    def _build_vector_env(self, live_map_entries: list[MapDatasetEntry], agent_offsets: list[int], seed: int):
         env_ids = []
-        for i in range(num_envs):
+        for i, entry in enumerate(live_map_entries):
             cur = agent_offsets[i]
             nxt = agent_offsets[i + 1]
             env_id = binding.env_init(
@@ -690,16 +732,19 @@ class Drive(pufferlib.PufferEnv):
                 reward_goal=self.reward_goal,
                 reward_goal_post_respawn=self.reward_goal_post_respawn,
                 goal_radius=self.goal_radius,
+                goal_speed=self.goal_speed,
                 goal_behavior=self.goal_behavior,
                 goal_target_distance=self.goal_target_distance,
-                goal_speed=self.goal_speed,
                 collision_behavior=self.collision_behavior,
                 offroad_behavior=self.offroad_behavior,
                 dt=self.dt,
+                vision_range=self.vision_range,
                 dynamics_model=_DYNAMICS_MODEL_IDS[self.dynamics_model],
                 episode_length=(int(self.episode_length) if self.episode_length is not None else None),
+                termination_mode=(int(self.termination_mode) if self.termination_mode is not None else 0),
                 max_controlled_agents=self.max_controlled_agents,
-                map_id=map_ids[i],
+                map_id=entry.dataset_id,
+                map_path=entry.map_path,
                 max_agents=nxt - cur,
                 ini_file="pufferlib/config/ocean/drive.ini",
                 init_steps=self.init_steps,
@@ -710,9 +755,7 @@ class Drive(pufferlib.PufferEnv):
                 force_zero_trailer_articulation_at_init=int(self.force_zero_trailer_articulation_at_init),
             )
             env_ids.append(env_id)
-
-        self.c_envs = binding.vectorize(*env_ids)
-        binding.vec_reset(self.c_envs, seed)
+        return binding.vectorize(*env_ids)
 
     def reset(self, seed=0):
         binding.vec_reset(self.c_envs, seed)
@@ -922,9 +965,6 @@ class Drive(pufferlib.PufferEnv):
 
     def close(self):
         binding.vec_close(self.c_envs)
-        if self._temporary_map_dir is not None and os.path.isdir(self._temporary_map_dir):
-            shutil.rmtree(self._temporary_map_dir, ignore_errors=True)
-            self._temporary_map_dir = None
 
 
 def calculate_area(p1, p2, p3):
@@ -1207,6 +1247,7 @@ def process_all_maps(
     output_folder=None,
     max_maps=50_000,
     num_workers=None,
+    write_manifest=True,
 ):
     """Process all maps and save them as binaries using multiprocessing
 
@@ -1237,10 +1278,18 @@ def process_all_maps(
 
     # Prepare arguments for parallel processing
     tasks = []
+    manifest_rows = []
     for i, map_path in enumerate(json_files[:max_maps]):
         binary_file = f"map_{i:03d}.bin"
         binary_path = binary_dir / binary_file
         tasks.append((i, map_path, binary_path))
+        manifest_rows.append(
+            {
+                "map_id": i,
+                "relative_path": binary_file,
+                "source_name": map_path.name,
+            }
+        )
 
     # Process maps in parallel with progress bar
     with Pool(num_workers) as pool:
@@ -1257,6 +1306,19 @@ def process_all_maps(
         for i, name, success, error in results:
             if not success:
                 print(f"  {name}: {error}")
+
+    if write_manifest:
+        manifest_path = binary_dir / "dataset_manifest.json"
+        with manifest_path.open("w", encoding="utf-8") as file_obj:
+            json.dump(
+                {
+                    "dataset_name": dataset_name,
+                    "source_data_dir": str(data_dir.resolve()),
+                    "maps": manifest_rows,
+                },
+                file_obj,
+                indent=2,
+            )
 
 
 def test_performance(timeout=10, atn_cache=1024, num_agents=1024):
