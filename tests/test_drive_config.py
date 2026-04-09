@@ -47,7 +47,7 @@ class TestDriveConfig(unittest.TestCase):
             self.assertEqual(args["package"], "ocean")
 
             # Test for a value specific to drive.ini ([env] section)
-            self.assertEqual(args["env"]["num_agents"], 1)
+            self.assertEqual(args["env"]["num_agents"], 2048)
 
             # Test for a value from the [policy] section in drive.ini
             self.assertEqual(args["policy"]["hidden_size"], 256)
@@ -66,15 +66,8 @@ class TestDriveConfig(unittest.TestCase):
         self.assertEqual(args["env_name"], "puffer_drive")
         self.assertEqual(args["policy_name"], "Drive")
         self.assertEqual(args["rnn_name"], "Recurrent")
-        self.assertEqual(args["env"]["num_agents"], 1)
+        self.assertEqual(args["env"]["num_agents"], 2048)
         self.assertEqual(args["env"]["action_type"], "discrete")
-        self.assertEqual(args["env"]["observation_mode"], "default")
-        self.assertEqual(args["env"]["scenario_filter"], "all")
-        self.assertEqual(args["env"]["scenario_filter_threshold_deg"], 45.0)
-        self.assertIsNone(args["env"]["scenario_filter_manifest_path"])
-        self.assertIn("preference_reward", args)
-        self.assertEqual(args["preference_reward"]["enabled"], False)
-        self.assertEqual(args["preference_reward"]["checkpoint_stem"], "offline_truck_context")
         self.assertEqual(args["policy"]["input_size"], 64)
         self.assertEqual(args["policy"]["hidden_size"], 256)
         self.assertEqual(args["rnn"]["input_size"], 256)

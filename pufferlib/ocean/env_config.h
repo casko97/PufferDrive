@@ -29,6 +29,7 @@ typedef struct {
     int init_steps;
     int init_mode;
     int control_mode;
+    int vision_range;
     char map_dir[256];
     int sdc_runtime_truck_override;
     char sdc_runtime_truck_ref_bin[512];
@@ -121,6 +122,8 @@ static int handler(void *config, const char *section, const char *name, const ch
         } else {
             env_config->control_mode = atoi(value);
         }
+    } else if (MATCH("env", "vision_range")) {
+        env_config->vision_range = atoi(value);
     } else if (MATCH("env", "map_dir")) {
         if (sscanf(value, "\"%255[^\"]\"", env_config->map_dir) != 1) {
             strncpy(env_config->map_dir, value, sizeof(env_config->map_dir) - 1);
