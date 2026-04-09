@@ -1,0 +1,237 @@
+{
+  "model_dir": "/home/casko/phd-code/PufferDrive/pufferlib/resources/drive/models/car-baseline-small-boston-split-hxp7iv3l",
+  "sample_sets": {
+    "591b862db7e27d2e": {
+      "bucket_summary": {
+        "sample_size": 100,
+        "straight": 84,
+        "straight_fraction": 0.84,
+        "top_heading_changes": [
+          {
+            "bucket": "turning",
+            "delta_heading_deg": 92.35970308912334,
+            "delta_heading_rad": 1.61198091506958,
+            "first_valid_idx": 0,
+            "last_valid_idx": 90,
+            "map_name": "map_36210.bin",
+            "map_path": "/home/casko/phd-code/PufferDrive/pufferlib/resources/drive/binaries/nuplanCarBostonAll/map_36210.bin"
+          },
+          {
+            "bucket": "turning",
+            "delta_heading_deg": -89.59851715487565,
+            "delta_heading_rad": -1.5637891292572021,
+            "first_valid_idx": 0,
+            "last_valid_idx": 90,
+            "map_name": "map_11023.bin",
+            "map_path": "/home/casko/phd-code/PufferDrive/pufferlib/resources/drive/binaries/nuplanCarBostonAll/map_11023.bin"
+          },
+          {
+            "bucket": "turning",
+            "delta_heading_deg": -85.20730017190206,
+            "delta_heading_rad": -1.4871479347348213,
+            "first_valid_idx": 0,
+            "last_valid_idx": 90,
+            "map_name": "map_15392.bin",
+            "map_path": "/home/casko/phd-code/PufferDrive/pufferlib/resources/drive/binaries/nuplanCarBostonAll/map_15392.bin"
+          },
+          {
+            "bucket": "turning",
+            "delta_heading_deg": -84.14811968541974,
+            "delta_heading_rad": -1.4686617478728294,
+            "first_valid_idx": 0,
+            "last_valid_idx": 90,
+            "map_name": "map_16256.bin",
+            "map_path": "/home/casko/phd-code/PufferDrive/pufferlib/resources/drive/binaries/nuplanCarBostonAll/map_16256.bin"
+          },
+          {
+            "bucket": "turning",
+            "delta_heading_deg": -81.33047647470977,
+            "delta_heading_rad": -1.4194845966994762,
+            "first_valid_idx": 0,
+            "last_valid_idx": 90,
+            "map_name": "map_27467.bin",
+            "map_path": "/home/casko/phd-code/PufferDrive/pufferlib/resources/drive/binaries/nuplanCarBostonAll/map_27467.bin"
+          }
+        ],
+        "turning": 16,
+        "turning_fraction": 0.16
+      },
+      "comparison": {
+        "buckets": {
+          "straight": {
+            "left_count": 84,
+            "left_minus_right": {
+              "collision_rate": -0.11147186147186147,
+              "collisions_per_agent": -1.7326839826839828,
+              "completion_rate": 0.0010822510822510178,
+              "dnf_rate": 0.0,
+              "episode_length": 0.0,
+              "episode_return": 0.18408057674185008,
+              "goals_reached_this_episode": 0.0010822510822510178,
+              "goals_sampled_this_episode": 0.0,
+              "lane_alignment_rate": -0.0010822510822510178,
+              "n": 0.0,
+              "offroad_per_agent": 1.3777056277056277,
+              "offroad_rate": -0.012987012987012991,
+              "score": 0.1114718614718615,
+              "speed_at_goal": -1.0865793150740792
+            },
+            "right_count": 66
+          },
+          "turning": {
+            "left_count": 16,
+            "left_minus_right": {
+              "collision_rate": -0.04166666666666666,
+              "collisions_per_agent": 1.6875,
+              "completion_rate": 0.7708333333333334,
+              "dnf_rate": 0.0,
+              "episode_length": 0.0,
+              "episode_return": 4.703950300812721,
+              "goals_reached_this_episode": 0.7708333333333334,
+              "goals_sampled_this_episode": 0.0,
+              "lane_alignment_rate": 0.14583333333333337,
+              "n": 0.0,
+              "offroad_per_agent": -9.5,
+              "offroad_rate": -0.6666666666666666,
+              "score": 0.7083333333333334,
+              "speed_at_goal": 13.595995287100473
+            },
+            "right_count": 12
+          }
+        },
+        "left_run": "car eval boston validation",
+        "right_run": "truck eval boston validation",
+        "turning_minus_straight": {
+          "car eval boston validation": {
+            "collision_rate": -0.005952380952380959,
+            "collisions_per_agent": 1.056547619047619,
+            "completion_rate": -0.0029761904761904656,
+            "dnf_rate": 0.0,
+            "episode_length": 0.0,
+            "episode_return": 0.6301475678171431,
+            "goals_reached_this_episode": -0.0029761904761904656,
+            "goals_sampled_this_episode": 0.0,
+            "lane_alignment_rate": -0.0803571428571429,
+            "n": 0.0,
+            "offroad_per_agent": -2.392857142857143,
+            "offroad_rate": -0.047619047619047616,
+            "score": 0.005952380952380931,
+            "speed_at_goal": 0.45171718654178505
+          },
+          "truck eval boston validation": {
+            "collision_rate": -0.07575757575757577,
+            "collisions_per_agent": -2.3636363636363638,
+            "completion_rate": -0.7727272727272728,
+            "dnf_rate": 0.0,
+            "episode_length": 0.0,
+            "episode_return": -3.889722156253728,
+            "goals_reached_this_episode": -0.7727272727272728,
+            "goals_sampled_this_episode": 0.0,
+            "lane_alignment_rate": -0.2272727272727273,
+            "n": 0.0,
+            "offroad_per_agent": 8.484848484848484,
+            "offroad_rate": 0.606060606060606,
+            "score": -0.5909090909090909,
+            "speed_at_goal": -14.230857415632768
+          }
+        }
+      },
+      "manifest_path": "/home/casko/phd-code/PufferDrive/pufferlib/resources/drive/models/car-baseline-small-boston-split-hxp7iv3l/car eval boston validation/human_replay_eval_sampled_maps.json",
+      "run_names": [
+        "car eval boston validation",
+        "truck eval boston validation"
+      ],
+      "runs": {
+        "car eval boston validation": {
+          "buckets": {
+            "straight": {
+              "count": 84,
+              "means": {
+                "collision_rate": 0.13095238095238096,
+                "collisions_per_agent": 2.130952380952381,
+                "completion_rate": 0.9404761904761905,
+                "dnf_rate": 0.0,
+                "episode_length": 90.0,
+                "episode_return": -1.2880083237375533,
+                "goals_reached_this_episode": 0.9404761904761905,
+                "goals_sampled_this_episode": 1.0,
+                "lane_alignment_rate": 0.8928571428571429,
+                "n": 1.0,
+                "offroad_per_agent": 2.392857142857143,
+                "offroad_rate": 0.047619047619047616,
+                "score": 0.8690476190476191,
+                "speed_at_goal": 16.860200774101983
+              }
+            },
+            "turning": {
+              "count": 16,
+              "means": {
+                "collision_rate": 0.125,
+                "collisions_per_agent": 3.1875,
+                "completion_rate": 0.9375,
+                "dnf_rate": 0.0,
+                "episode_length": 90.0,
+                "episode_return": -0.6578607559204102,
+                "goals_reached_this_episode": 0.9375,
+                "goals_sampled_this_episode": 1.0,
+                "lane_alignment_rate": 0.8125,
+                "n": 1.0,
+                "offroad_per_agent": 0.0,
+                "offroad_rate": 0.0,
+                "score": 0.875,
+                "speed_at_goal": 17.31191796064377
+              }
+            }
+          },
+          "completed_rows": 100,
+          "missing_bucket_maps": []
+        },
+        "truck eval boston validation": {
+          "buckets": {
+            "straight": {
+              "count": 66,
+              "means": {
+                "collision_rate": 0.24242424242424243,
+                "collisions_per_agent": 3.8636363636363638,
+                "completion_rate": 0.9393939393939394,
+                "dnf_rate": 0.0,
+                "episode_length": 90.0,
+                "episode_return": -1.4720889004794033,
+                "goals_reached_this_episode": 0.9393939393939394,
+                "goals_sampled_this_episode": 1.0,
+                "lane_alignment_rate": 0.8939393939393939,
+                "n": 1.0,
+                "offroad_per_agent": 1.0151515151515151,
+                "offroad_rate": 0.06060606060606061,
+                "score": 0.7575757575757576,
+                "speed_at_goal": 17.946780089176062
+              }
+            },
+            "turning": {
+              "count": 12,
+              "means": {
+                "collision_rate": 0.16666666666666666,
+                "collisions_per_agent": 1.5,
+                "completion_rate": 0.16666666666666666,
+                "dnf_rate": 0.0,
+                "episode_length": 90.0,
+                "episode_return": -5.361811056733131,
+                "goals_reached_this_episode": 0.16666666666666666,
+                "goals_sampled_this_episode": 1.0,
+                "lane_alignment_rate": 0.6666666666666666,
+                "n": 1.0,
+                "offroad_per_agent": 9.5,
+                "offroad_rate": 0.6666666666666666,
+                "score": 0.16666666666666666,
+                "speed_at_goal": 3.7159226735432944
+              }
+            }
+          },
+          "completed_rows": 78,
+          "missing_bucket_maps": []
+        }
+      }
+    }
+  },
+  "threshold_deg": 45.0
+}
