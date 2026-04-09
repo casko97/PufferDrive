@@ -1,0 +1,120 @@
+Model: /home/casko/phd-code/PufferDrive/pufferlib/resources/drive/models/car-baseline-small-boston-split-hxp7iv3l
+Turning threshold: 45.0 deg
+
+Sample set 591b862db7e27d2e
+runs: car eval boston validation, truck eval boston validation
+shared sample: sample_size=100 straight=84 turning=16
+
+== car eval boston validation ==
+completed_rows: 100
+straight (n=84)
+  score: 0.869048
+  completion_rate: 0.940476
+  collisions_per_agent: 2.130952
+  offroad_per_agent: 2.392857
+  episode_return: -1.288008
+  goals_reached_this_episode: 0.940476
+  goals_sampled_this_episode: 1.000000
+  speed_at_goal: 16.860201
+  collision_rate: 0.130952
+  offroad_rate: 0.047619
+  dnf_rate: 0.000000
+  lane_alignment_rate: 0.892857
+  episode_length: 90.000000
+  n: 1.000000
+turning (n=16)
+  score: 0.875000
+  completion_rate: 0.937500
+  collisions_per_agent: 3.187500
+  offroad_per_agent: 0.000000
+  episode_return: -0.657861
+  goals_reached_this_episode: 0.937500
+  goals_sampled_this_episode: 1.000000
+  speed_at_goal: 17.311918
+  collision_rate: 0.125000
+  offroad_rate: 0.000000
+  dnf_rate: 0.000000
+  lane_alignment_rate: 0.812500
+  episode_length: 90.000000
+  n: 1.000000
+
+== truck eval boston validation ==
+completed_rows: 78
+straight (n=66)
+  score: 0.757576
+  completion_rate: 0.939394
+  collisions_per_agent: 3.863636
+  offroad_per_agent: 1.015152
+  episode_return: -1.472089
+  goals_reached_this_episode: 0.939394
+  goals_sampled_this_episode: 1.000000
+  speed_at_goal: 17.946780
+  collision_rate: 0.242424
+  offroad_rate: 0.060606
+  dnf_rate: 0.000000
+  lane_alignment_rate: 0.893939
+  episode_length: 90.000000
+  n: 1.000000
+turning (n=12)
+  score: 0.166667
+  completion_rate: 0.166667
+  collisions_per_agent: 1.500000
+  offroad_per_agent: 9.500000
+  episode_return: -5.361811
+  goals_reached_this_episode: 0.166667
+  goals_sampled_this_episode: 1.000000
+  speed_at_goal: 3.715923
+  collision_rate: 0.166667
+  offroad_rate: 0.666667
+  dnf_rate: 0.000000
+  lane_alignment_rate: 0.666667
+  episode_length: 90.000000
+  n: 1.000000
+
+== Comparison: car eval boston validation - truck eval boston validation ==
+straight (left_n=84, right_n=66)
+  score: 0.111472
+  completion_rate: 0.001082
+  collisions_per_agent: -1.732684
+  offroad_per_agent: 1.377706
+  episode_return: 0.184081
+  speed_at_goal: -1.086579
+  collision_rate: -0.111472
+  offroad_rate: -0.012987
+  dnf_rate: 0.000000
+  lane_alignment_rate: -0.001082
+turning (left_n=16, right_n=12)
+  score: 0.708333
+  completion_rate: 0.770833
+  collisions_per_agent: 1.687500
+  offroad_per_agent: -9.500000
+  episode_return: 4.703950
+  speed_at_goal: 13.595995
+  collision_rate: -0.041667
+  offroad_rate: -0.666667
+  dnf_rate: 0.000000
+  lane_alignment_rate: 0.145833
+
+turning - straight within each run
+car eval boston validation
+  score: 0.005952
+  completion_rate: -0.002976
+  collisions_per_agent: 1.056548
+  offroad_per_agent: -2.392857
+  episode_return: 0.630148
+  speed_at_goal: 0.451717
+  collision_rate: -0.005952
+  offroad_rate: -0.047619
+  dnf_rate: 0.000000
+  lane_alignment_rate: -0.080357
+truck eval boston validation
+  score: -0.590909
+  completion_rate: -0.772727
+  collisions_per_agent: -2.363636
+  offroad_per_agent: 8.484848
+  episode_return: -3.889722
+  speed_at_goal: -14.230857
+  collision_rate: -0.075758
+  offroad_rate: 0.606061
+  dnf_rate: 0.000000
+  lane_alignment_rate: -0.227273
