@@ -1,0 +1,132 @@
+source:
+  source_checkpoint: /home/casko/phd-code/PufferDrive/experiments_bc/bc-streaming-full-default-20260317-134400/best.pt
+  source_metrics: /home/casko/phd-code/PufferDrive/experiments_bc/bc-streaming-full-default-20260317-134400/metrics.json
+  source_wandb_name: bc-streaming-full-default-20260317-134400
+  source_wandb_group: bc-streaming-full-default-obs
+
+base:
+  package: ocean
+  env_name: puffer_drive
+  policy_name: Drive
+  rnn_name: Recurrent
+  max_suggestion_cost: 3600
+
+vec:
+  backend: Multiprocessing
+  num_envs: 6
+  num_workers: 6
+  batch_size: 3
+  zero_copy: true
+  seed: 42
+
+env:
+  num_agents: 2048
+  action_type: discrete
+  dynamics_model: classic
+  reward_vehicle_collision: -0.5
+  reward_offroad_collision: -0.5
+  dt: 0.1
+  reward_goal: 1.0
+  reward_goal_post_respawn: 0.25
+  goal_radius: 2.0
+  goal_speed: 100.0
+  goal_behavior: 0
+  goal_target_distance: 30.0
+  collision_behavior: 0
+  offroad_behavior: 0
+  episode_length: 91
+  resample_frequency: 910
+  termination_mode: 1
+  map_dir: resources/drive/binaries/training
+  num_maps: 10000
+  init_steps: 0
+  control_mode: control_vehicles
+  init_mode: create_all_valid
+  observation_mode: default
+  extend_classic_action_space: true
+
+policy:
+  input_size: 64
+  hidden_size: 256
+
+rnn:
+  input_size: 256
+  hidden_size: 256
+
+train:
+  name: pufferai
+  project: ablations
+  seed: 42
+  torch_deterministic: true
+  cpu_offload: false
+  device: cuda
+  optimizer: muon
+  anneal_lr: true
+  precision: float32
+  total_timesteps: 2000000000
+  learning_rate: 0.003
+  gamma: 0.98
+  gae_lambda: 0.95
+  update_epochs: 1
+  clip_coef: 0.2
+  vf_coef: 2
+  vf_clip_coef: 0.1999999999999999
+  max_grad_norm: 1
+  ent_coef: 0.005
+  adam_beta1: 0.9
+  adam_beta2: 0.999
+  adam_eps: 1e-08
+  data_dir: experiments
+  checkpoint_interval: 1000
+  batch_size: 393216
+  minibatch_size: 24576
+  max_minibatch_size: 32768
+  bptt_horizon: 32
+  compile: false
+  compile_mode: max-autotune-no-cudagraphs
+  compile_fullgraph: true
+  vtrace_rho_clip: 1
+  vtrace_c_clip: 1
+  prio_alpha: 0.8499999999999999
+  prio_beta0: 0.8499999999999999
+  render: true
+  render_interval: 1000
+  obs_only: true
+  show_grid: true
+  show_lasers: false
+  show_human_logs: false
+  zoom_in: true
+  render_map: none
+
+eval:
+  eval_interval: 1000
+  map_dir: resources/drive/binaries/validation
+  wosac_num_maps: 20
+  backend: PufferEnv
+  wosac_realism_eval: false
+  wosac_num_rollouts: 32
+  wosac_init_steps: 10
+  wosac_control_mode: control_wosac
+  wosac_init_mode: create_all_valid
+  wosac_goal_behavior: 2
+  wosac_goal_radius: 2.0
+  wosac_sanity_check: false
+  wosac_aggregate_results: true
+  human_replay_eval: false
+  human_replay_control_mode: control_sdc_only
+
+bc_train:
+  dataset_dir: /home/casko/phd-code/PufferDrive/pufferlib/resources/drive/bc_dataset_training_full
+  output_dir: /home/casko/phd-code/PufferDrive/experiments_bc/bc-streaming-full-default-20260317-134400
+  device: cuda
+  epochs: 20
+  batch_size: 256
+  learning_rate: 0.003
+  weight_decay: 0.0
+  num_workers: 4
+  val_fraction: 0.1
+  seq_len: 32
+  sequence_stride: 32
+  max_shards: -1
+  save_best: true
+  log_interval: 25
