@@ -6,11 +6,17 @@ import os
 import hashlib
 import math
 import shutil
+import ast
+import configparser
+import random
 import time
 from dataclasses import dataclass
 from typing import Any
 import pufferlib
+import torch
+from torch.utils.data import DataLoader, Dataset, IterableDataset, get_worker_info
 from pufferlib.ocean.drive import binding
+from pufferlib.ocean import torch as ocean_torch
 from multiprocessing import Pool, cpu_count
 from pathlib import Path
 from tqdm import tqdm
@@ -19,6 +25,12 @@ _POLICY_TYPE_PADDED = 0
 _EMPTY_PARTNER_EPS = 1e-8
 _EGO_TRAILER_STATE_FEATURES = 4
 _DYNAMICS_MODEL_IDS = {"classic": 0, "jerk": 1, "articulated": 2}
+_EGO_SPEED_OBS_INDEX = 2
+_MAX_SPEED_MPS = 100.0
+_CLASSIC_ACCELERATION_VALUES = (-6.0, -4.0, -2.0, -1.0, 0.0, 1.0, 2.0, 4.0, 6.0)
+_CLASSIC_STEERING_VALUES = (-1.0, -0.833, -0.667, -0.5, -0.333, -0.167, 0.0, 0.167, 0.333, 0.5, 0.667, 0.833, 1.0)
+_CLASSIC_DISCRETE_ACTIONS = len(_CLASSIC_ACCELERATION_VALUES) * len(_CLASSIC_STEERING_VALUES)
+_BC_INDEX_PROGRESS_INTERVAL = 500
 _NON_KINEMATIC_PARAM_ORDER = [
     "tractor_length",
     "trailer_length",
@@ -40,6 +52,10 @@ DEFAULT_SDC_RUNTIME_TRUCK_REF_BIN = (
 )
 
 
+def _print_mismatch(message):
+    print(f"[Drive mismatch] {message}")
+
+
 def _startup_debug_enabled() -> bool:
     value = os.environ.get("PUFFERDRIVE_STARTUP_DEBUG", "")
     return value.strip().lower() in ("1", "true", "yes", "on")
@@ -50,58 +66,95 @@ def _startup_debug(message: str) -> None:
         print(f"[pufferdrive-startup] {message}", flush=True)
 
 
-def postprocess_sdc_only_with_trailer_observations(
-    sim_observations,
-    ego_types,
-    partner_types,
-    ego_trailer_features,
-    base_ego_features,
-    base_partner_features,
-    max_partner_objects,
-    max_road_objects,
-    road_features,
-    type_classes,
+def _compare_c_python_env_config(env_handle, expected, context):
+    if not hasattr(binding, "env_get_config"):
+        return
+
+    actual = binding.env_get_config(env_handle)
+    mismatches = []
+    float_keys = {
+        "reward_vehicle_collision",
+        "reward_offroad_collision",
+        "reward_goal",
+        "reward_goal_post_respawn",
+        "goal_radius",
+        "goal_speed",
+        "goal_target_distance",
+        "dt",
+    }
+    for key, expected_value in expected.items():
+        if key not in actual:
+            continue
+        actual_value = actual[key]
+        if key in float_keys:
+            if not np.isclose(float(actual_value), float(expected_value), atol=1e-6, rtol=1e-6):
+                mismatches.append((key, expected_value, actual_value))
+        elif actual_value != expected_value:
+            mismatches.append((key, expected_value, actual_value))
+
+    for key, expected_value, actual_value in mismatches:
+        _print_mismatch(
+            f"{context}: Python expected {key}={expected_value!r}, but C resolved {key}={actual_value!r}"
+        )
+
+
+def _expected_c_env_config(
+    *,
+    action_type,
+    dynamics_model,
+    observation_mode,
+    extend_classic_action_space,
+    reward_vehicle_collision,
+    reward_offroad_collision,
+    reward_goal,
+    reward_goal_post_respawn,
+    goal_radius,
+    goal_speed,
+    goal_behavior,
+    goal_target_distance,
+    collision_behavior,
+    offroad_behavior,
+    dt,
+    episode_length,
+    termination_mode,
+    init_steps,
+    init_mode,
+    control_mode,
+    max_controlled_agents,
 ):
-    base_partner_dim = max_partner_objects * base_partner_features
-    base_road_start = base_ego_features + base_partner_dim
-    road_dim = max_road_objects * road_features
-
-    aug_ego = base_ego_features + 1 + _EGO_TRAILER_STATE_FEATURES
-    aug_partner = base_partner_features + 1
-    aug_partner_dim = max_partner_objects * aug_partner
-    aug_road_start = aug_ego + aug_partner_dim
-
-    observations = np.zeros((sim_observations.shape[0], aug_ego + aug_partner_dim + road_dim), dtype=np.float32)
-    observations[:, :base_ego_features] = sim_observations[:, :base_ego_features]
-
-    sim_partner = sim_observations[:, base_ego_features:base_road_start].reshape(
-        sim_observations.shape[0], max_partner_objects, base_partner_features
-    )
-    aug_partner_view = observations[:, aug_ego:aug_road_start].reshape(
-        sim_observations.shape[0], max_partner_objects, aug_partner
-    )
-    aug_partner_view[:, :, :base_partner_features] = sim_partner
-    observations[:, aug_road_start : aug_road_start + road_dim] = sim_observations[
-        :, base_road_start : base_road_start + road_dim
-    ]
-
-    policy_type_max = type_classes - 1
-    ego_types = np.clip(ego_types, _POLICY_TYPE_PADDED, policy_type_max).astype(np.float32)
-    partner_types = np.clip(partner_types, _POLICY_TYPE_PADDED, policy_type_max).astype(np.float32)
-
-    ego_type_idx = base_ego_features
-    observations[:, ego_type_idx] = ego_types
-    trailer_feature_start = ego_type_idx + 1
-    observations[:, trailer_feature_start] = ego_trailer_features["rel_x"]
-    observations[:, trailer_feature_start + 1] = ego_trailer_features["rel_y"]
-    observations[:, trailer_feature_start + 2] = ego_trailer_features["rel_heading_x"]
-    observations[:, trailer_feature_start + 3] = ego_trailer_features["rel_heading_y"]
-
-    occupied_partner_slots = np.any(np.abs(sim_partner) > _EMPTY_PARTNER_EPS, axis=2)
-    aug_partner_view[:, :, base_partner_features] = np.where(
-        occupied_partner_slots, partner_types, _POLICY_TYPE_PADDED
-    ).astype(np.float32)
-    return observations
+    action_type_flag = 0 if action_type == "discrete" else 1
+    dynamics_flag = _DYNAMICS_MODEL_IDS[dynamics_model]
+    observation_flag = 0 if observation_mode == "default" else 1
+    control_flag = {
+        "control_vehicles": 0,
+        "control_agents": 1,
+        "control_wosac": 2,
+        "control_sdc_only": 3,
+    }[control_mode]
+    init_flag = 0 if init_mode == "create_all_valid" else 1
+    return {
+        "action_type": action_type_flag,
+        "dynamics_model": dynamics_flag,
+        "observation_mode": observation_flag,
+        "extend_classic_action_space": int(_as_bool(extend_classic_action_space)),
+        "reward_vehicle_collision": reward_vehicle_collision,
+        "reward_offroad_collision": reward_offroad_collision,
+        "reward_goal": reward_goal,
+        "reward_goal_post_respawn": reward_goal_post_respawn,
+        "goal_radius": goal_radius,
+        "goal_speed": goal_speed,
+        "goal_behavior": goal_behavior,
+        "goal_target_distance": goal_target_distance,
+        "collision_behavior": collision_behavior,
+        "offroad_behavior": offroad_behavior,
+        "dt": dt,
+        "episode_length": int(episode_length) if episode_length is not None else None,
+        "termination_mode": int(termination_mode) if termination_mode is not None else 0,
+        "init_steps": init_steps,
+        "init_mode": init_flag,
+        "control_mode": control_flag,
+        "max_controlled_agents": int(max_controlled_agents),
+    }
 
 
 def _as_bool(value):
@@ -112,6 +165,106 @@ def _as_bool(value):
     if isinstance(value, str):
         return value.strip().lower() in ("1", "true", "yes", "on")
     return bool(value)
+
+
+def _normalize_action_type(value):
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in ("discrete", "continuous"):
+            return normalized
+    elif isinstance(value, (int, np.integer)):
+        if int(value) == 0:
+            return "discrete"
+        if int(value) == 1:
+            return "continuous"
+    raise ValueError(f"action_type must be 'discrete' or 'continuous'. Got: {value}")
+
+
+def _normalize_dynamics_model(value):
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in ("classic", "jerk", "articulated"):
+            return normalized
+    elif isinstance(value, (int, np.integer)):
+        if int(value) == 0:
+            return "classic"
+        if int(value) == 1:
+            return "jerk"
+        if int(value) == 2:
+            return "articulated"
+    raise ValueError(f"dynamics_model must be 'classic', 'jerk' or 'articulated'. Got: {value}")
+
+
+def _normalize_observation_mode(value):
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized == "default":
+            return "default"
+        if normalized == "sdc_only_with_trailer":
+            return "sdc_only_with_trailer"
+    elif isinstance(value, (int, np.integer)):
+        if int(value) == 0:
+            return "default"
+        if int(value) == 1:
+            return "sdc_only_with_trailer"
+    raise ValueError(f"observation_mode must be 'default' or 'sdc_only_with_trailer'. Got: {value}")
+
+
+def _normalize_init_mode(value):
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in ("create_all_valid", "created_all_valid"):
+            return "create_all_valid"
+        if normalized == "create_only_controlled":
+            return "create_only_controlled"
+    elif isinstance(value, (int, np.integer)):
+        if int(value) == 0:
+            return "create_all_valid"
+        if int(value) == 1:
+            return "create_only_controlled"
+    raise ValueError(
+        f"init_mode must be one of 'create_all_valid' or 'create_only_controlled'. Got: {value}"
+    )
+
+
+def _normalize_control_mode(value):
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in ("control_vehicles", "control_agents", "control_wosac", "control_sdc_only"):
+            return normalized
+    elif isinstance(value, (int, np.integer)):
+        mapping = {
+            0: "control_vehicles",
+            1: "control_agents",
+            2: "control_wosac",
+            3: "control_sdc_only",
+        }
+        if int(value) in mapping:
+            return mapping[int(value)]
+    raise ValueError(
+        f"control_mode must be one of 'control_vehicles', 'control_agents', 'control_wosac', or 'control_sdc_only'. Got: {value}"
+    )
+
+
+def _normalize_env_config(env_cfg):
+    normalized = dict(env_cfg)
+    if "action_type" in normalized:
+        normalized["action_type"] = _normalize_action_type(normalized["action_type"])
+    if "dynamics_model" in normalized:
+        normalized["dynamics_model"] = _normalize_dynamics_model(normalized["dynamics_model"])
+    if "observation_mode" in normalized:
+        normalized["observation_mode"] = _normalize_observation_mode(normalized["observation_mode"])
+    if "init_mode" in normalized:
+        normalized["init_mode"] = _normalize_init_mode(normalized["init_mode"])
+    if "control_mode" in normalized:
+        normalized["control_mode"] = _normalize_control_mode(normalized["control_mode"])
+    return normalized
+
+
+def _resolve_base_arg(args, key, default=None):
+    if key in args:
+        return args[key]
+    return args.get("base", {}).get(key, default)
 
 
 def _load_non_kinematic_vehicle_params_from_bin(binary_path):
@@ -146,9 +299,13 @@ def _load_non_kinematic_vehicle_params_from_bin(binary_path):
         extension_magic = struct.unpack("<i", f.read(4))[0]
         extension_version = struct.unpack("<i", f.read(4))[0]
         if extension_magic != 0x54524C52:
-            raise ValueError(f"Extension magic mismatch in {binary_path}")
+            message = f"Extension magic mismatch in {binary_path}"
+            _print_mismatch(message)
+            raise ValueError(message)
         if extension_version != 2:
-            raise ValueError(f"Unsupported extension version {extension_version} in {binary_path}")
+            message = f"Unsupported extension version {extension_version} in {binary_path}"
+            _print_mismatch(message)
+            raise ValueError(message)
 
         f.seek(4 * 2, os.SEEK_CUR)
         object_meta_count = struct.unpack("<i", f.read(4))[0]
@@ -156,15 +313,17 @@ def _load_non_kinematic_vehicle_params_from_bin(binary_path):
 
         vehicle_param_count = struct.unpack("<i", f.read(4))[0]
         if vehicle_param_count != len(_NON_KINEMATIC_PARAM_ORDER):
-            raise ValueError(
-                f"Expected {len(_NON_KINEMATIC_PARAM_ORDER)} non-kinematic params in {binary_path}, got {vehicle_param_count}"
+            message = (
+                f"Expected {len(_NON_KINEMATIC_PARAM_ORDER)} non-kinematic params in {binary_path}, "
+                f"got {vehicle_param_count}"
             )
+            _print_mismatch(message)
+            raise ValueError(message)
         values = struct.unpack(f"<{vehicle_param_count}f", f.read(4 * vehicle_param_count))
 
     params = tuple(float(v) for v in values)
     _NON_KINEMATIC_PARAM_CACHE[binary_path] = params
     return params
-
 
 def _normalize_optional_path(value):
     if value is None:
@@ -419,6 +578,1957 @@ def _compute_agent_offsets(
             break
         agent_offsets.append(total_agents)
     return agent_offsets, map_ids, len(map_ids)
+def _sim_obs_dim_for_dynamics(dynamics_model):
+    base_ego = {
+        "classic": binding.EGO_FEATURES_CLASSIC,
+        "articulated": binding.EGO_FEATURES_CLASSIC,
+        "jerk": binding.EGO_FEATURES_JERK,
+    }[dynamics_model]
+    return (
+        base_ego
+        + (binding.MAX_AGENTS - 1) * binding.PARTNER_FEATURES
+        + binding.MAX_ROAD_SEGMENT_OBSERVATIONS * binding.ROAD_FEATURES
+    )
+
+
+def _postprocess_policy_observations(
+    output_observations,
+    sim_observations,
+    base_ego,
+    base_partner,
+    partner_count,
+    aug_ego,
+    aug_partner,
+    road_count,
+    road_features,
+    type_classes,
+    ego_types,
+    partner_types,
+    ego_trailer_features,
+):
+    base_partner_dim = partner_count * base_partner
+    base_road_start = base_ego + base_partner_dim
+    road_dim = road_count * road_features
+
+    aug_partner_dim = partner_count * aug_partner
+    aug_road_start = aug_ego + aug_partner_dim
+
+    output_observations.fill(0.0)
+    output_observations[:, :base_ego] = sim_observations[:, :base_ego]
+
+    sim_partner = sim_observations[:, base_ego:base_road_start].reshape(sim_observations.shape[0], partner_count, base_partner)
+    aug_partner_view = output_observations[:, aug_ego:aug_road_start].reshape(
+        output_observations.shape[0], partner_count, aug_partner
+    )
+    aug_partner_view[:, :, :base_partner] = sim_partner
+    output_observations[:, aug_road_start : aug_road_start + road_dim] = sim_observations[
+        :, base_road_start : base_road_start + road_dim
+    ]
+
+    policy_type_max = type_classes - 1
+    output_observations[:, base_ego] = np.clip(ego_types, _POLICY_TYPE_PADDED, policy_type_max).astype(np.float32)
+    trailer_feature_start = base_ego + 1
+    output_observations[:, trailer_feature_start] = ego_trailer_features["rel_x"]
+    output_observations[:, trailer_feature_start + 1] = ego_trailer_features["rel_y"]
+    output_observations[:, trailer_feature_start + 2] = ego_trailer_features["rel_heading_x"]
+    output_observations[:, trailer_feature_start + 3] = ego_trailer_features["rel_heading_y"]
+
+    occupied_partner_slots = np.any(np.abs(sim_partner) > _EMPTY_PARTNER_EPS, axis=2)
+    aug_partner_view[:, :, base_partner] = np.where(
+        occupied_partner_slots,
+        np.clip(partner_types, _POLICY_TYPE_PADDED, policy_type_max),
+        _POLICY_TYPE_PADDED,
+    ).astype(np.float32)
+
+
+def _parse_config_value(value):
+    try:
+        return ast.literal_eval(value)
+    except Exception:
+        return value
+
+
+def load_drive_builder_config(config_path=None):
+    puffer_root = Path(__file__).resolve().parents[2]
+    default_ini = puffer_root / "config" / "default.ini"
+    if config_path is None:
+        config_path = puffer_root / "config" / "ocean" / "drive.ini"
+    parser = configparser.ConfigParser()
+    parser.read([str(default_ini), str(config_path)])
+    args = {}
+    for section in parser.sections():
+        args[section] = {key: _parse_config_value(parser[section][key]) for key in parser[section]}
+    return args
+
+
+def _resolve_bc_config(args, output_dir=None):
+    bc = dict(args.get("bc", {}))
+    env = args["env"]
+    bc.setdefault("output_dir", output_dir or os.path.join(env["map_dir"], "..", "bc_dataset"))
+    bc.setdefault("export_windows", False)
+    bc.setdefault("window_seq_len", None)
+    bc.setdefault("window_stride", None)
+    bc.setdefault("beam_width", 8)
+    bc.setdefault("planning_horizon", -1)
+    bc.setdefault("match_weight_lateral", 2.5)
+    bc.setdefault("match_weight_longitudinal", 1.5)
+    bc.setdefault("match_weight_heading", 0.1)
+    bc.setdefault("match_weight_speed", 0.02)
+    bc.setdefault("match_weight_steer_change", 0.15)
+    bc.setdefault("match_weight_accel_change", 0.02)
+    bc.setdefault("match_weight_reverse", 1.0)
+    bc.setdefault("match_weight_progress", 4.0)
+    bc.setdefault("match_weight_steer_flip", 0.5)
+    bc.setdefault("match_weight_ref_accel", 0.01)
+    bc.setdefault("match_weight_ref_steer", 0.1)
+    bc.setdefault("skip_existing_shards", True)
+    bc.setdefault("max_maps", -1)
+    return bc
+
+
+def _resolve_bc_train_config(args, dataset_dir=None, output_dir=None):
+    bc_train = dict(args.get("bc_train", {}))
+    bc = _resolve_bc_config(args)
+    train = dict(args.get("train", {}))
+    bc_train.setdefault("dataset_dir", dataset_dir or bc.get("output_dir"))
+    bc_train.setdefault("output_dir", output_dir or os.path.join(bc_train["dataset_dir"], "checkpoints"))
+    bc_train.setdefault("device", train.get("device", "cuda" if torch.cuda.is_available() else "cpu"))
+    bc_train.setdefault("use_embedded_windows", False)
+    bc_train.setdefault("epochs", 10)
+    bc_train.setdefault("batch_size", 256)
+    bc_train.setdefault("learning_rate", train.get("learning_rate", 3e-4))
+    bc_train.setdefault("weight_decay", 0.0)
+    bc_train.setdefault("num_workers", 0)
+    bc_train.setdefault("shard_shuffle_buffer", 1)
+    bc_train.setdefault("val_fraction", 0.1)
+    bc_train.setdefault("seq_len", train.get("bptt_horizon", 32))
+    bc_train.setdefault("sequence_stride", bc_train["seq_len"])
+    bc_train.setdefault("max_shards", -1)
+    bc_train.setdefault("save_best", True)
+    bc_train.setdefault("log_interval", 25)
+    bc_train.setdefault("early_stopping_patience", 0)
+    bc_train.setdefault("early_stopping_min_delta", 0.0)
+    bc_train.setdefault("lr_scheduler", None)
+    bc_train.setdefault("lr_scheduler_factor", 0.5)
+    bc_train.setdefault("lr_scheduler_patience", 2)
+    bc_train.setdefault("lr_scheduler_threshold", 1e-4)
+    bc_train.setdefault("min_learning_rate", 0.0)
+    bc_train.setdefault("rebalance_windows", False)
+    bc_train.setdefault("window_balance_fraction", 0.0)
+    bc_train.setdefault("window_balance_max_multiplier", 10.0)
+    return bc_train
+
+
+def _normalize_optional_name(value):
+    if value is None:
+        return None
+    if isinstance(value, str) and value.strip().lower() in ("", "none", "null"):
+        return None
+    return value
+
+
+def _get_discrete_action_size(env):
+    action_space = env.single_action_space
+    if not isinstance(action_space, gymnasium.spaces.MultiDiscrete) or len(action_space.nvec) != 1:
+        message = "Offline BC trainer currently supports only discrete Drive policies with a joint action head"
+        _print_mismatch(message)
+        raise ValueError(message)
+    return int(action_space.nvec[0])
+
+
+class _StreamingBCIterableDataset(IterableDataset):
+    def __init__(self, shard_paths, obs_dim, action_space_size, *, shuffle, seed, shard_shuffle_buffer=1):
+        super().__init__()
+        self.shard_paths = list(shard_paths)
+        self.obs_dim = int(obs_dim)
+        self.action_space_size = int(action_space_size)
+        self.shuffle = bool(shuffle)
+        self.seed = int(seed)
+        self.shard_shuffle_buffer = max(1, int(shard_shuffle_buffer))
+        self.epoch = 0
+        self._length = None
+
+    def set_epoch(self, epoch):
+        self.epoch = int(epoch)
+
+    def _iter_worker_shards(self):
+        shard_paths = list(self.shard_paths)
+        if self.shuffle:
+            rng = random.Random(self.seed + self.epoch)
+            rng.shuffle(shard_paths)
+        worker = get_worker_info()
+        if worker is None:
+            return shard_paths
+        return shard_paths[worker.id :: worker.num_workers]
+
+    def _load_shard(self, shard_path):
+        payload = torch.load(shard_path, map_location="cpu")
+        _validate_bc_shard_payload(payload, self.obs_dim, self.action_space_size, shard_path)
+        return payload
+
+    def __len__(self):
+        if self._length is None:
+            self._length = int(self._compute_length())
+        return self._length
+
+    def _compute_length(self):
+        raise NotImplementedError
+
+    def _iter_mixed_shard_stream(self, shard_iter, shard_sample_fn):
+        active_shards = []
+        sample_rng = random.Random(self.seed + self.epoch * 9973 + 17)
+
+        def _fill_active():
+            while len(active_shards) < self.shard_shuffle_buffer:
+                try:
+                    shard_idx, shard_path = next(shard_iter)
+                except StopIteration:
+                    break
+                shard_samples = shard_sample_fn(shard_idx, shard_path)
+                if shard_samples:
+                    active_shards.append(shard_samples)
+
+        _fill_active()
+        while active_shards:
+            shard_choice = sample_rng.randrange(len(active_shards)) if self.shuffle else 0
+            shard_stream = active_shards[shard_choice]
+            yield shard_stream.pop()
+            if shard_stream:
+                continue
+            active_shards.pop(shard_choice)
+            _fill_active()
+
+
+class _FlatBCDataset(_StreamingBCIterableDataset):
+    def _compute_length(self):
+        total = 0
+        for shard_path in self.shard_paths:
+            payload = self._load_shard(shard_path)
+            total += int(payload["action"].shape[0])
+        return total
+
+    def __iter__(self):
+        row_seed = self.seed + self.epoch * 9973
+        worker_shards = list(self._iter_worker_shards())
+
+        def _shard_samples(shard_idx, shard_path):
+            payload = self._load_shard(shard_path)
+            row_indices = list(range(int(payload["action"].shape[0])))
+            if self.shuffle:
+                rng = random.Random(row_seed + shard_idx)
+                rng.shuffle(row_indices)
+            obs = payload["obs"].float()
+            action = payload["action"].long()
+            return [(obs[row_idx], action[row_idx]) for row_idx in row_indices]
+
+        shard_iter = iter(enumerate(worker_shards))
+        yield from self._iter_mixed_shard_stream(shard_iter, _shard_samples)
+
+
+class _SequenceBCDataset(_StreamingBCIterableDataset):
+    def __init__(
+        self,
+        shard_paths,
+        obs_dim,
+        action_space_size,
+        *,
+        seq_len,
+        stride,
+        shuffle,
+        seed,
+        require_embedded,
+        shard_shuffle_buffer=1,
+        rebalance_windows=False,
+        window_balance_fraction=0.0,
+        window_balance_max_multiplier=10.0,
+    ):
+        super().__init__(
+            shard_paths,
+            obs_dim,
+            action_space_size,
+            shuffle=shuffle,
+            seed=seed,
+            shard_shuffle_buffer=shard_shuffle_buffer,
+        )
+        self.seq_len = int(seq_len)
+        self.stride = max(1, int(stride))
+        self.require_embedded = bool(require_embedded)
+        self.rebalance_windows = bool(rebalance_windows)
+        self.window_balance_fraction = float(window_balance_fraction)
+        self.window_balance_max_multiplier = float(window_balance_max_multiplier)
+        self._manifest_cache = {}
+        self._window_weight_cache = {}
+        self._manifest_built = 0
+        self._manifest_loaded = 0
+        self._action_rarity_weights = None
+        if self.rebalance_windows:
+            self._action_rarity_weights = _compute_window_action_rarity_weights(
+                self.shard_paths,
+                self.obs_dim,
+                self.action_space_size,
+                seq_len=self.seq_len,
+                stride=self.stride,
+                require_embedded=self.require_embedded,
+                max_multiplier=self.window_balance_max_multiplier,
+            )
+
+    def _compute_length(self):
+        total = 0
+        zero_window_shards = 0
+        start_time = time.time()
+        total_shards = len(self.shard_paths)
+        for shard_idx, shard_path in enumerate(self.shard_paths, start=1):
+            manifest = self._load_sequence_manifest(shard_path)
+            window_count = int(manifest["window_count"])
+            total += window_count
+            if window_count <= 0:
+                zero_window_shards += 1
+            if shard_idx % _BC_INDEX_PROGRESS_INTERVAL == 0 or shard_idx == total_shards:
+                avg_windows = float(total) / float(shard_idx) if shard_idx > 0 else 0.0
+                print(
+                    f"[BC] indexing windows progress shards={shard_idx}/{total_shards} "
+                    f"windows={total} zero_window_shards={zero_window_shards} "
+                    f"avg_windows_per_shard={avg_windows:.2f} elapsed={time.time() - start_time:.1f}s",
+                    flush=True,
+                )
+        return total
+
+    def __iter__(self):
+        sample_seed = self.seed + self.epoch * 9973
+        worker_shards = list(self._iter_worker_shards())
+
+        def _shard_samples(shard_idx, shard_path):
+            payload = self._load_shard(shard_path)
+            manifest = self._load_sequence_manifest(shard_path)
+            samples = _build_sequence_samples_from_manifest(payload, manifest)
+            if self.shuffle:
+                if self.rebalance_windows:
+                    weights = self._load_window_weights(shard_path, payload, manifest)
+                    selected_indices = _resample_window_indices_from_weights(
+                        weights,
+                        target_count=len(samples),
+                        seed=sample_seed + shard_idx,
+                    )
+                    samples = [samples[int(idx)] for idx in selected_indices.tolist()]
+                else:
+                    rng = random.Random(sample_seed + shard_idx)
+                    rng.shuffle(samples)
+            return samples
+
+        shard_iter = iter(enumerate(worker_shards))
+        yield from self._iter_mixed_shard_stream(shard_iter, _shard_samples)
+
+    def _load_sequence_manifest(self, shard_path):
+        manifest = self._manifest_cache.get(shard_path)
+        if manifest is None:
+            manifest, built_new = _load_or_build_sequence_manifest(
+                shard_path,
+                self.obs_dim,
+                self.action_space_size,
+                seq_len=self.seq_len,
+                stride=self.stride,
+                require_embedded=self.require_embedded,
+                return_status=True,
+            )
+            self._manifest_cache[shard_path] = manifest
+            if built_new:
+                self._manifest_built += 1
+            else:
+                self._manifest_loaded += 1
+        return manifest
+
+    def _load_window_weights(self, shard_path, payload, manifest):
+        weights = self._window_weight_cache.get(shard_path)
+        if weights is None:
+            weights = _window_sampling_weights_from_payload(
+                payload,
+                manifest,
+                self._action_rarity_weights,
+                balance_fraction=self.window_balance_fraction,
+            )
+            self._window_weight_cache[shard_path] = weights
+        return weights
+
+    def manifest_stats(self):
+        return {
+            "built": int(self._manifest_built),
+            "loaded": int(self._manifest_loaded),
+            "cached": int(len(self._manifest_cache)),
+            "weighted": int(self.rebalance_windows),
+        }
+
+
+def _window_action_counts_from_payload(payload, manifest):
+    window_count = int(manifest["window_count"])
+    if window_count <= 0:
+        return np.zeros((0, _CLASSIC_DISCRETE_ACTIONS), dtype=np.int32)
+    action_tensor = payload["action"].cpu().long()
+    window_indices = manifest["window_indices"].cpu().long()
+    valid_lengths = manifest["valid_lengths"].cpu().long()
+    counts = np.zeros((window_count, _CLASSIC_DISCRETE_ACTIONS), dtype=np.int32)
+    for window_index in range(window_count):
+        valid_len = int(valid_lengths[window_index].item())
+        if valid_len <= 0:
+            continue
+        row_indices = window_indices[window_index, :valid_len]
+        window_actions = action_tensor[row_indices].numpy()
+        counts[window_index] = np.bincount(window_actions, minlength=_CLASSIC_DISCRETE_ACTIONS).astype(
+            np.int32, copy=False
+        )
+    return counts
+
+
+def _compute_action_rarity_weights(action_counts, *, max_multiplier):
+    action_counts = np.asarray(action_counts, dtype=np.float64)
+    positive = action_counts > 0
+    if not np.any(positive):
+        raise ValueError("No positive action counts available for window rebalancing")
+    uniform_target = float(action_counts[positive].sum()) / float(np.count_nonzero(positive))
+    rarity = np.ones_like(action_counts, dtype=np.float64)
+    rarity[positive] = uniform_target / action_counts[positive]
+    rarity = np.clip(rarity, 1.0, float(max_multiplier))
+    return rarity
+
+
+def _compute_window_action_rarity_weights(
+    shard_paths,
+    obs_dim,
+    action_space_size,
+    *,
+    seq_len,
+    stride,
+    require_embedded,
+    max_multiplier,
+):
+    global_counts = np.zeros((_CLASSIC_DISCRETE_ACTIONS,), dtype=np.int64)
+    zero_window_shards = 0
+    start_time = time.time()
+    total_shards = len(shard_paths)
+    for shard_idx, shard_path in enumerate(shard_paths, start=1):
+        payload = torch.load(shard_path, map_location="cpu")
+        _validate_bc_shard_payload(payload, obs_dim, action_space_size, str(shard_path))
+        manifest = _load_or_build_sequence_manifest(
+            shard_path,
+            obs_dim,
+            action_space_size,
+            seq_len=seq_len,
+            stride=stride,
+            require_embedded=require_embedded,
+        )
+        if int(manifest["window_count"]) <= 0:
+            zero_window_shards += 1
+        window_counts = _window_action_counts_from_payload(payload, manifest)
+        global_counts += window_counts.sum(axis=0, dtype=np.int64)
+        if shard_idx % _BC_INDEX_PROGRESS_INTERVAL == 0 or shard_idx == total_shards:
+            positive_counts = global_counts[global_counts > 0]
+            mean_positive = float(positive_counts.mean()) if positive_counts.size > 0 else 0.0
+            print(
+                f"[BC] window rebalance stats shards={shard_idx}/{total_shards} "
+                f"zero_window_shards={zero_window_shards} positive_actions={int(np.count_nonzero(global_counts))} "
+                f"mean_positive_action_count={mean_positive:.1f} elapsed={time.time() - start_time:.1f}s",
+                flush=True,
+            )
+    return _compute_action_rarity_weights(global_counts, max_multiplier=max_multiplier)
+
+
+def _window_sampling_weights_from_payload(payload, manifest, action_rarity_weights, *, balance_fraction):
+    window_action_counts = _window_action_counts_from_payload(payload, manifest).astype(np.float64, copy=False)
+    if window_action_counts.shape[0] == 0:
+        return np.zeros((0,), dtype=np.float64)
+    if action_rarity_weights is None or float(balance_fraction) <= 0.0:
+        return np.ones((window_action_counts.shape[0],), dtype=np.float64)
+    window_lengths = window_action_counts.sum(axis=1)
+    weights = np.ones((window_action_counts.shape[0],), dtype=np.float64)
+    valid = window_lengths > 0
+    if np.any(valid):
+        rarity_score = (window_action_counts[valid] * action_rarity_weights[None, :]).sum(axis=1) / window_lengths[valid]
+        weights[valid] = (1.0 - float(balance_fraction)) + float(balance_fraction) * rarity_score
+    return np.clip(weights, 1e-12, None)
+
+
+def _resample_window_indices_from_weights(weights, *, target_count, seed):
+    target_count = int(target_count)
+    weights = np.asarray(weights, dtype=np.float64)
+    window_count = int(weights.shape[0])
+    if target_count <= 0 or window_count <= 0:
+        return np.zeros((0,), dtype=np.int64)
+    probs = weights / float(weights.sum())
+    expected = probs * float(target_count)
+    counts = np.floor(expected).astype(np.int64)
+    remaining = int(target_count) - int(counts.sum())
+    if remaining > 0:
+        residual = expected - counts
+        order = np.argsort(-residual)
+        counts[order[:remaining]] += 1
+    selected_indices = np.repeat(np.arange(window_count, dtype=np.int64), counts)
+    if selected_indices.size > 1:
+        rng = np.random.default_rng(int(seed))
+        rng.shuffle(selected_indices)
+    return selected_indices
+
+
+def _list_bc_shards(dataset_dir, max_shards=-1):
+    shard_paths = sorted(Path(dataset_dir).glob("map_*.pt"))
+    if max_shards is not None and int(max_shards) > 0:
+        shard_paths = shard_paths[: int(max_shards)]
+    return [str(path) for path in shard_paths]
+
+
+def _split_shards(shard_paths, val_fraction, seed):
+    shard_paths = list(shard_paths)
+    rng = random.Random(int(seed))
+    rng.shuffle(shard_paths)
+    if not shard_paths:
+        return [], []
+    if val_fraction <= 0:
+        return shard_paths, []
+    val_count = int(round(len(shard_paths) * float(val_fraction)))
+    if len(shard_paths) > 1:
+        val_count = max(1, min(len(shard_paths) - 1, val_count))
+    else:
+        val_count = 0
+    if val_count == 0:
+        return shard_paths, []
+    return shard_paths[val_count:], shard_paths[:val_count]
+
+
+def _validate_bc_shard_payload(payload, obs_dim, action_space_size, shard_path):
+    required = {"obs", "action", "map_id", "timestep", "sequence_id"}
+    missing = required.difference(payload.keys())
+    if missing:
+        message = f"BC shard {shard_path} is missing required keys: {sorted(missing)}"
+        _print_mismatch(message)
+        raise ValueError(message)
+
+    obs = payload["obs"]
+    action = payload["action"]
+    map_id = payload["map_id"]
+    timestep = payload["timestep"]
+    sequence_row_index = payload.get("sequence_row_index")
+    sequence_length = payload.get("sequence_length")
+    if obs.ndim != 2:
+        message = f"BC shard {shard_path} obs must be rank-2, got shape {tuple(obs.shape)}"
+        _print_mismatch(message)
+        raise ValueError(message)
+    if int(obs.shape[1]) != int(obs_dim):
+        message = f"BC shard {shard_path} observation width mismatch: expected {obs_dim}, got {int(obs.shape[1])}"
+        _print_mismatch(message)
+        raise ValueError(message)
+    if action.ndim != 1:
+        message = f"BC shard {shard_path} action must be rank-1, got shape {tuple(action.shape)}"
+        _print_mismatch(message)
+        raise ValueError(message)
+    if int(action.shape[0]) != int(obs.shape[0]):
+        message = f"BC shard {shard_path} obs/action sample count mismatch: {int(obs.shape[0])} vs {int(action.shape[0])}"
+        _print_mismatch(message)
+        raise ValueError(message)
+    if map_id.ndim != 1 or int(map_id.shape[0]) != int(obs.shape[0]):
+        message = f"BC shard {shard_path} map_id must be rank-1 and match sample count"
+        _print_mismatch(message)
+        raise ValueError(message)
+    if timestep.ndim != 1 or int(timestep.shape[0]) != int(obs.shape[0]):
+        message = f"BC shard {shard_path} timestep must be rank-1 and match sample count"
+        _print_mismatch(message)
+        raise ValueError(message)
+    sequence_id = payload["sequence_id"]
+    if sequence_id.ndim != 1:
+        message = f"BC shard {shard_path} sequence_id must be rank-1, got shape {tuple(sequence_id.shape)}"
+        _print_mismatch(message)
+        raise ValueError(message)
+    if int(sequence_id.shape[0]) != int(obs.shape[0]):
+        message = (
+            f"BC shard {shard_path} obs/sequence_id sample count mismatch: "
+            f"{int(obs.shape[0])} vs {int(sequence_id.shape[0])}"
+        )
+        _print_mismatch(message)
+        raise ValueError(message)
+    if sequence_row_index is not None:
+        if sequence_row_index.ndim != 1 or int(sequence_row_index.shape[0]) != int(obs.shape[0]):
+            message = f"BC shard {shard_path} sequence_row_index must be rank-1 and match sample count"
+            _print_mismatch(message)
+            raise ValueError(message)
+    if sequence_length is not None:
+        if sequence_length.ndim != 1 or int(sequence_length.shape[0]) != int(obs.shape[0]):
+            message = f"BC shard {shard_path} sequence_length must be rank-1 and match sample count"
+            _print_mismatch(message)
+            raise ValueError(message)
+    sequence_timesteps = {}
+    sequence_counts = {}
+    sequence_expected_lengths = {}
+    sequence_row_indices = {}
+    for row_idx in range(int(timestep.shape[0])):
+        key = int(sequence_id[row_idx])
+        sequence_timesteps.setdefault(key, []).append(int(timestep[row_idx]))
+        sequence_counts[key] = sequence_counts.get(key, 0) + 1
+        if sequence_length is not None:
+            expected_length = int(sequence_length[row_idx])
+            previous_length = sequence_expected_lengths.setdefault(key, expected_length)
+            if previous_length != expected_length:
+                message = (
+                    f"BC shard {shard_path} sequence_id={key} has inconsistent sequence_length values: "
+                    f"{previous_length} vs {expected_length}"
+                )
+                _print_mismatch(message)
+                raise ValueError(message)
+        if sequence_row_index is not None:
+            sequence_row_indices.setdefault(key, []).append(int(sequence_row_index[row_idx]))
+    for key, sequence_steps in sequence_timesteps.items():
+        if len(sequence_steps) < 2:
+            continue
+        deltas = np.diff(sequence_steps)
+        if np.any(deltas != 1):
+            message = (
+                f"BC shard {shard_path} sequence_id={key} has unexpected timestep spacing: "
+                f"expected consecutive deltas of 1, got {deltas.tolist()}"
+            )
+            _print_mismatch(message)
+            raise ValueError(message)
+    if sequence_row_index is not None:
+        for key, row_indices in sequence_row_indices.items():
+            expected_indices = list(range(len(row_indices)))
+            if row_indices != expected_indices:
+                message = (
+                    f"BC shard {shard_path} sequence_id={key} has invalid sequence_row_index values: "
+                    f"expected {expected_indices}, got {row_indices}"
+                )
+                _print_mismatch(message)
+                raise ValueError(message)
+    if sequence_length is not None:
+        for key, expected_length in sequence_expected_lengths.items():
+            if sequence_counts.get(key, 0) != expected_length:
+                message = (
+                    f"BC shard {shard_path} sequence_id={key} length mismatch: "
+                    f"expected {expected_length}, got {sequence_counts.get(key, 0)}"
+                )
+                _print_mismatch(message)
+                raise ValueError(message)
+
+    metadata = payload.get("metadata", {})
+    metadata_sequence_ids = metadata.get("sequence_ids")
+    metadata_sequence_lengths = metadata.get("sequence_lengths")
+    if metadata_sequence_ids is not None or metadata_sequence_lengths is not None:
+        if metadata_sequence_ids is None or metadata_sequence_lengths is None:
+            message = f"BC shard {shard_path} metadata must include both sequence_ids and sequence_lengths together"
+            _print_mismatch(message)
+            raise ValueError(message)
+        if len(metadata_sequence_ids) != len(metadata_sequence_lengths):
+            message = (
+                f"BC shard {shard_path} metadata sequence_ids/sequence_lengths length mismatch: "
+                f"{len(metadata_sequence_ids)} vs {len(metadata_sequence_lengths)}"
+            )
+            _print_mismatch(message)
+            raise ValueError(message)
+        observed_ids = [int(v) for v in metadata_sequence_ids]
+        observed_lengths = [int(v) for v in metadata_sequence_lengths]
+        if set(observed_ids) != set(sequence_counts.keys()):
+            message = (
+                f"BC shard {shard_path} metadata sequence_ids do not match observed ids: "
+                f"metadata={observed_ids}, observed={sorted(sequence_counts.keys())}"
+            )
+            _print_mismatch(message)
+            raise ValueError(message)
+        for seq_id, seq_len in zip(observed_ids, observed_lengths):
+            if sequence_counts.get(seq_id, 0) != seq_len:
+                message = (
+                    f"BC shard {shard_path} metadata sequence_lengths mismatch for sequence_id={seq_id}: "
+                    f"expected {seq_len}, got {sequence_counts.get(seq_id, 0)}"
+                )
+                _print_mismatch(message)
+                raise ValueError(message)
+    if action.numel() > 0:
+        min_action = int(action.min().item())
+        max_action = int(action.max().item())
+        if min_action < 0 or max_action >= int(action_space_size):
+            message = (
+                f"BC shard {shard_path} contains invalid action ids [{min_action}, {max_action}] "
+                f"for action space size {action_space_size}"
+            )
+            _print_mismatch(message)
+            raise ValueError(message)
+    metadata_action_space = metadata.get("action_space_size")
+    if metadata_action_space is not None and int(metadata_action_space) != int(action_space_size):
+        message = (
+            f"BC shard {shard_path} metadata action_space_size mismatch: expected {action_space_size}, "
+            f"got {metadata_action_space}"
+        )
+        _print_mismatch(message)
+        raise ValueError(message)
+
+    if "window_metadata" in payload:
+        _validate_sequence_manifest(payload["window_metadata"], shard_path=shard_path)
+    window_sets = payload.get("window_sets")
+    if window_sets is not None:
+        if not isinstance(window_sets, dict):
+            message = f"BC shard {shard_path} window_sets must be a dict"
+            _print_mismatch(message)
+            raise ValueError(message)
+        for name, manifest in window_sets.items():
+            _validate_sequence_manifest(manifest, shard_path=f"{shard_path}:{name}")
+
+
+def _peek_bc_shard(shard_paths, obs_dim, action_space_size):
+    for shard_path in shard_paths:
+        payload = torch.load(shard_path, map_location="cpu")
+        _validate_bc_shard_payload(payload, obs_dim, action_space_size, shard_path)
+        if int(payload["action"].shape[0]) > 0:
+            return payload
+    return None
+
+
+def _sequence_manifest_path(shard_path, seq_len, stride):
+    shard_path = Path(shard_path)
+    manifest_dir = shard_path.parent / ".bc_sequence_manifests"
+    return manifest_dir / f"{shard_path.stem}.seq{int(seq_len)}.stride{int(stride)}.pt"
+
+
+def _sequence_spans_from_payload(payload):
+    sequence_id = payload["sequence_id"].long()
+    sequence_row_index = payload.get("sequence_row_index")
+    sequence_length = payload.get("sequence_length")
+    metadata = payload.get("metadata", {})
+    metadata_sequence_ids = metadata.get("sequence_ids")
+    metadata_sequence_lengths = metadata.get("sequence_lengths")
+
+    if (
+        sequence_row_index is not None
+        and sequence_length is not None
+        and metadata_sequence_ids is not None
+        and metadata_sequence_lengths is not None
+    ):
+        spans = []
+        cursor = 0
+        for seq_id, seq_len in zip(metadata_sequence_ids, metadata_sequence_lengths):
+            seq_id = int(seq_id)
+            seq_len = int(seq_len)
+            if seq_len <= 0:
+                continue
+            end = cursor + seq_len
+            spans.append((seq_id, cursor, end))
+            cursor = end
+        return spans
+
+    groups = {}
+    for row_idx in range(int(sequence_id.shape[0])):
+        key = int(sequence_id[row_idx])
+        groups.setdefault(key, []).append(row_idx)
+    return [(seq_id, rows[0], rows[-1] + 1) for seq_id, rows in groups.items() if rows]
+
+
+def _build_sequence_manifest_from_payload(payload, seq_len, stride):
+    return _build_sequence_manifest_from_spans(_sequence_spans_from_payload(payload), seq_len, stride)
+
+
+def _build_sequence_manifest_from_spans(spans, seq_len, stride, *, start_offsets_by_sequence_id=None):
+    seq_len = int(seq_len)
+    stride = max(1, int(stride))
+
+    window_indices = []
+    valid_lengths = []
+    for sequence_id, start_row, end_row in spans:
+        sequence_length = end_row - start_row
+        if sequence_length <= 0:
+            continue
+        allowed_offsets = None
+        if start_offsets_by_sequence_id is not None:
+            allowed_offsets = start_offsets_by_sequence_id.get(int(sequence_id), [])
+        if allowed_offsets is None:
+            start_offsets = range(0, sequence_length, stride)
+        else:
+            start_offsets = sorted({int(v) for v in allowed_offsets if 0 <= int(v) < sequence_length})
+        for start_idx in start_offsets:
+            start = start_row + start_idx
+            end = min(start + seq_len, end_row)
+            if end <= start:
+                continue
+            valid_len = end - start
+            padded_indices = torch.full((seq_len,), -1, dtype=torch.int64)
+            padded_indices[:valid_len] = torch.arange(start, end, dtype=torch.int64)
+            window_indices.append(padded_indices)
+            valid_lengths.append(valid_len)
+
+    if window_indices:
+        window_index_tensor = torch.stack(window_indices, dim=0)
+        valid_length_tensor = torch.tensor(valid_lengths, dtype=torch.int32)
+    else:
+        window_index_tensor = torch.zeros((0, seq_len), dtype=torch.int64)
+        valid_length_tensor = torch.zeros((0,), dtype=torch.int32)
+
+    return {
+        "version": 1,
+        "seq_len": seq_len,
+        "stride": stride,
+        "window_count": int(window_index_tensor.shape[0]),
+        "window_indices": window_index_tensor,
+        "valid_lengths": valid_length_tensor,
+    }
+
+
+def _validate_sequence_manifest(manifest, *, seq_len=None, stride=None, shard_path=None):
+    context = f"BC shard {shard_path}" if shard_path is not None else "BC sequence manifest"
+    if not isinstance(manifest, dict):
+        message = f"{context} window metadata must be a dict"
+        _print_mismatch(message)
+        raise ValueError(message)
+
+    required = {"version", "seq_len", "stride", "window_count", "window_indices", "valid_lengths"}
+    missing = required.difference(manifest.keys())
+    if missing:
+        message = f"{context} window metadata is missing required keys: {sorted(missing)}"
+        _print_mismatch(message)
+        raise ValueError(message)
+
+    manifest_seq_len = int(manifest["seq_len"])
+    manifest_stride = int(manifest["stride"])
+    if seq_len is not None and manifest_seq_len != int(seq_len):
+        message = (
+            f"{context} window metadata seq_len mismatch: expected {int(seq_len)}, got {manifest_seq_len}"
+        )
+        _print_mismatch(message)
+        raise ValueError(message)
+    if stride is not None and manifest_stride != int(stride):
+        message = (
+            f"{context} window metadata stride mismatch: expected {int(stride)}, got {manifest_stride}"
+        )
+        _print_mismatch(message)
+        raise ValueError(message)
+
+    window_indices = manifest["window_indices"]
+    valid_lengths = manifest["valid_lengths"]
+    if window_indices.ndim != 2:
+        message = f"{context} window_indices must be rank-2, got shape {tuple(window_indices.shape)}"
+        _print_mismatch(message)
+        raise ValueError(message)
+    if int(window_indices.shape[1]) != manifest_seq_len:
+        message = (
+            f"{context} window_indices width mismatch: expected {manifest_seq_len}, "
+            f"got {int(window_indices.shape[1])}"
+        )
+        _print_mismatch(message)
+        raise ValueError(message)
+    if valid_lengths.ndim != 1:
+        message = f"{context} valid_lengths must be rank-1, got shape {tuple(valid_lengths.shape)}"
+        _print_mismatch(message)
+        raise ValueError(message)
+    if int(valid_lengths.shape[0]) != int(window_indices.shape[0]):
+        message = (
+            f"{context} window_indices/valid_lengths count mismatch: "
+            f"{int(window_indices.shape[0])} vs {int(valid_lengths.shape[0])}"
+        )
+        _print_mismatch(message)
+        raise ValueError(message)
+    if int(manifest["window_count"]) != int(window_indices.shape[0]):
+        message = (
+            f"{context} window_count mismatch: expected {int(window_indices.shape[0])}, "
+            f"got {int(manifest['window_count'])}"
+        )
+        _print_mismatch(message)
+        raise ValueError(message)
+
+    for valid_len in valid_lengths.tolist():
+        valid_len = int(valid_len)
+        if valid_len < 0 or valid_len > manifest_seq_len:
+            message = (
+                f"{context} contains invalid valid_length={valid_len} for seq_len={manifest_seq_len}"
+            )
+            _print_mismatch(message)
+            raise ValueError(message)
+
+    return {
+        "version": int(manifest["version"]),
+        "seq_len": manifest_seq_len,
+        "stride": manifest_stride,
+        "window_count": int(manifest["window_count"]),
+        "window_indices": window_indices.long(),
+        "valid_lengths": valid_lengths.to(dtype=torch.int32),
+    }
+
+
+def _embedded_sequence_manifest(payload, *, seq_len=None, stride=None, shard_path=None):
+    manifest = payload.get("window_metadata")
+    if manifest is None:
+        return None
+    return _validate_sequence_manifest(manifest, seq_len=seq_len, stride=stride, shard_path=shard_path)
+
+
+def _embedded_named_sequence_manifest(payload, name, *, seq_len=None, stride=None, shard_path=None):
+    window_sets = payload.get("window_sets")
+    if not isinstance(window_sets, dict):
+        return None
+    manifest = window_sets.get(name)
+    if manifest is None:
+        return None
+    return _validate_sequence_manifest(manifest, seq_len=seq_len, stride=stride, shard_path=shard_path)
+
+
+def _load_or_build_sequence_manifest(
+    shard_path,
+    obs_dim,
+    action_space_size,
+    *,
+    seq_len,
+    stride,
+    require_embedded=False,
+    return_status=False,
+):
+    shard_path = Path(shard_path)
+    manifest_path = _sequence_manifest_path(shard_path, seq_len, stride)
+    shard_stat = shard_path.stat()
+    if manifest_path.exists():
+        manifest = torch.load(manifest_path, map_location="cpu")
+        if (
+            manifest.get("version") == 1
+            and int(manifest.get("seq_len", -1)) == int(seq_len)
+            and int(manifest.get("stride", -1)) == int(stride)
+            and int(manifest.get("source_mtime_ns", -1)) == int(shard_stat.st_mtime_ns)
+            and int(manifest.get("source_size", -1)) == int(shard_stat.st_size)
+        ):
+            if return_status:
+                return manifest, False
+            return manifest
+
+    payload = torch.load(shard_path, map_location="cpu")
+    _validate_bc_shard_payload(payload, obs_dim, action_space_size, str(shard_path))
+    try:
+        embedded_manifest = _embedded_sequence_manifest(
+            payload,
+            seq_len=seq_len,
+            stride=stride,
+            shard_path=str(shard_path),
+        )
+    except ValueError:
+        if require_embedded:
+            raise
+        embedded_manifest = None
+    if embedded_manifest is not None:
+        if return_status:
+            return embedded_manifest, False
+        return embedded_manifest
+    if require_embedded:
+        message = (
+            f"BC shard {shard_path} does not contain embedded window metadata matching "
+            f"seq_len={int(seq_len)} stride={int(stride)}"
+        )
+        _print_mismatch(message)
+        raise ValueError(message)
+    manifest = _build_sequence_manifest_from_payload(payload, seq_len, stride)
+    manifest["source_mtime_ns"] = int(shard_stat.st_mtime_ns)
+    manifest["source_size"] = int(shard_stat.st_size)
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    torch.save(manifest, manifest_path)
+    if return_status:
+        return manifest, True
+    return manifest
+
+
+def _build_sequence_samples_from_manifest(payload, manifest):
+    obs = payload["obs"].float()
+    action = payload["action"].long()
+    seq_len = int(manifest["seq_len"])
+    samples = []
+    for window_indices, valid_len in zip(manifest["window_indices"], manifest["valid_lengths"]):
+        valid_len = int(valid_len.item())
+        if valid_len <= 0:
+            continue
+        row_indices = window_indices[:valid_len].long()
+        obs_window = torch.zeros((seq_len, obs.shape[1]), dtype=torch.float32)
+        action_window = torch.zeros((seq_len,), dtype=torch.int64)
+        mask_window = torch.zeros((seq_len,), dtype=torch.bool)
+        obs_window[:valid_len] = obs[row_indices]
+        action_window[:valid_len] = action[row_indices]
+        mask_window[:valid_len] = True
+        samples.append((obs_window, action_window, mask_window))
+    return samples
+
+
+def _build_sequence_samples_from_payload(payload, seq_len, stride):
+    manifest = _embedded_sequence_manifest(payload, seq_len=seq_len, stride=stride)
+    if manifest is None:
+        manifest = _build_sequence_manifest_from_payload(payload, seq_len, stride)
+    return _build_sequence_samples_from_manifest(payload, manifest)
+
+
+def _make_bc_loader(dataset, batch_size, shuffle, num_workers):
+    if isinstance(dataset, IterableDataset):
+        if len(getattr(dataset, "shard_paths", [])) == 0:
+            return None
+        loader_kwargs = {
+            "dataset": dataset,
+            "batch_size": int(batch_size),
+            "num_workers": int(num_workers),
+            "pin_memory": torch.cuda.is_available(),
+        }
+        if int(num_workers) > 0:
+            loader_kwargs["prefetch_factor"] = 2
+        return DataLoader(**loader_kwargs)
+
+    if len(dataset) == 0:
+        return None
+    return DataLoader(
+        dataset,
+        batch_size=int(batch_size),
+        shuffle=shuffle,
+        num_workers=int(num_workers),
+        pin_memory=torch.cuda.is_available(),
+    )
+
+
+def _extract_action_logits(logits):
+    if isinstance(logits, (tuple, list)):
+        if len(logits) != 1:
+            raise ValueError("Offline BC trainer expects a single discrete action head")
+        return logits[0]
+    return logits
+
+
+def _run_bc_epoch(
+    model,
+    dataloader,
+    optimizer,
+    device,
+    recurrent,
+    desc=None,
+    log_interval=0,
+    batch_log_fn=None,
+):
+    if dataloader is None:
+        return {"loss": 0.0, "accuracy": 0.0, "samples": 0, "elapsed_sec": 0.0}
+
+    training = optimizer is not None
+    model.train(training)
+    total_loss = 0.0
+    total_correct = 0
+    total_samples = 0
+    start_time = time.time()
+    try:
+        total_batches = len(dataloader)
+    except TypeError:
+        total_batches = None
+    progress = tqdm(
+        dataloader,
+        desc=desc or ("BC train" if training else "BC val"),
+        unit="batch",
+        leave=False,
+        disable=False,
+        dynamic_ncols=True,
+        smoothing=0.05,
+        bar_format="{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}] {postfix}",
+    )
+
+    for batch_idx, batch in enumerate(progress, start=1):
+        if recurrent:
+            obs, action, mask = batch
+            obs = obs.to(device)
+            action = action.to(device)
+            mask = mask.to(device)
+            state = {"lstm_h": None, "lstm_c": None, "hidden": None}
+            logits, _ = model(obs, state)
+            logits = _extract_action_logits(logits)
+            flat_logits = logits.reshape(-1, logits.shape[-1])
+            flat_targets = action.reshape(-1)
+            flat_mask = mask.reshape(-1)
+            if not torch.any(flat_mask):
+                continue
+            losses = torch.nn.functional.cross_entropy(flat_logits, flat_targets, reduction="none")
+            loss = losses[flat_mask].mean()
+            predictions = flat_logits.argmax(dim=1)
+            batch_correct = (predictions[flat_mask] == flat_targets[flat_mask]).sum().item()
+            batch_samples = int(flat_mask.sum().item())
+        else:
+            obs, action = batch
+            obs = obs.to(device)
+            action = action.to(device)
+            logits, _ = model(obs)
+            logits = _extract_action_logits(logits)
+            loss = torch.nn.functional.cross_entropy(logits, action)
+            predictions = logits.argmax(dim=1)
+            batch_correct = (predictions == action).sum().item()
+            batch_samples = int(action.numel())
+
+        if training:
+            optimizer.zero_grad(set_to_none=True)
+            loss.backward()
+            optimizer.step()
+
+        total_loss += float(loss.item()) * batch_samples
+        total_correct += int(batch_correct)
+        total_samples += batch_samples
+        if total_samples > 0:
+            avg_loss = total_loss / total_samples
+            avg_accuracy = total_correct / total_samples
+            progress.set_postfix(
+                loss=f"{avg_loss:.3f}",
+                acc=f"{avg_accuracy:.3f}",
+                seen=f"{total_samples / 1000.0:.1f}k",
+                refresh=False,
+            )
+            if log_interval and batch_idx % int(log_interval) == 0:
+                progress_fraction = None
+                if total_batches is not None and total_batches > 0:
+                    progress_text = f"{batch_idx}/{total_batches} ({100.0 * batch_idx / total_batches:.1f}%)"
+                    progress_fraction = batch_idx / total_batches
+                else:
+                    progress_text = str(batch_idx)
+                print(
+                    f"[BC] {progress.desc} batch={progress_text} loss={avg_loss:.4f} "
+                    f"acc={avg_accuracy:.4f} seen={total_samples} elapsed={time.time() - start_time:.1f}s",
+                    flush=True,
+                )
+                if batch_log_fn is not None:
+                    batch_log_fn(
+                        {
+                            "batch": int(batch_idx),
+                            "progress": progress_fraction,
+                            "loss": float(avg_loss),
+                            "accuracy": float(avg_accuracy),
+                            "samples": int(total_samples),
+                            "elapsed_sec": float(time.time() - start_time),
+                        }
+                    )
+
+    progress.close()
+
+    if total_samples == 0:
+        return {"loss": 0.0, "accuracy": 0.0, "samples": 0, "elapsed_sec": time.time() - start_time}
+    return {
+        "loss": total_loss / total_samples,
+        "accuracy": total_correct / total_samples,
+        "samples": total_samples,
+        "elapsed_sec": time.time() - start_time,
+    }
+
+
+def _build_bc_policy(args, env, device):
+    policy_name = _resolve_base_arg(args, "policy_name")
+    if policy_name is None:
+        _print_mismatch("BC trainer could not resolve policy_name from config args")
+        raise KeyError("policy_name")
+    policy_cls = getattr(ocean_torch, policy_name)
+    policy = policy_cls(env, **args["policy"])
+    rnn_name = _normalize_optional_name(_resolve_base_arg(args, "rnn_name"))
+    if rnn_name is not None:
+        rnn_cls = getattr(ocean_torch, rnn_name)
+        policy = rnn_cls(env, policy, **args["rnn"])
+    return policy.to(device)
+
+
+def _make_bc_training_env(env_cfg):
+    env_kwargs = dict(env_cfg)
+    env_kwargs["num_agents"] = 1
+    env_kwargs["num_maps"] = 1
+    env_kwargs["max_controlled_agents"] = 1
+    env_kwargs["render_mode"] = None
+    return Drive(**env_kwargs)
+
+
+def train_bc_policy(args=None, dataset_dir=None, output_dir=None, logger=None):
+    args = args or load_drive_builder_config()
+    env_cfg = _normalize_env_config(args["env"])
+    if env_cfg.get("action_type") != "discrete":
+        message = "Offline BC trainer currently supports only discrete action_type"
+        _print_mismatch(message)
+        raise ValueError(message)
+
+    bc_train_cfg = _resolve_bc_train_config(args, dataset_dir=dataset_dir, output_dir=output_dir)
+    dataset_dir = bc_train_cfg["dataset_dir"]
+    if dataset_dir is None or not os.path.isdir(dataset_dir):
+        message = f"BC dataset directory not found: {dataset_dir}"
+        _print_mismatch(message)
+        raise FileNotFoundError(message)
+
+    seed = int(args.get("train", {}).get("seed", 0))
+    torch.manual_seed(seed)
+    np.random.seed(seed)
+    random.seed(seed)
+
+    if logger is None:
+        from pufferlib.pufferl import NeptuneLogger, WandbLogger
+
+        if args.get("neptune"):
+            logger = NeptuneLogger(args)
+        elif args.get("wandb"):
+            logger = WandbLogger(args)
+
+    device = torch.device(bc_train_cfg["device"])
+    output_path = Path(bc_train_cfg["output_dir"])
+    output_path.mkdir(parents=True, exist_ok=True)
+    print(
+        f"[BC] starting training dataset_dir={dataset_dir} output_dir={output_path} "
+        f"device={device} epochs={int(bc_train_cfg['epochs'])} batch_size={int(bc_train_cfg['batch_size'])}",
+        flush=True,
+    )
+
+    env = _make_bc_training_env(env_cfg)
+    try:
+        obs_dim = int(env.single_observation_space.shape[0])
+        action_space_size = _get_discrete_action_size(env)
+        shard_paths = _list_bc_shards(dataset_dir, max_shards=bc_train_cfg["max_shards"])
+        if not shard_paths:
+            message = f"No BC shard files found in {dataset_dir}"
+            _print_mismatch(message)
+            raise FileNotFoundError(message)
+
+        train_shards, val_shards = _split_shards(shard_paths, bc_train_cfg["val_fraction"], seed)
+        print(
+            f"[BC] found {len(shard_paths)} shards total: train={len(train_shards)} val={len(val_shards)}",
+            flush=True,
+        )
+        print("[BC] using shard-streamed loading; training starts without full dataset preload", flush=True)
+
+        first_train_payload = _peek_bc_shard(train_shards, obs_dim, action_space_size)
+
+        recurrent = _normalize_optional_name(_resolve_base_arg(args, "rnn_name")) is not None
+        if recurrent:
+            expected_seq_len = int(args.get("train", {}).get("bptt_horizon", bc_train_cfg["seq_len"]))
+            actual_seq_len = int(bc_train_cfg["seq_len"])
+            if actual_seq_len != expected_seq_len:
+                message = (
+                    f"BC recurrent window size mismatch: bc_train.seq_len={actual_seq_len} "
+                    f"but model expects train.bptt_horizon={expected_seq_len}"
+                )
+                _print_mismatch(message)
+                raise ValueError(message)
+        if recurrent:
+            train_dataset = _SequenceBCDataset(
+                train_shards,
+                obs_dim,
+                action_space_size,
+                seq_len=bc_train_cfg["seq_len"],
+                stride=bc_train_cfg["sequence_stride"],
+                shuffle=True,
+                seed=seed,
+                require_embedded=_as_bool(bc_train_cfg.get("use_embedded_windows", False)),
+                shard_shuffle_buffer=bc_train_cfg["shard_shuffle_buffer"],
+                rebalance_windows=_as_bool(bc_train_cfg.get("rebalance_windows", False)),
+                window_balance_fraction=bc_train_cfg["window_balance_fraction"],
+                window_balance_max_multiplier=bc_train_cfg["window_balance_max_multiplier"],
+            )
+            val_dataset = _SequenceBCDataset(
+                val_shards,
+                obs_dim,
+                action_space_size,
+                seq_len=bc_train_cfg["seq_len"],
+                stride=bc_train_cfg["sequence_stride"],
+                shuffle=False,
+                seed=seed,
+                require_embedded=_as_bool(bc_train_cfg.get("use_embedded_windows", False)),
+                shard_shuffle_buffer=1,
+                rebalance_windows=False,
+            )
+        else:
+            train_dataset = _FlatBCDataset(
+                train_shards,
+                obs_dim,
+                action_space_size,
+                shuffle=True,
+                seed=seed,
+                shard_shuffle_buffer=bc_train_cfg["shard_shuffle_buffer"],
+            )
+            val_dataset = _FlatBCDataset(
+                val_shards,
+                obs_dim,
+                action_space_size,
+                shuffle=False,
+                seed=seed,
+                shard_shuffle_buffer=1,
+            )
+
+        if first_train_payload is None or int(first_train_payload["action"].shape[0]) == 0:
+            message = "BC training dataset is empty after loading selected shards"
+            _print_mismatch(message)
+            raise ValueError(message)
+        if recurrent:
+            print(
+                f"[BC] indexing recurrent train windows seq_len={int(bc_train_cfg['seq_len'])} "
+                f"stride={int(bc_train_cfg['sequence_stride'])}",
+                flush=True,
+            )
+            train_index_start = time.time()
+            train_window_count = len(train_dataset)
+            train_index_sec = time.time() - train_index_start
+            train_manifest_stats = train_dataset.manifest_stats()
+            print(
+                f"[BC] indexed train windows={train_window_count} built_manifests={train_manifest_stats['built']} "
+                f"loaded_manifests={train_manifest_stats['loaded']} cached={train_manifest_stats['cached']} "
+                f"elapsed={train_index_sec:.1f}s",
+                flush=True,
+            )
+            val_window_count = 0
+            val_manifest_stats = {"built": 0, "loaded": 0, "cached": 0}
+            val_index_sec = 0.0
+            if val_shards:
+                print(
+                    f"[BC] indexing recurrent val windows seq_len={int(bc_train_cfg['seq_len'])} "
+                    f"stride={int(bc_train_cfg['sequence_stride'])}",
+                    flush=True,
+                )
+                val_index_start = time.time()
+                val_window_count = len(val_dataset)
+                val_index_sec = time.time() - val_index_start
+                val_manifest_stats = val_dataset.manifest_stats()
+                print(
+                    f"[BC] indexed val windows={val_window_count} built_manifests={val_manifest_stats['built']} "
+                    f"loaded_manifests={val_manifest_stats['loaded']} cached={val_manifest_stats['cached']} "
+                    f"elapsed={val_index_sec:.1f}s",
+                    flush=True,
+                )
+        else:
+            train_window_count = len(train_dataset)
+            val_window_count = len(val_dataset)
+        print(
+            f"[BC] dataset ready recurrent={recurrent} train_shards={len(train_shards)} "
+            f"val_shards={len(val_shards)} train_items={train_window_count} val_items={val_window_count} "
+            f"obs_dim={obs_dim} action_space={action_space_size}",
+            flush=True,
+        )
+
+        loader_start = time.time()
+        train_loader = _make_bc_loader(
+            train_dataset, batch_size=bc_train_cfg["batch_size"], shuffle=True, num_workers=bc_train_cfg["num_workers"]
+        )
+        val_loader = _make_bc_loader(
+            val_dataset, batch_size=bc_train_cfg["batch_size"], shuffle=False, num_workers=bc_train_cfg["num_workers"]
+        )
+        print(
+            f"[BC] dataloaders ready num_workers={int(bc_train_cfg['num_workers'])} "
+            f"elapsed={time.time() - loader_start:.1f}s",
+            flush=True,
+        )
+
+        policy = _build_bc_policy(args, env, device)
+        optimizer = torch.optim.Adam(
+            policy.parameters(),
+            lr=float(bc_train_cfg["learning_rate"]),
+            weight_decay=float(bc_train_cfg["weight_decay"]),
+        )
+        scheduler = None
+        scheduler_name = bc_train_cfg.get("lr_scheduler")
+        if scheduler_name is not None:
+            scheduler_name = str(scheduler_name).strip().lower()
+        if scheduler_name in {"plateau", "reduce_on_plateau", "reducelronplateau"}:
+            scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+                optimizer,
+                mode="min",
+                factor=float(bc_train_cfg["lr_scheduler_factor"]),
+                patience=max(0, int(bc_train_cfg["lr_scheduler_patience"])),
+                threshold=float(bc_train_cfg["lr_scheduler_threshold"]),
+                min_lr=float(bc_train_cfg["min_learning_rate"]),
+            )
+
+        history = []
+        best_metric = None
+        best_epoch = None
+        completed_epochs = 0
+        stopped_early = False
+        stop_reason = None
+        early_stopping_patience = max(0, int(bc_train_cfg.get("early_stopping_patience", 0)))
+        early_stopping_min_delta = max(0.0, float(bc_train_cfg.get("early_stopping_min_delta", 0.0)))
+        early_stopping_bad_epochs = 0
+        latest_path = output_path / "latest.pt"
+        best_path = output_path / "best.pt"
+        train_step = 0
+
+        for epoch in range(int(bc_train_cfg["epochs"])):
+            if hasattr(train_dataset, "set_epoch"):
+                train_dataset.set_epoch(epoch)
+            if hasattr(val_dataset, "set_epoch"):
+                val_dataset.set_epoch(epoch)
+            print(
+                f"[BC] epoch {epoch + 1}/{int(bc_train_cfg['epochs'])} starting",
+                flush=True,
+            )
+            epoch_start_step = train_step
+
+            def _log_train_batch(batch_metrics):
+                if logger is None:
+                    return
+                batch_step = epoch_start_step + int(batch_metrics["samples"])
+                batch_logs = {
+                    "bc/train_loss_running": float(batch_metrics["loss"]),
+                    "bc/train_accuracy_running": float(batch_metrics["accuracy"]),
+                    "bc/train_batches_done": int(batch_metrics["batch"]),
+                    "bc/train_samples_seen_epoch": int(batch_metrics["samples"]),
+                    "bc/train_elapsed_sec_running": float(batch_metrics["elapsed_sec"]),
+                }
+                if batch_metrics["progress"] is not None:
+                    batch_logs["bc/train_epoch_progress"] = float(batch_metrics["progress"])
+                logger.log(batch_logs, batch_step)
+
+            train_metrics = _run_bc_epoch(
+                policy,
+                train_loader,
+                optimizer,
+                device,
+                recurrent=recurrent,
+                desc=f"BC train epoch {epoch + 1}/{int(bc_train_cfg['epochs'])}",
+                log_interval=bc_train_cfg["log_interval"],
+                batch_log_fn=_log_train_batch,
+            )
+            with torch.no_grad():
+                val_metrics = _run_bc_epoch(
+                    policy,
+                    val_loader,
+                    None,
+                    device,
+                    recurrent=recurrent,
+                    desc=f"BC val epoch {epoch + 1}/{int(bc_train_cfg['epochs'])}",
+                    log_interval=0,
+                )
+
+            epoch_metrics = {
+                "epoch": epoch + 1,
+                "train_loss": float(train_metrics["loss"]),
+                "train_accuracy": float(train_metrics["accuracy"]),
+                "train_samples": int(train_metrics["samples"]),
+                "train_elapsed_sec": float(train_metrics["elapsed_sec"]),
+                "val_loss": float(val_metrics["loss"]),
+                "val_accuracy": float(val_metrics["accuracy"]),
+                "val_samples": int(val_metrics["samples"]),
+                "val_elapsed_sec": float(val_metrics["elapsed_sec"]),
+                "learning_rate": float(optimizer.param_groups[0]["lr"]),
+            }
+            history.append(epoch_metrics)
+            completed_epochs = epoch_metrics["epoch"]
+            torch.save(policy.state_dict(), latest_path)
+
+            selection_metric = epoch_metrics["val_loss"] if val_metrics["samples"] > 0 else epoch_metrics["train_loss"]
+            if scheduler is not None:
+                scheduler.step(selection_metric)
+            improved = best_metric is None or selection_metric < (best_metric - early_stopping_min_delta)
+            if improved:
+                best_metric = selection_metric
+                best_epoch = epoch_metrics["epoch"]
+                early_stopping_bad_epochs = 0
+                if _as_bool(bc_train_cfg["save_best"]):
+                    torch.save(policy.state_dict(), best_path)
+            elif early_stopping_patience > 0:
+                early_stopping_bad_epochs += 1
+
+            train_step += epoch_metrics["train_samples"]
+            if logger is not None:
+                logger.log(
+                    {
+                        "bc/epoch": epoch_metrics["epoch"],
+                        "bc/train_loss": epoch_metrics["train_loss"],
+                        "bc/train_accuracy": epoch_metrics["train_accuracy"],
+                        "bc/train_samples": epoch_metrics["train_samples"],
+                        "bc/train_elapsed_sec": epoch_metrics["train_elapsed_sec"],
+                        "bc/val_loss": epoch_metrics["val_loss"],
+                        "bc/val_accuracy": epoch_metrics["val_accuracy"],
+                        "bc/val_samples": epoch_metrics["val_samples"],
+                        "bc/val_elapsed_sec": epoch_metrics["val_elapsed_sec"],
+                        "bc/learning_rate": epoch_metrics["learning_rate"],
+                        "bc/best_metric": float(best_metric),
+                        "bc/best_epoch": int(best_epoch if best_epoch is not None else epoch_metrics["epoch"]),
+                    },
+                    train_step,
+                )
+
+            print(
+                f"[BC] epoch={epoch_metrics['epoch']} train_loss={epoch_metrics['train_loss']:.4f} "
+                f"train_acc={epoch_metrics['train_accuracy']:.4f} val_loss={epoch_metrics['val_loss']:.4f} "
+                f"val_acc={epoch_metrics['val_accuracy']:.4f} train_sec={epoch_metrics['train_elapsed_sec']:.1f} "
+                f"val_sec={epoch_metrics['val_elapsed_sec']:.1f}"
+            )
+
+            if early_stopping_patience > 0 and early_stopping_bad_epochs >= early_stopping_patience:
+                stopped_early = True
+                stop_reason = (
+                    f"no improvement in {'validation' if val_metrics['samples'] > 0 else 'training'} metric for "
+                    f"{early_stopping_bad_epochs} epoch(s)"
+                )
+                print(
+                    f"[BC] early stopping triggered at epoch {epoch_metrics['epoch']} "
+                    f"(best_epoch={best_epoch}, best_metric={best_metric:.4f}, "
+                    f"patience={early_stopping_patience}, min_delta={early_stopping_min_delta:.6f})",
+                    flush=True,
+                )
+                break
+
+        metadata = {
+            "config": args,
+            "bc_train": bc_train_cfg,
+            "history": history,
+            "train_shards": train_shards,
+            "val_shards": val_shards,
+            "observation_dim": obs_dim,
+            "action_space_size": action_space_size,
+            "recurrent": recurrent,
+            "completed_epochs": completed_epochs,
+            "best_epoch": best_epoch,
+            "best_metric": best_metric,
+            "stopped_early": stopped_early,
+            "stop_reason": stop_reason,
+            "latest_path": str(latest_path),
+            "best_path": str(best_path if best_path.exists() else latest_path),
+        }
+        metadata_path = output_path / "metrics.json"
+        with open(metadata_path, "w", encoding="utf-8") as f:
+            json.dump(metadata, f, indent=2, default=str)
+
+        if logger is not None:
+            logger.close(str(best_path if best_path.exists() else latest_path))
+
+        return {
+            "latest_path": str(latest_path),
+            "best_path": str(best_path if best_path.exists() else latest_path),
+            "metadata_path": str(metadata_path),
+            "history": history,
+            "train_shards": train_shards,
+            "val_shards": val_shards,
+        }
+    finally:
+        env.close()
+
+
+def _create_builder_env_buffers(dynamics_model, max_agents):
+    sim_obs_dim = _sim_obs_dim_for_dynamics(dynamics_model)
+    observations = np.zeros((max_agents, sim_obs_dim), dtype=np.float32)
+    actions = np.zeros(max_agents, dtype=np.int32)
+    rewards = np.zeros(max_agents, dtype=np.float32)
+    terminals = np.zeros(max_agents, dtype=np.uint8)
+    truncations = np.zeros(max_agents, dtype=np.uint8)
+    return observations, actions, rewards, terminals, truncations, sim_obs_dim
+
+
+def _build_policy_observation_batch(env_cfg, active_count, sim_observations, env_handle):
+    if env_cfg["observation_mode"] != "sdc_only_with_trailer":
+        return sim_observations[:active_count].copy()
+
+    base_ego = {"classic": binding.EGO_FEATURES_CLASSIC, "jerk": binding.EGO_FEATURES_JERK}[env_cfg["dynamics_model"]]
+    partner_count = binding.MAX_AGENTS - 1
+    base_partner = binding.PARTNER_FEATURES
+    aug_ego = base_ego + 1 + _EGO_TRAILER_STATE_FEATURES
+    aug_partner = base_partner + 1
+    road_count = binding.MAX_ROAD_SEGMENT_OBSERVATIONS
+    road_features = binding.ROAD_FEATURES
+    num_obs = aug_ego + partner_count * aug_partner + road_count * road_features
+
+    policy_observations = np.zeros((active_count, num_obs), dtype=np.float32)
+    ego_types = np.zeros(active_count, dtype=np.int32)
+    partner_types = np.zeros((active_count, partner_count), dtype=np.int32)
+    trailer_features = {
+        "rel_x": np.zeros(active_count, dtype=np.float32),
+        "rel_y": np.zeros(active_count, dtype=np.float32),
+        "rel_heading_x": np.zeros(active_count, dtype=np.float32),
+        "rel_heading_y": np.zeros(active_count, dtype=np.float32),
+    }
+
+    binding.get_global_agent_types(env_handle, ego_types)
+    binding.env_get_partner_types(env_handle, partner_types)
+    binding.env_get_ego_trailer_obs_features(
+        env_handle,
+        trailer_features["rel_x"],
+        trailer_features["rel_y"],
+        trailer_features["rel_heading_x"],
+        trailer_features["rel_heading_y"],
+    )
+    _postprocess_policy_observations(
+        policy_observations,
+        sim_observations[:active_count],
+        base_ego,
+        base_partner,
+        partner_count,
+        aug_ego,
+        aug_partner,
+        road_count,
+        road_features,
+        binding.POLICY_TYPE_CLASS_COUNT,
+        ego_types,
+        partner_types,
+        trailer_features,
+    )
+    return policy_observations
+
+
+def _list_map_ids(map_dir, max_maps=-1):
+    map_paths = sorted(Path(map_dir).glob("map_*.bin"))
+    map_ids = []
+    for path in map_paths:
+        try:
+            map_ids.append(int(path.stem.split("_")[1]))
+        except (IndexError, ValueError):
+            continue
+    if max_maps is not None and max_maps > 0:
+        map_ids = map_ids[:max_maps]
+    return map_ids
+
+
+def _validate_bc_builder_support(env_cfg):
+    if env_cfg["action_type"] != "discrete":
+        message = (
+            "offline BC dataset builder currently supports only discrete action_type "
+            f"(got {env_cfg['action_type']!r})"
+        )
+        _print_mismatch(message)
+        raise ValueError("Unsupported action_type for offline BC dataset builder")
+    if env_cfg["dynamics_model"] != "classic":
+        message = (
+            "offline BC dataset builder currently supports only classic dynamics_model "
+            f"(got {env_cfg['dynamics_model']!r})"
+        )
+        _print_mismatch(message)
+        raise ValueError("Unsupported dynamics_model for offline BC dataset builder")
+
+
+def _resolve_bc_export_window_config(args, bc_cfg):
+    if not _as_bool(bc_cfg.get("export_windows", False)):
+        return None
+
+    bc_train_cfg = _resolve_bc_train_config(args)
+    seq_len = bc_cfg.get("window_seq_len")
+    if seq_len is None:
+        seq_len = bc_train_cfg["seq_len"]
+    stride = bc_cfg.get("window_stride")
+    if stride is None:
+        stride = bc_train_cfg.get("sequence_stride", seq_len)
+
+    takeoff_seq_len = bc_cfg.get("takeoff_window_seq_len")
+    if takeoff_seq_len is None:
+        takeoff_seq_len = seq_len
+    takeoff_stride = bc_cfg.get("takeoff_window_stride")
+    if takeoff_stride is None:
+        takeoff_stride = max(1, min(int(stride), 4))
+
+    return {
+        "base": {
+            "seq_len": int(seq_len),
+            "stride": max(1, int(stride)),
+        },
+        "takeoff": {
+            "seq_len": int(takeoff_seq_len),
+            "stride": max(1, int(takeoff_stride)),
+            "standstill_speed": float(bc_cfg.get("takeoff_standstill_speed", 0.5)),
+            "target_speed": float(bc_cfg.get("takeoff_target_speed", 2.0)),
+            "horizon_steps": max(1, int(bc_cfg.get("takeoff_horizon_steps", 20))),
+        },
+    }
+
+
+def _identify_takeoff_start_offsets(speed_series_mps, *, stride, standstill_speed, target_speed, horizon_steps):
+    speed_series = np.asarray(speed_series_mps, dtype=np.float32)
+    if speed_series.size == 0:
+        return []
+
+    takeoff_starts = []
+    for start_idx in range(0, int(speed_series.shape[0]), max(1, int(stride))):
+        start_speed = abs(float(speed_series[start_idx]))
+        if start_speed > float(standstill_speed):
+            continue
+        horizon_end = min(int(speed_series.shape[0]), start_idx + int(horizon_steps) + 1)
+        if horizon_end <= start_idx + 1:
+            continue
+        future_peak = float(np.max(np.abs(speed_series[start_idx + 1 : horizon_end])))
+        if future_peak < float(target_speed):
+            continue
+        takeoff_starts.append(int(start_idx))
+    return takeoff_starts
+
+
+def build_bc_dataset(args=None, output_dir=None):
+    args = args or load_drive_builder_config()
+    env_cfg = _normalize_env_config(args["env"])
+    bc_cfg = _resolve_bc_config(args, output_dir=output_dir)
+    _validate_bc_builder_support(env_cfg)
+    export_window_cfg = _resolve_bc_export_window_config(args, bc_cfg)
+
+    map_dir = env_cfg["map_dir"]
+    if not os.path.isdir(map_dir):
+        message = f"Map directory not found: {map_dir}"
+        _print_mismatch(message)
+        raise FileNotFoundError(message)
+
+    shard_dir = Path(bc_cfg["output_dir"])
+    shard_dir.mkdir(parents=True, exist_ok=True)
+    map_ids = _list_map_ids(map_dir, max_maps=bc_cfg["max_maps"])
+    max_agents = int(env_cfg.get("max_controlled_agents", -1))
+    if max_agents <= 0:
+        max_agents = binding.MAX_AGENTS
+    max_agents = min(max_agents, binding.MAX_AGENTS)
+
+    shard_paths = []
+    for map_id in tqdm(map_ids, desc="Building BC shards", unit="map"):
+        shard_path = shard_dir / f"map_{map_id:03d}.pt"
+        if bc_cfg["skip_existing_shards"] and shard_path.exists():
+            shard_paths.append(str(shard_path))
+            continue
+
+        obs_buf, act_buf, rew_buf, term_buf, trunc_buf, sim_obs_dim = _create_builder_env_buffers(
+            env_cfg["dynamics_model"], max_agents
+        )
+        env_handle = binding.env_init(
+            obs_buf,
+            act_buf,
+            rew_buf,
+            term_buf,
+            trunc_buf,
+            0,
+            human_agent_idx=0,
+            observation_mode=0 if env_cfg["observation_mode"] == "default" else 1,
+            reward_vehicle_collision=env_cfg["reward_vehicle_collision"],
+            reward_offroad_collision=env_cfg["reward_offroad_collision"],
+            reward_goal=env_cfg["reward_goal"],
+            reward_goal_post_respawn=env_cfg["reward_goal_post_respawn"],
+            goal_radius=env_cfg["goal_radius"],
+            goal_speed=env_cfg["goal_speed"],
+            goal_behavior=env_cfg["goal_behavior"],
+            goal_target_distance=env_cfg["goal_target_distance"],
+            collision_behavior=env_cfg["collision_behavior"],
+            offroad_behavior=env_cfg["offroad_behavior"],
+            dt=env_cfg["dt"],
+            episode_length=env_cfg["episode_length"],
+            termination_mode=env_cfg["termination_mode"],
+            max_controlled_agents=max_agents,
+            map_id=map_id,
+            max_agents=max_agents,
+            ini_file="pufferlib/config/ocean/drive.ini",
+            init_steps=env_cfg["init_steps"],
+                init_mode=0 if env_cfg["init_mode"] == "create_all_valid" else 1,
+                control_mode={
+                    "control_vehicles": 0,
+                    "control_agents": 1,
+                    "control_wosac": 2,
+                    "control_sdc_only": 3,
+                }[env_cfg["control_mode"]],
+                map_dir=map_dir,
+                extend_classic_action_space=int(_as_bool(env_cfg.get("extend_classic_action_space", False))),
+                non_kinematic_vehicle_params_override=None,
+                force_zero_trailer_articulation_at_init=int(_as_bool(env_cfg.get("force_zero_trailer_articulation_at_init", False))),
+            )
+        _compare_c_python_env_config(
+            env_handle,
+            _expected_c_env_config(
+                action_type=env_cfg["action_type"],
+                dynamics_model=env_cfg["dynamics_model"],
+                observation_mode=env_cfg.get("observation_mode", "default"),
+                extend_classic_action_space=env_cfg.get("extend_classic_action_space", False),
+                reward_vehicle_collision=env_cfg["reward_vehicle_collision"],
+                reward_offroad_collision=env_cfg["reward_offroad_collision"],
+                reward_goal=env_cfg["reward_goal"],
+                reward_goal_post_respawn=env_cfg["reward_goal_post_respawn"],
+                goal_radius=env_cfg["goal_radius"],
+                goal_speed=env_cfg["goal_speed"],
+                goal_behavior=env_cfg["goal_behavior"],
+                goal_target_distance=env_cfg["goal_target_distance"],
+                collision_behavior=env_cfg["collision_behavior"],
+                offroad_behavior=env_cfg["offroad_behavior"],
+                dt=env_cfg["dt"],
+                episode_length=env_cfg["episode_length"],
+                termination_mode=env_cfg["termination_mode"],
+                init_steps=env_cfg["init_steps"],
+                init_mode=env_cfg["init_mode"],
+                control_mode=env_cfg["control_mode"],
+                max_controlled_agents=max_agents,
+            ),
+            f"build_bc_dataset map_{map_id:03d}",
+        )
+
+        try:
+            binding.env_reset(env_handle, 0)
+            active_count = binding.env_get_active_agent_count(env_handle)
+            if active_count <= 0:
+                continue
+
+            scenario_ids = np.zeros(active_count, dtype=np.int32)
+            agent_ids = np.zeros(active_count, dtype=np.int32)
+            binding.env_get_active_agent_info(env_handle, scenario_ids, agent_ids)
+
+            max_steps = max(0, int(env_cfg["episode_length"]) - int(env_cfg["init_steps"]) - 1)
+            agent_actions = np.full((active_count, max_steps), -1, dtype=np.int32)
+            agent_step_costs = np.zeros((active_count, max_steps), dtype=np.float32)
+            agent_step_lat_costs = np.zeros((active_count, max_steps), dtype=np.float32)
+            agent_step_lon_costs = np.zeros((active_count, max_steps), dtype=np.float32)
+            agent_num_steps = np.zeros(active_count, dtype=np.int32)
+            agent_total_costs = np.zeros(active_count, dtype=np.float32)
+            agent_total_lat_costs = np.zeros(active_count, dtype=np.float32)
+            agent_total_lon_costs = np.zeros(active_count, dtype=np.float32)
+
+            for agent_slot in range(active_count):
+                num_steps, total_cost, total_lat_cost, total_lon_cost = binding.env_fit_discrete_action_sequence(
+                    env_handle,
+                    agent_slot,
+                    int(bc_cfg["beam_width"]),
+                    int(bc_cfg["planning_horizon"]),
+                    float(bc_cfg["match_weight_lateral"]),
+                    float(bc_cfg["match_weight_longitudinal"]),
+                float(bc_cfg["match_weight_heading"]),
+                float(bc_cfg["match_weight_speed"]),
+                float(bc_cfg["match_weight_steer_change"]),
+                float(bc_cfg["match_weight_accel_change"]),
+                float(bc_cfg["match_weight_reverse"]),
+                float(bc_cfg["match_weight_progress"]),
+                float(bc_cfg["match_weight_steer_flip"]),
+                float(bc_cfg["match_weight_ref_accel"]),
+                float(bc_cfg["match_weight_ref_steer"]),
+                agent_actions[agent_slot],
+                agent_step_costs[agent_slot],
+                agent_step_lat_costs[agent_slot],
+                    agent_step_lon_costs[agent_slot],
+                )
+                agent_num_steps[agent_slot] = num_steps
+                agent_total_costs[agent_slot] = total_cost
+                agent_total_lat_costs[agent_slot] = total_lat_cost
+                agent_total_lon_costs[agent_slot] = total_lon_cost
+
+            sample_obs = []
+            sample_actions = []
+            sample_scenario_ids = []
+            sample_agent_ids = []
+            sample_sequence_ids = []
+            sample_sequence_row_indices = []
+            sample_sequence_lengths = []
+            sample_timesteps = []
+            sample_total_costs = []
+            sample_step_costs = []
+            sample_total_lat_costs = []
+            sample_total_lon_costs = []
+            sample_step_lat_costs = []
+            sample_step_lon_costs = []
+            sample_map_ids = []
+            agent_speed_series_mps = np.zeros((active_count, max(0, int(np.max(agent_num_steps)) if active_count > 0 else 0)), dtype=np.float32)
+
+            max_num_steps = int(np.max(agent_num_steps)) if active_count > 0 else 0
+            timestep_obs = np.zeros((active_count, sim_obs_dim), dtype=np.float32)
+            policy_obs_dim = (
+                sim_obs_dim
+                if env_cfg["observation_mode"] == "default"
+                else (
+                    {"classic": binding.EGO_FEATURES_CLASSIC, "jerk": binding.EGO_FEATURES_JERK}[env_cfg["dynamics_model"]]
+                    + 1
+                    + _EGO_TRAILER_STATE_FEATURES
+                    + (binding.MAX_AGENTS - 1) * (binding.PARTNER_FEATURES + 1)
+                    + binding.MAX_ROAD_SEGMENT_OBSERVATIONS * binding.ROAD_FEATURES
+                )
+            )
+            for step_idx in range(max_num_steps):
+                binding.env_set_logged_timestep(env_handle, int(env_cfg["init_steps"]) + step_idx)
+                binding.env_copy_observations(env_handle, timestep_obs)
+                policy_observations = _build_policy_observation_batch(env_cfg, active_count, timestep_obs, env_handle)
+
+                valid_slots = np.nonzero(agent_num_steps > step_idx)[0]
+                for agent_slot in valid_slots:
+                    agent_speed_series_mps[agent_slot, step_idx] = (
+                        float(timestep_obs[agent_slot, _EGO_SPEED_OBS_INDEX]) * _MAX_SPEED_MPS
+                    )
+                    sample_obs.append(policy_observations[agent_slot].copy())
+                    sample_actions.append(int(agent_actions[agent_slot, step_idx]))
+                    sample_scenario_ids.append(int(scenario_ids[agent_slot]))
+                    sample_agent_ids.append(int(agent_ids[agent_slot]))
+                    sample_sequence_ids.append(int(agent_slot))
+                    sample_sequence_row_indices.append(int(step_idx))
+                    sample_sequence_lengths.append(int(agent_num_steps[agent_slot]))
+                    sample_timesteps.append(int(env_cfg["init_steps"]) + step_idx)
+                    sample_total_costs.append(float(agent_total_costs[agent_slot]))
+                    sample_step_costs.append(float(agent_step_costs[agent_slot, step_idx]))
+                    sample_total_lat_costs.append(float(agent_total_lat_costs[agent_slot]))
+                    sample_total_lon_costs.append(float(agent_total_lon_costs[agent_slot]))
+                    sample_step_lat_costs.append(float(agent_step_lat_costs[agent_slot, step_idx]))
+                    sample_step_lon_costs.append(float(agent_step_lon_costs[agent_slot, step_idx]))
+                    sample_map_ids.append(int(map_id))
+
+            if sample_obs:
+                obs_tensor = torch.from_numpy(np.stack(sample_obs).astype(np.float32))
+            else:
+                obs_tensor = torch.zeros((0, policy_obs_dim), dtype=torch.float32)
+
+            exported_sequence_ids = [int(agent_slot) for agent_slot in range(active_count) if int(agent_num_steps[agent_slot]) > 0]
+            exported_sequence_lengths = [int(agent_num_steps[agent_slot]) for agent_slot in exported_sequence_ids]
+
+            payload = {
+                "obs": obs_tensor,
+                "action": torch.tensor(sample_actions, dtype=torch.int64),
+                "scenario_id": torch.tensor(sample_scenario_ids, dtype=torch.int32),
+                "agent_id": torch.tensor(sample_agent_ids, dtype=torch.int32),
+                "sequence_id": torch.tensor(sample_sequence_ids, dtype=torch.int64),
+                "sequence_row_index": torch.tensor(sample_sequence_row_indices, dtype=torch.int32),
+                "sequence_length": torch.tensor(sample_sequence_lengths, dtype=torch.int32),
+                "timestep": torch.tensor(sample_timesteps, dtype=torch.int32),
+                "match_cost_total": torch.tensor(sample_total_costs, dtype=torch.float32),
+                "match_cost_step": torch.tensor(sample_step_costs, dtype=torch.float32),
+                "match_cost_lateral_total": torch.tensor(sample_total_lat_costs, dtype=torch.float32),
+                "match_cost_longitudinal_total": torch.tensor(sample_total_lon_costs, dtype=torch.float32),
+                "match_cost_lateral_step": torch.tensor(sample_step_lat_costs, dtype=torch.float32),
+                "match_cost_longitudinal_step": torch.tensor(sample_step_lon_costs, dtype=torch.float32),
+                "map_id": torch.tensor(sample_map_ids, dtype=torch.int32),
+                "metadata": {
+                    "source_map": f"map_{map_id:03d}.bin",
+                    "sample_count": len(sample_actions),
+                    "sequence_count": len(exported_sequence_ids),
+                    "observation_dim": int(obs_tensor.shape[1]),
+                    "observation_mode": env_cfg["observation_mode"],
+                    "sequence_ids": exported_sequence_ids,
+                    "sequence_lengths": exported_sequence_lengths,
+                    "action_space_size": (
+                        _CLASSIC_DISCRETE_ACTIONS
+                        if _as_bool(env_cfg.get("extend_classic_action_space", False))
+                        else 7 * 13
+                    ),
+                    "config": {"env": env_cfg, "bc": bc_cfg},
+                    "optimizer": {
+                        "beam_width": int(bc_cfg["beam_width"]),
+                        "planning_horizon": int(bc_cfg["planning_horizon"]),
+                        "match_weight_lateral": float(bc_cfg["match_weight_lateral"]),
+                        "match_weight_longitudinal": float(bc_cfg["match_weight_longitudinal"]),
+                        "match_weight_heading": float(bc_cfg["match_weight_heading"]),
+                        "match_weight_speed": float(bc_cfg["match_weight_speed"]),
+                        "match_weight_steer_change": float(bc_cfg["match_weight_steer_change"]),
+                        "match_weight_accel_change": float(bc_cfg["match_weight_accel_change"]),
+                        "match_weight_reverse": float(bc_cfg["match_weight_reverse"]),
+                        "match_weight_progress": float(bc_cfg["match_weight_progress"]),
+                        "match_weight_steer_flip": float(bc_cfg["match_weight_steer_flip"]),
+                        "match_weight_ref_accel": float(bc_cfg["match_weight_ref_accel"]),
+                        "match_weight_ref_steer": float(bc_cfg["match_weight_ref_steer"]),
+                        "init_steps": int(env_cfg["init_steps"]),
+                    },
+                },
+            }
+            if export_window_cfg is not None:
+                base_window_manifest = _build_sequence_manifest_from_payload(
+                    payload,
+                    export_window_cfg["base"]["seq_len"],
+                    export_window_cfg["base"]["stride"],
+                )
+                sequence_spans = _sequence_spans_from_payload(payload)
+                takeoff_start_offsets = {}
+                takeoff_sequence_ids = []
+                for sequence_id, _, _ in sequence_spans:
+                    seq_id = int(sequence_id)
+                    seq_len = int(agent_num_steps[seq_id]) if 0 <= seq_id < int(agent_num_steps.shape[0]) else 0
+                    if seq_len <= 0:
+                        continue
+                    start_offsets = _identify_takeoff_start_offsets(
+                        agent_speed_series_mps[seq_id, :seq_len],
+                        stride=export_window_cfg["takeoff"]["stride"],
+                        standstill_speed=export_window_cfg["takeoff"]["standstill_speed"],
+                        target_speed=export_window_cfg["takeoff"]["target_speed"],
+                        horizon_steps=export_window_cfg["takeoff"]["horizon_steps"],
+                    )
+                    if start_offsets:
+                        takeoff_start_offsets[seq_id] = start_offsets
+                        takeoff_sequence_ids.append(seq_id)
+                takeoff_window_manifest = _build_sequence_manifest_from_spans(
+                    sequence_spans,
+                    export_window_cfg["takeoff"]["seq_len"],
+                    export_window_cfg["takeoff"]["stride"],
+                    start_offsets_by_sequence_id=takeoff_start_offsets,
+                )
+                payload["window_metadata"] = base_window_manifest
+                payload["window_sets"] = {
+                    "base_windows": base_window_manifest,
+                    "takeoff_windows": takeoff_window_manifest,
+                }
+                payload["metadata"]["window_count"] = int(base_window_manifest["window_count"])
+                payload["metadata"]["window_seq_len"] = int(base_window_manifest["seq_len"])
+                payload["metadata"]["window_stride"] = int(base_window_manifest["stride"])
+                payload["metadata"]["takeoff_window_count"] = int(takeoff_window_manifest["window_count"])
+                payload["metadata"]["takeoff_window_seq_len"] = int(takeoff_window_manifest["seq_len"])
+                payload["metadata"]["takeoff_window_stride"] = int(takeoff_window_manifest["stride"])
+                payload["metadata"]["takeoff_sequence_ids"] = [int(v) for v in takeoff_sequence_ids]
+            torch.save(payload, shard_path)
+            shard_paths.append(str(shard_path))
+        finally:
+            binding.env_close(env_handle)
+
+    return shard_paths
 
 
 class Drive(pufferlib.PufferEnv):
@@ -455,6 +2565,7 @@ class Drive(pufferlib.PufferEnv):
         init_mode="create_all_valid",
         control_mode="control_vehicles",
         observation_mode="default",
+        extend_classic_action_space=False,
         map_dir="resources/drive/binaries/training",
         scenario_filter=None,
         scenario_filter_threshold_deg=None,
@@ -487,13 +2598,19 @@ class Drive(pufferlib.PufferEnv):
         self.episode_length = episode_length
         self.termination_mode = termination_mode
         self.resample_frequency = resample_frequency
-        self.dynamics_model = dynamics_model
+        action_type = _normalize_action_type(action_type)
+        self.dynamics_model = _normalize_dynamics_model(dynamics_model)
+        init_mode = _normalize_init_mode(init_mode)
+        control_mode = _normalize_control_mode(control_mode)
+        observation_mode = _normalize_observation_mode(observation_mode)
         self.type_classes = binding.POLICY_TYPE_CLASS_COUNT
 
         # Observation space calculation
-        self._base_ego_features = {"classic": binding.EGO_FEATURES_CLASSIC, "articulated": binding.EGO_FEATURES_CLASSIC, "jerk": binding.EGO_FEATURES_JERK}.get(
-            dynamics_model
-        )
+        self._base_ego_features = {
+            "classic": binding.EGO_FEATURES_CLASSIC,
+            "articulated": binding.EGO_FEATURES_CLASSIC,
+            "jerk": binding.EGO_FEATURES_JERK,
+        }.get(self.dynamics_model)
 
         # Extract observation shapes from constants
         # These need to be defined in C, since they determine the shape of the arrays
@@ -512,6 +2629,8 @@ class Drive(pufferlib.PufferEnv):
         self.init_mode_str = init_mode
         self.control_mode_str = control_mode
         self.observation_mode_str = observation_mode
+        self.extend_classic_action_space = _as_bool(extend_classic_action_space)
+        self.map_dir = map_dir
         self.scenario_filter = scenario_filter
         self.scenario_filter_threshold_deg = scenario_filter_threshold_deg
         self.scenario_filter_manifest_path = scenario_filter_manifest_path
@@ -539,7 +2658,9 @@ class Drive(pufferlib.PufferEnv):
         if force_truck_params_from_ref_bin is not None:
             reference_bin = os.path.abspath(force_truck_params_from_ref_bin)
             if not os.path.exists(reference_bin):
-                raise FileNotFoundError(f"Truck reference artifact not found: {reference_bin}")
+                message = f"Truck reference artifact not found: {reference_bin}"
+                _print_mismatch(message)
+                raise FileNotFoundError(message)
             self.non_kinematic_vehicle_params_override = _load_non_kinematic_vehicle_params_from_bin(reference_bin)
 
         if self.control_mode_str == "control_vehicles":
@@ -551,18 +2672,23 @@ class Drive(pufferlib.PufferEnv):
         elif self.control_mode_str == "control_sdc_only":
             self.control_mode = 3
         else:
-            raise ValueError(
-                f"control_mode must be one of 'control_vehicles', 'control_wosac', or 'control_agents'. Got: {self.control_mode_str}"
+            message = (
+                "control_mode must be one of 'control_vehicles', 'control_wosac', or 'control_agents'. "
+                f"Got: {self.control_mode_str}"
             )
+            _print_mismatch(message)
+            raise ValueError(message)
         if self.observation_mode_str == "default":
             self.observation_mode = 0
         elif self.observation_mode_str == "sdc_only_with_trailer":
             self.observation_mode = 1
         else:
-            raise ValueError(
+            message = (
                 "observation_mode must be one of 'default' or 'sdc_only_with_trailer'. "
                 f"Got: {self.observation_mode_str}"
             )
+            _print_mismatch(message)
+            raise ValueError(message)
         if self.observation_mode == 0:
             self.ego_features = self._base_ego_features
             self.partner_features = self._base_partner_features
@@ -580,25 +2706,32 @@ class Drive(pufferlib.PufferEnv):
         elif self.init_mode_str == "create_only_controlled":
             self.init_mode = 1
         else:
-            raise ValueError(
+            message = (
                 f"init_mode must be one of 'create_all_valid' or 'create_only_controlled'. Got: {self.init_mode_str}"
             )
+            _print_mismatch(message)
+            raise ValueError(message)
 
         if action_type == "discrete":
-            if dynamics_model in ("classic", "articulated"):
+            if self.dynamics_model in ("classic", "articulated"):
                 # Joint action space (assume dependence)
-                self.single_action_space = gymnasium.spaces.MultiDiscrete([7 * 13])
+                action_count = _CLASSIC_DISCRETE_ACTIONS if self.extend_classic_action_space else (7 * 13)
+                self.single_action_space = gymnasium.spaces.MultiDiscrete([action_count])
                 # Multi discrete (assume independence)
                 # self.single_action_space = gymnasium.spaces.MultiDiscrete([7, 13])
-            elif dynamics_model == "jerk":
+            elif self.dynamics_model == "jerk":
                 # Joint action space (assume dependence) - 4 longitudinal × 3 lateral = 12
                 self.single_action_space = gymnasium.spaces.MultiDiscrete([4 * 3])
             else:
-                raise ValueError(f"dynamics_model must be 'classic', 'articulated' or 'jerk'. Got: {dynamics_model}")
+                message = f"dynamics_model must be 'classic', 'articulated' or 'jerk'. Got: {self.dynamics_model}"
+                _print_mismatch(message)
+                raise ValueError(message)
         elif action_type == "continuous":
             self.single_action_space = gymnasium.spaces.Box(low=-1, high=1, shape=(2,), dtype=np.float32)
         else:
-            raise ValueError(f"action_space must be 'discrete' or 'continuous'. Got: {action_type}")
+            message = f"action_space must be 'discrete' or 'continuous'. Got: {action_type}"
+            _print_mismatch(message)
+            raise ValueError(message)
 
         self._action_type_flag = 0 if action_type == "discrete" else 1
 
@@ -727,6 +2860,7 @@ class Drive(pufferlib.PufferEnv):
                 seed,
                 action_type=self._action_type_flag,
                 human_agent_idx=self.human_agent_idx,
+                observation_mode=self.observation_mode,
                 reward_vehicle_collision=self.reward_vehicle_collision,
                 reward_offroad_collision=self.reward_offroad_collision,
                 reward_goal=self.reward_goal,
@@ -751,8 +2885,36 @@ class Drive(pufferlib.PufferEnv):
                 init_mode=self.init_mode,
                 control_mode=self.control_mode,
                 map_dir=self.map_dir,
+                extend_classic_action_space=int(self.extend_classic_action_space),
                 non_kinematic_vehicle_params_override=self.non_kinematic_vehicle_params_override,
                 force_zero_trailer_articulation_at_init=int(self.force_zero_trailer_articulation_at_init),
+            )
+            _compare_c_python_env_config(
+                env_id,
+                _expected_c_env_config(
+                    action_type="discrete" if self._action_type_flag == 0 else "continuous",
+                    dynamics_model=self.dynamics_model,
+                    observation_mode=self.observation_mode_str,
+                    extend_classic_action_space=self.extend_classic_action_space,
+                    reward_vehicle_collision=self.reward_vehicle_collision,
+                    reward_offroad_collision=self.reward_offroad_collision,
+                    reward_goal=self.reward_goal,
+                    reward_goal_post_respawn=self.reward_goal_post_respawn,
+                    goal_radius=self.goal_radius,
+                    goal_speed=self.goal_speed,
+                    goal_behavior=self.goal_behavior,
+                    goal_target_distance=self.goal_target_distance,
+                    collision_behavior=self.collision_behavior,
+                    offroad_behavior=self.offroad_behavior,
+                    dt=self.dt,
+                    episode_length=self.episode_length,
+                    termination_mode=self.termination_mode,
+                    init_steps=self.init_steps,
+                    init_mode=self.init_mode_str,
+                    control_mode=self.control_mode_str,
+                    max_controlled_agents=self.max_controlled_agents,
+                ),
+                f"Drive._build_vector_env env_index={i} map_id={entry.dataset_id}",
             )
             env_ids.append(env_id)
         return binding.vectorize(*env_ids)
@@ -885,17 +3047,32 @@ class Drive(pufferlib.PufferEnv):
     def _postprocess_observations(self):
         if getattr(self, "observation_mode", 0) != 1:
             return
-        self.observations[:] = postprocess_sdc_only_with_trailer_observations(
-            sim_observations=self._sim_observations,
-            ego_types=self.get_global_agent_types(),
-            partner_types=self.get_partner_types(),
-            ego_trailer_features=self.get_ego_trailer_obs_features(),
-            base_ego_features=self._base_ego_features,
-            base_partner_features=self._base_partner_features,
-            max_partner_objects=self.max_partner_objects,
-            max_road_objects=self.max_road_objects,
-            road_features=self.road_features,
-            type_classes=self.type_classes,
+
+        base_ego = self._base_ego_features
+        base_partner = self._base_partner_features
+        partner_count = self.max_partner_objects
+
+        aug_ego = self.ego_features
+        aug_partner = self.partner_features
+
+        policy_type_max = self.type_classes - 1
+        ego_types = np.clip(self.get_global_agent_types(), _POLICY_TYPE_PADDED, policy_type_max).astype(np.float32)
+        partner_types = np.clip(self.get_partner_types(), _POLICY_TYPE_PADDED, policy_type_max).astype(np.float32)
+        ego_trailer_features = self.get_ego_trailer_obs_features()
+        _postprocess_policy_observations(
+            self.observations,
+            self._sim_observations,
+            base_ego,
+            base_partner,
+            partner_count,
+            aug_ego,
+            aug_partner,
+            self.max_road_objects,
+            self.road_features,
+            self.type_classes,
+            ego_types,
+            partner_types,
+            ego_trailer_features,
         )
 
     def get_ground_truth_trajectories(self):
@@ -1353,22 +3530,66 @@ def test_performance(timeout=10, atn_cache=1024, num_agents=1024):
 
 if __name__ == "__main__":
     import argparse
-    
-    parser = argparse.ArgumentParser(description="Convert JSON map files to binary format")
-    parser.add_argument("--input-folder", type=str, default="data/processed/training",
-                        help="Path to folder containing JSON map files")
-    parser.add_argument("--output-folder", type=str, default=None,
-                        help="Path to save binary files (default: resources/drive/binaries/{dataset_name})")
-    parser.add_argument("--max-maps", type=int, default=50_000,
-                        help="Maximum number of maps to process")
-    parser.add_argument("--num-workers", type=int, default=None,
-                        help="Number of parallel workers (default: all CPU cores)")
-    
-    args = parser.parse_args()
-    
-    process_all_maps(
-        data_folder=args.input_folder,
-        output_folder=args.output_folder,
-        max_maps=args.max_maps,
-        num_workers=args.num_workers
+
+    parser = argparse.ArgumentParser(description="Convert Drive data, build offline BC datasets, or train BC policies")
+    parser.add_argument(
+        "--mode",
+        choices=["convert", "build-bc", "train-bc"],
+        default="convert",
+        help="Whether to convert JSON maps, build offline BC dataset shards, or train a BC policy",
     )
+    parser.add_argument(
+        "--input-folder", type=str, default="data/processed/training", help="Path to folder containing JSON map files"
+    )
+    parser.add_argument(
+        "--output-folder",
+        type=str,
+        default=None,
+        help="Path to save binary files or BC shards (defaults depend on mode)",
+    )
+    parser.add_argument("--max-maps", type=int, default=50_000, help="Maximum number of maps to process")
+    parser.add_argument(
+        "--num-workers", type=int, default=None, help="Number of parallel workers for JSON conversion"
+    )
+    parser.add_argument(
+        "--config-path",
+        type=str,
+        default=None,
+        help="Optional path to the drive config file used by the offline BC dataset builder",
+    )
+    parser.add_argument("--wandb", action="store_true", help="Use wandb for BC training logging")
+    parser.add_argument("--wandb-project", type=str, default="pufferlib", help="wandb project name")
+    parser.add_argument("--wandb-group", type=str, default="debug", help="wandb group name")
+    parser.add_argument("--wandb-name", type=str, default=None, help="Optional wandb run name")
+    parser.add_argument("--tag", type=str, default=None, help="Optional run tag")
+    parser.add_argument("--neptune", action="store_true", help="Use neptune for BC training logging")
+    parser.add_argument("--neptune-name", type=str, default="pufferai", help="Neptune account/workspace name")
+    parser.add_argument("--neptune-project", type=str, default="ablations", help="Neptune project name")
+
+    args = parser.parse_args()
+
+    if args.mode == "build-bc":
+        config = load_drive_builder_config(args.config_path)
+        config.setdefault("bc", {})
+        config["bc"]["max_maps"] = args.max_maps
+        build_bc_dataset(config, output_dir=args.output_folder)
+    elif args.mode == "train-bc":
+        config = load_drive_builder_config(args.config_path)
+        config.setdefault("bc_train", {})
+        config["bc_train"]["max_shards"] = args.max_maps
+        config["wandb"] = args.wandb
+        config["wandb_project"] = args.wandb_project
+        config["wandb_group"] = args.wandb_group
+        config["wandb_name"] = args.wandb_name
+        config["tag"] = args.tag
+        config["neptune"] = args.neptune
+        config["neptune_name"] = args.neptune_name
+        config["neptune_project"] = args.neptune_project
+        train_bc_policy(config, output_dir=args.output_folder)
+    else:
+        process_all_maps(
+            data_folder=args.input_folder,
+            output_folder=args.output_folder,
+            max_maps=args.max_maps,
+            num_workers=args.num_workers,
+        )

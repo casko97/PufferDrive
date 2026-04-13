@@ -242,6 +242,7 @@ int eval_gif(const char *map_name, const char *policy_name, const char *config_i
         .action_type = conf.action_type,
         .dynamics_model = conf.dynamics_model,
         .observation_mode = observation_mode,
+        .extend_classic_action_space = conf.extend_classic_action_space,
         .reward_vehicle_collision = conf.reward_vehicle_collision,
         .reward_offroad_collision = conf.reward_offroad_collision,
         .reward_goal = conf.reward_goal,
@@ -326,7 +327,7 @@ int eval_gif(const char *map_name, const char *policy_name, const char *config_i
     Weights *weights = load_weights(policy_name);
     printf("Active agents in map: %d\n", env.active_agent_count);
     DriveNet *net = init_drivenet(weights, env.active_agent_count, env.dynamics_model, env.action_type,
-                                  env.observation_mode);
+                                  env.observation_mode, env.extend_classic_action_space);
 
     int frame_count = env.episode_length > 0 ? env.episode_length : TRAJECTORY_LENGTH_DEFAULT;
     char filename_topdown[256];
