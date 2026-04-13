@@ -1,0 +1,24 @@
+{
+  "aggregate_metrics_mean_over_maps": {
+    "collision_rate": 0.1,
+    "collisions_per_agent": 1.63,
+    "completion_rate": 0.94,
+    "dnf_rate": 0.01,
+    "episode_length": 90.0,
+    "episode_return": -0.6481050911545754,
+    "goals_reached_this_episode": 0.94,
+    "goals_sampled_this_episode": 1.0,
+    "lane_alignment_rate": 0.89,
+    "n": 1.0,
+    "offroad_per_agent": 1.58,
+    "offroad_rate": 0.03,
+    "score": 0.88,
+    "speed_at_goal": 16.05576483488083
+  },
+  "checkpoint": "/home/casko/phd-code/PufferDrive/pufferlib/resources/drive/models/aug-car-baseline-full-boston-split/puffer_drive_vjy06o6x.pt",
+  "config": "/home/casko/phd-code/PufferDrive/pufferlib/resources/drive/models/aug-car-baseline-full-boston-split/car eval boston validation/conf1_discrete_human_replay_eval.ini",
+  "map_dir": "/home/casko/phd-code/PufferDrive/datasets/nuplanCarBostonAll_validation",
+  "mode": "human_replay_eval",
+  "num_maps_evaluated": 100,
+  "num_maps_skipped": 0
+}
