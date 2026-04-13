@@ -1,0 +1,24 @@
+{
+  "aggregate_metrics_mean_over_maps": {
+    "collision_rate": 0.2,
+    "collisions_per_agent": 11.646153846153846,
+    "completion_rate": 0.27692307692307694,
+    "dnf_rate": 0.16923076923076924,
+    "episode_length": 90.0,
+    "episode_return": -13.704492334247782,
+    "goals_reached_this_episode": 0.27692307692307694,
+    "goals_sampled_this_episode": 1.0,
+    "lane_alignment_rate": 0.6923076923076923,
+    "n": 1.0,
+    "offroad_per_agent": 16.276923076923076,
+    "offroad_rate": 0.35384615384615387,
+    "score": 0.27692307692307694,
+    "speed_at_goal": 1.956777959324133
+  },
+  "checkpoint": "/home/casko/phd-code/PufferDrive/pufferlib/resources/drive/models/bc-streaming-full-default-20260317-134400/puffer_drive_bc_streaming_full_default_20260317_134400.pt",
+  "config": "/home/casko/phd-code/PufferDrive/pufferlib/resources/drive/models/bc-streaming-full-default-20260317-134400/car eval 2/conf1_discrete_human_replay_eval.ini",
+  "map_dir": "/home/casko/phd-code/PufferDrive/pufferlib/resources/drive/binaries/validation",
+  "mode": "human_replay_eval",
+  "num_maps_evaluated": 65,
+  "num_maps_skipped": 35
+}
