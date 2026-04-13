@@ -127,7 +127,9 @@ static const float JERK_LONG[4] = {-15.0f, -4.0f, 0.0f, 4.0f};
 static const float JERK_LAT[3] = {-4.0f, 0.0f, 4.0f};
 
 // Classic action space (for CLASSIC dynamics model)
-static const float ACCELERATION_VALUES[7] = {-4.0000f, -2.6670f, -1.3330f, -0.0000f, 1.3330f, 2.6670f, 4.0000f};
+static const float ACCELERATION_VALUES_LEGACY[7] = {-4.0000f, -2.6670f, -1.3330f, -0.0000f, 1.3330f, 2.6670f, 4.0000f};
+static const float ACCELERATION_VALUES_EXTENDED[9] = {-6.0000f, -4.0000f, -2.0000f, -1.0000f, -0.0000f,
+                                                      1.0000f,  2.0000f,  4.0000f,  6.0000f};
 static const float STEERING_VALUES[13] = {-1.000f, -0.833f, -0.667f, -0.500f, -0.333f, -0.167f, 0.000f,
                                           0.167f,  0.333f,  0.500f,  0.667f,  0.833f,  1.000f};
 
@@ -364,7 +366,21 @@ struct Drive {
     int init_mode;
     int control_mode;
     int observation_mode;
+    int extend_classic_action_space;
 };
+
+static inline int classic_acceleration_count(const Drive *env) {
+    return env->extend_classic_action_space ? (int)(sizeof(ACCELERATION_VALUES_EXTENDED) / sizeof(float))
+                                            : (int)(sizeof(ACCELERATION_VALUES_LEGACY) / sizeof(float));
+}
+
+static inline const float *classic_acceleration_values(const Drive *env) {
+    return env->extend_classic_action_space ? ACCELERATION_VALUES_EXTENDED : ACCELERATION_VALUES_LEGACY;
+}
+
+static inline int classic_joint_action_count(const Drive *env) {
+    return classic_acceleration_count(env) * (int)(sizeof(STEERING_VALUES) / sizeof(float));
+}
 
 Entity *load_map_binary(const char *filename, Drive *env);
 
@@ -2290,6 +2306,8 @@ void move_dynamics(Drive *env, int action_idx, int agent_idx) {
 
     if (env->dynamics_model == CLASSIC || use_articulated_ego || env->dynamics_model == ARTICULATED) {
         // Classic dynamics model
+        const float *acceleration_values = classic_acceleration_values(env);
+        int acceleration_count = classic_acceleration_count(env);
         float acceleration = 0.0f;
         float steering = 0.0f;
 
@@ -2298,7 +2316,7 @@ void move_dynamics(Drive *env, int action_idx, int agent_idx) {
             acceleration = action_array_f[action_idx][0];
             steering = action_array_f[action_idx][1];
 
-            acceleration *= ACCELERATION_VALUES[6];
+            acceleration *= acceleration_values[acceleration_count - 1];
             steering *= STEERING_VALUES[12];
         } else { // discrete
             // Interpret action as a single integer: a = accel_idx * num_steer + steer_idx
@@ -2307,7 +2325,7 @@ void move_dynamics(Drive *env, int action_idx, int agent_idx) {
             int action_val = action_array[action_idx];
             int acceleration_index = action_val / num_steer;
             int steering_index = action_val % num_steer;
-            acceleration = ACCELERATION_VALUES[acceleration_index];
+            acceleration = acceleration_values[acceleration_index];
             steering = STEERING_VALUES[steering_index];
         }
 
@@ -2783,20 +2801,6 @@ static inline BCState bc_state_from_entity(const Entity *entity) {
     return state;
 }
 
-static inline const float *classic_acceleration_values(const Drive *env) {
-    (void)env;
-    return ACCELERATION_VALUES;
-}
-
-static inline int classic_acceleration_count(const Drive *env) {
-    (void)env;
-    return (int)(sizeof(ACCELERATION_VALUES) / sizeof(ACCELERATION_VALUES[0]));
-}
-
-static inline int classic_joint_action_count(const Drive *env) {
-    return classic_acceleration_count(env) * (int)(sizeof(STEERING_VALUES) / sizeof(STEERING_VALUES[0]));
-}
-
 static inline void bc_simulate_discrete_classic(const Drive *env, const BCState *src, int action_val, BCState *dst) {
     *dst = *src;
     if (dst->removed) {
@@ -2842,7 +2846,8 @@ static inline float bc_signed_speed(const BCState *state) {
 }
 
 static inline int bc_reached_goal(const Drive *env, const Entity *agent, const BCState *state) {
-    float distance_to_goal = relative_distance_2d(state->x, state->y, agent->goal_position_x, agent->goal_position_y);
+    float distance_to_goal =
+        relative_distance_2d(state->x, state->y, agent->goal_position_x, agent->goal_position_y);
     float current_speed = sqrtf(state->vx * state->vx + state->vy * state->vy);
     return (distance_to_goal < env->goal_radius) && (current_speed <= env->goal_speed);
 }
@@ -2998,6 +3003,7 @@ static inline float bc_compute_reference_control_cost(const Drive *env, const BC
         }
         float d_steer = action_steer - ref_steer;
         cost += w_ref_steer * d_steer * d_steer;
+        // For nearly straight GT segments, strongly prefer near-zero steering to suppress left/right chatter.
         if (gt_step_norm > 1e-3f && fabsf(d_heading) < 0.02f && fabsf(ref_steer) < 0.08f) {
             cost += (4.0f * w_ref_steer) * action_steer * action_steer;
         }
@@ -3191,7 +3197,7 @@ int c_fit_discrete_action_sequence(Drive *env, int agent_slot, int beam_width, i
             if (nodes[(step + 1) * max_beam + i].valid && nodes[(step + 1) * max_beam + i].terminal) {
                 final_step_count = step + 1;
                 final_best_idx = i;
-                step = num_steps;
+                step = num_steps; // break outer loop
                 break;
             }
         }
@@ -4499,9 +4505,10 @@ void c_render(Drive *env) {
 
         if (env->dynamics_model == CLASSIC || env->dynamics_model == ARTICULATED) {
             int num_steer = 13;
+            const float *acceleration_values = classic_acceleration_values(env);
             int accel_idx = action_val / num_steer;
             int steer_idx = action_val % num_steer;
-            float accel_value = ACCELERATION_VALUES[accel_idx];
+            float accel_value = acceleration_values[accel_idx];
             float steer_value = STEERING_VALUES[steer_idx];
 
             DrawText(TextFormat("Acceleration: %.2f m/s^2", accel_value), 10, 110, 20, action_color);

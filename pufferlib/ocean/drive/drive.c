@@ -20,7 +20,7 @@ void test_drivenet() {
 
     // Weights* weights = load_weights("resources/drive/puffer_drive_weights.bin");
     Weights *weights = load_weights("puffer_drive_weights.bin");
-    DriveNet *net = init_drivenet(weights, num_agents, CLASSIC, 0, 0);
+    DriveNet *net = init_drivenet(weights, num_agents, CLASSIC, 0, 0, 1);
 
     forward(net, observations, actions);
     for (int i = 0; i < num_agents * num_actions; i++) {
@@ -59,6 +59,7 @@ int demo(const char *map_name, const char *policy_name, int show_grid, int obs_o
         .action_type = conf.action_type,
         .dynamics_model = conf.dynamics_model,
         .observation_mode = conf.observation_mode,
+        .extend_classic_action_space = conf.extend_classic_action_space,
         .reward_vehicle_collision = conf.reward_vehicle_collision,
         .reward_offroad_collision = conf.reward_offroad_collision,
         .reward_goal = conf.reward_goal,
@@ -88,7 +89,7 @@ int demo(const char *map_name, const char *policy_name, int show_grid, int obs_o
     c_render(&env);
     Weights *weights = load_weights((char *)policy_name);
     DriveNet *net = init_drivenet(weights, env.active_agent_count, env.dynamics_model, env.action_type,
-                                  env.observation_mode);
+                                  env.observation_mode, env.extend_classic_action_space);
 
     int accel_delta = 2;
     int steer_delta = 4;
@@ -100,13 +101,13 @@ int demo(const char *map_name, const char *policy_name, int show_grid, int obs_o
         if (IsKeyDown(KEY_LEFT_SHIFT)) {
             if (env.dynamics_model == CLASSIC || env.dynamics_model == ARTICULATED) {
                 // Classic dynamics: acceleration and steering
-                int accel_idx = 3; // neutral (0 m/s²)
+                int accel_idx = classic_acceleration_count(&env) / 2; // neutral (0 m/s²)
                 int steer_idx = 6; // neutral (0.0 steering)
 
                 if (IsKeyDown(KEY_UP) || IsKeyDown(KEY_W)) {
                     accel_idx += accel_delta;
-                    if (accel_idx > 6)
-                        accel_idx = 6;
+                    if (accel_idx > classic_acceleration_count(&env) - 1)
+                        accel_idx = classic_acceleration_count(&env) - 1;
                 }
                 if (IsKeyDown(KEY_DOWN) || IsKeyDown(KEY_S)) {
                     accel_idx -= accel_delta;

@@ -11,6 +11,7 @@ typedef struct {
     int action_type;
     int dynamics_model;
     int observation_mode;
+    int extend_classic_action_space;
     float reward_vehicle_collision;
     float reward_offroad_collision;
     float reward_goal;
@@ -68,6 +69,13 @@ static int handler(void *config, const char *section, const char *name, const ch
         } else {
             printf("Warning: Unknown observation_mode value '%s', defaulting to default\n", value);
             env_config->observation_mode = 0;
+        }
+    } else if (MATCH("env", "extend_classic_action_space")) {
+        if (strcmp(value, "\"True\"") == 0 || strcmp(value, "True") == 0 || strcmp(value, "\"true\"") == 0 ||
+            strcmp(value, "true") == 0 || strcmp(value, "1") == 0) {
+            env_config->extend_classic_action_space = 1;
+        } else {
+            env_config->extend_classic_action_space = 0;
         }
     } else if (MATCH("env", "goal_behavior")) {
         env_config->goal_behavior = atoi(value);
