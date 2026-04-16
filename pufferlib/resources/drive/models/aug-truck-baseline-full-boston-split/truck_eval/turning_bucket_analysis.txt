@@ -1,0 +1,39 @@
+Model: /home/casko/phd-code/PufferDrive/pufferlib/resources/drive/models/aug-truck-baseline-full-boston-split
+Turning threshold: 45.0 deg
+
+Sample set 591b862db7e27d2e
+runs: truck_eval
+shared sample: sample_size=100 straight=84 turning=16
+
+== truck_eval ==
+completed_rows: 78
+straight (n=66)
+  score: 0.787879
+  completion_rate: 0.893939
+  collisions_per_agent: 3.121212
+  offroad_per_agent: 1.681818
+  episode_return: -1.504682
+  goals_reached_this_episode: 0.893939
+  goals_sampled_this_episode: 1.000000
+  speed_at_goal: 16.896571
+  collision_rate: 0.212121
+  offroad_rate: 0.060606
+  dnf_rate: 0.000000
+  lane_alignment_rate: 0.939394
+  episode_length: 90.000000
+  n: 1.000000
+turning (n=12)
+  score: 0.333333
+  completion_rate: 0.333333
+  collisions_per_agent: 0.833333
+  offroad_per_agent: 2.333333
+  episode_return: -1.288775
+  goals_reached_this_episode: 0.333333
+  goals_sampled_this_episode: 1.000000
+  speed_at_goal: 6.545450
+  collision_rate: 0.166667
+  offroad_rate: 0.083333
+  dnf_rate: 0.500000
+  lane_alignment_rate: 0.750000
+  episode_length: 90.000000
+  n: 1.000000
