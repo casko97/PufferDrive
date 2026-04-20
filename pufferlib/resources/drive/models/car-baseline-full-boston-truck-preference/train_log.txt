@@ -1,0 +1,77 @@
+/home/casko/phd-code/PufferDrive/pufferlib/pufferl.py:1494: FutureWarning: You are using `torch.load` with `weights_only=False` (the current default value), which uses the default pickle module implicitly. It is possible to construct malicious pickle data which will execute arbitrary code during unpickling (See https://github.com/pytorch/pytorch/blob/main/SECURITY.md#untrusted-models for more details). In a future release, the default value for `weights_only` will be flipped to `True`. This limits the functions that could be executed during unpickling. Arbitrary objects will no longer be allowed to be loaded via this mode unless they are explicitly allowlisted by the user via `torch.serialization.add_safe_globals`. We recommend you start setting `weights_only=True` for any use case where you don't have full control of the loaded file. Please open an issue on GitHub for any issues related to this experimental feature.
+  state_dict = torch.load(load_path, map_location=device)
+wandb: [wandb.login()] Loaded credentials for https://api.wandb.ai from WANDB_API_KEY.
+wandb: Currently logged in as: casko (casko_kth) to https://api.wandb.ai. Use `wandb login --relogin` to force relogin
+wandb: setting up run qleoqc81
+wandb: Tracking run with wandb version 0.24.2
+wandb: Run data is saved locally in /home/casko/phd-code/PufferDrive/wandb/run-20260416_220736-qleoqc81
+wandb: Run `wandb offline` to turn off syncing.
+wandb: Syncing run eternal-star-10
+wandb: ⭐️ View project at https://wandb.ai/casko_kth/pufferdrive_preferences
+wandb: 🚀 View run at https://wandb.ai/casko_kth/pufferdrive_preferences/runs/qleoqc81
+Traceback (most recent call last):
+  File "/home/casko/phd-code/PufferDrive/pufferdrive.venv/bin/puffer", line 10, in <module>
+    sys.exit(main())
+             ^^^^^^
+  File "/home/casko/phd-code/PufferDrive/pufferlib/pufferl.py", line 1600, in main
+    train(env_name=env_name)
+  File "/home/casko/phd-code/PufferDrive/pufferlib/pufferl.py", line 1041, in train
+    pufferl = PuffeRL(train_config, vecenv, policy, logger)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/casko/phd-code/PufferDrive/pufferlib/pufferl.py", line 224, in __init__
+    self.preference_reward = PreferenceRewardManager.from_config(
+                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/casko/phd-code/PufferDrive/pufferlib/preference_reward.py", line 202, in from_config
+    from preferences import reward_model as reward_model_module
+ModuleNotFoundError: No module named 'preferences'
+╭───────────────────── Traceback (most recent call last) ──────────────────────╮
+│ /home/casko/phd-code/PufferDrive/pufferdrive.venv/bin/puffer:10 in <module>  │
+│                                                                              │
+│    7 │   │   sys.argv[0] = sys.argv[0][:-11]                                 │
+│    8 │   elif sys.argv[0].endswith(".exe"):                                  │
+│    9 │   │   sys.argv[0] = sys.argv[0][:-4]                                  │
+│ ❱ 10 │   sys.exit(main())                                                    │
+│   11                                                                         │
+│                                                                              │
+│ /home/casko/phd-code/PufferDrive/pufferlib/pufferl.py:1600 in main           │
+│                                                                              │
+│   1597 │   mode = sys.argv.pop(1)                                            │
+│   1598 │   env_name = sys.argv.pop(1)                                        │
+│   1599 │   if mode == "train":                                               │
+│ ❱ 1600 │   │   train(env_name=env_name)                                      │
+│   1601 │   elif mode == "eval":                                              │
+│   1602 │   │   eval(env_name=env_name)                                       │
+│   1603 │   elif mode == "sweep":                                             │
+│                                                                              │
+│ /home/casko/phd-code/PufferDrive/pufferlib/pufferl.py:1041 in train          │
+│                                                                              │
+│   1038 │   │   env_config=args.get("env", {}),                               │
+│   1039 │   │   preference_reward=args.get("preference_reward", {}),          │
+│   1040 │   )                                                                 │
+│ ❱ 1041 │   pufferl = PuffeRL(train_config, vecenv, policy, logger)           │
+│   1042 │                                                                     │
+│   1043 │   all_logs = []                                                     │
+│   1044 │   while pufferl.global_step < train_config["total_timesteps"]:      │
+│                                                                              │
+│ /home/casko/phd-code/PufferDrive/pufferlib/pufferl.py:224 in __init__        │
+│                                                                              │
+│    221 │   │   self.stats = defaultdict(list)                                │
+│    222 │   │   self.last_stats = defaultdict(list)                           │
+│    223 │   │   self.losses = {}                                              │
+│ ❱  224 │   │   self.preference_reward = PreferenceRewardManager.from_config( │
+│    225 │   │   │   config.get("preference_reward"),                          │
+│    226 │   │   │   env_config=config.get("env_config", {}),                  │
+│    227 │   │   │   observation_space=vecenv.single_observation_space,        │
+│                                                                              │
+│ /home/casko/phd-code/PufferDrive/pufferlib/preference_reward.py:202 in       │
+│ from_config                                                                  │
+│                                                                              │
+│   199 │   │   │   strict_observation_match=bool(cfg.get("strict_observation_ │
+│   200 │   │   )                                                              │
+│   201 │   │                                                                  │
+│ ❱ 202 │   │   from preferences import reward_model as reward_model_module    │
+│   203 │   │                                                                  │
+│   204 │   │   reward_model_module.device = _device_string(device)            │
+│   205 │   │   reward_model = reward_model_module.RewardModel(                │
+╰──────────────────────────────────────────────────────────────────────────────╯
+ModuleNotFoundError: No module named 'preferences'

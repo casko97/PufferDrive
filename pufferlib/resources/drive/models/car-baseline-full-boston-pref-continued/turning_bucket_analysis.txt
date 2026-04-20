@@ -1,0 +1,39 @@
+Model: /home/casko/phd-code/PufferDrive/pufferlib/resources/drive/models/car-baseline-full-boston-pref-continued
+Turning threshold: 45.0 deg
+
+Sample set 591b862db7e27d2e
+runs: truck eval
+shared sample: sample_size=100 straight=84 turning=16
+
+== truck eval ==
+completed_rows: 78
+straight (n=66)
+  score: 0.696970
+  completion_rate: 0.772727
+  collisions_per_agent: 4.409091
+  offroad_per_agent: 5.166667
+  episode_return: -4.007406
+  goals_reached_this_episode: 0.772727
+  goals_sampled_this_episode: 1.000000
+  speed_at_goal: 12.702045
+  collision_rate: 0.257576
+  offroad_rate: 0.151515
+  dnf_rate: 0.015152
+  lane_alignment_rate: 0.848485
+  episode_length: 90.000000
+  n: 1.000000
+turning (n=12)
+  score: 0.166667
+  completion_rate: 0.166667
+  collisions_per_agent: 0.000000
+  offroad_per_agent: 12.666667
+  episode_return: -6.199054
+  goals_reached_this_episode: 0.166667
+  goals_sampled_this_episode: 1.000000
+  speed_at_goal: 3.215947
+  collision_rate: 0.000000
+  offroad_rate: 0.333333
+  dnf_rate: 0.500000
+  lane_alignment_rate: 0.833333
+  episode_length: 90.000000
+  n: 1.000000

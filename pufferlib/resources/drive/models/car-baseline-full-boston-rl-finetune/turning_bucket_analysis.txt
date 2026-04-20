@@ -1,0 +1,39 @@
+Model: /home/casko/phd-code/PufferDrive/pufferlib/resources/drive/models/car-baseline-full-boston-rl-finetune
+Turning threshold: 45.0 deg
+
+Sample set 591b862db7e27d2e
+runs: truck eval
+shared sample: sample_size=100 straight=84 turning=16
+
+== truck eval ==
+completed_rows: 78
+straight (n=66)
+  score: 0.712121
+  completion_rate: 0.803030
+  collisions_per_agent: 2.818182
+  offroad_per_agent: 4.287879
+  episode_return: -2.734689
+  goals_reached_this_episode: 0.803030
+  goals_sampled_this_episode: 1.000000
+  speed_at_goal: 13.161311
+  collision_rate: 0.227273
+  offroad_rate: 0.121212
+  dnf_rate: 0.015152
+  lane_alignment_rate: 0.893939
+  episode_length: 90.000000
+  n: 1.000000
+turning (n=12)
+  score: 0.083333
+  completion_rate: 0.083333
+  collisions_per_agent: 0.000000
+  offroad_per_agent: 0.083333
+  episode_return: 0.001077
+  goals_reached_this_episode: 0.083333
+  goals_sampled_this_episode: 1.000000
+  speed_at_goal: 1.824899
+  collision_rate: 0.000000
+  offroad_rate: 0.083333
+  dnf_rate: 0.833333
+  lane_alignment_rate: 0.833333
+  episode_length: 90.000000
+  n: 1.000000
