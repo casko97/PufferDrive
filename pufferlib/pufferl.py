@@ -69,9 +69,9 @@ class PuffeRL:
 
         # Reproducibility
         seed = config["seed"]
-        # random.seed(seed)
-        # np.random.seed(seed)
-        # torch.manual_seed(seed)
+        random.seed(seed)
+        np.random.seed(seed)
+        torch.manual_seed(seed)
 
         # Vecenv info
         vecenv.async_reset(seed)
@@ -1508,7 +1508,6 @@ def load_config(env_name, config_dir=None):
         formatter_class=RichHelpFormatter,
         add_help=False,
     )
-    parser.add_argument("--load-model-path", type=str, default=None, help="Path to a pretrained checkpoint")
     parser.add_argument(
         "--load-id", type=str, default=None, help="Kickstart/eval from from a finished Wandb/Neptune run"
     )
