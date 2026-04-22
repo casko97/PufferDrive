@@ -1,0 +1,9 @@
+{
+  "checkpoint": "/home/casko/phd-code/PufferDrive/experiments/puffer_drive_i1qv8g6g/model_puffer_drive_028200.pt",
+  "completed_maps": 78,
+  "config": "/home/casko/phd-code/PufferDrive/pufferlib/resources/drive/models/car-baseline-full-boston-rl-finetune-256ag-epochs2-lr001/truck eval intermediate/eval_conf.ini",
+  "processed_maps": 100,
+  "skipped_maps": 22,
+  "status": "completed",
+  "total_maps": 100
+}
