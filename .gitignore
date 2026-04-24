@@ -195,3 +195,4 @@ docs/book/*
 !docs/book/assets/
 pufferlib/resources/drive/models/car-baseline-full-boston-rl-finetune/train_log.txt
 pufferlib/resources/drive/models/car-baseline-full-boston-pref-continued/train_log.txt
+pufferlib/resources/drive/models/**/train_log*.txt
