@@ -1,0 +1,24 @@
+{
+  "aggregate_metrics_mean_over_maps": {
+    "collision_rate": 0.19230769230769232,
+    "collisions_per_agent": 2.3461538461538463,
+    "completion_rate": 0.7692307692307693,
+    "dnf_rate": 0.05128205128205128,
+    "episode_length": 90.0,
+    "episode_return": -2.913533387084802,
+    "goals_reached_this_episode": 0.7692307692307693,
+    "goals_sampled_this_episode": 1.0,
+    "lane_alignment_rate": 0.9615384615384616,
+    "n": 1.0,
+    "offroad_per_agent": 5.0,
+    "offroad_rate": 0.10256410256410256,
+    "score": 0.6923076923076923,
+    "speed_at_goal": 14.046162324073988
+  },
+  "checkpoint": "/home/casko/phd-code/PufferDrive/pufferlib/resources/drive/models/car-baseline-full-boston-rl-finetune-256ag-epochs2-lr001/puffer_drive_i1qv8g6g.pt",
+  "config": "/home/casko/phd-code/PufferDrive/pufferlib/resources/drive/models/car-baseline-full-boston-rl-finetune-256ag-epochs2-lr001/eval_conf_final.ini",
+  "map_dir": "/home/casko/phd-code/pufferdrive-kth/datasets/nuplanCarBostonAll_validation",
+  "mode": "human_replay_eval",
+  "num_maps_evaluated": 78,
+  "num_maps_skipped": 22
+}

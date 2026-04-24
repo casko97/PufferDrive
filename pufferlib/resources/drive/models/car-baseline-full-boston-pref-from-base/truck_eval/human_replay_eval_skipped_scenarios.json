@@ -1,0 +1,140 @@
+[
+  {
+    "error": "No valid maps available for the current initialization settings",
+    "error_type": "ValueError",
+    "map_name": "map_10930.bin",
+    "map_path": "/home/casko/phd-code/pufferdrive-kth/datasets/nuplanCarBostonAll/map_10930.bin"
+  },
+  {
+    "error": "No valid maps available for the current initialization settings",
+    "error_type": "ValueError",
+    "map_name": "map_11329.bin",
+    "map_path": "/home/casko/phd-code/pufferdrive-kth/datasets/nuplanCarBostonAll/map_11329.bin"
+  },
+  {
+    "error": "No valid maps available for the current initialization settings",
+    "error_type": "ValueError",
+    "map_name": "map_12749.bin",
+    "map_path": "/home/casko/phd-code/pufferdrive-kth/datasets/nuplanCarBostonAll/map_12749.bin"
+  },
+  {
+    "error": "No valid maps available for the current initialization settings",
+    "error_type": "ValueError",
+    "map_name": "map_14180.bin",
+    "map_path": "/home/casko/phd-code/pufferdrive-kth/datasets/nuplanCarBostonAll/map_14180.bin"
+  },
+  {
+    "error": "No valid maps available for the current initialization settings",
+    "error_type": "ValueError",
+    "map_name": "map_14380.bin",
+    "map_path": "/home/casko/phd-code/pufferdrive-kth/datasets/nuplanCarBostonAll/map_14380.bin"
+  },
+  {
+    "error": "No valid maps available for the current initialization settings",
+    "error_type": "ValueError",
+    "map_name": "map_15344.bin",
+    "map_path": "/home/casko/phd-code/pufferdrive-kth/datasets/nuplanCarBostonAll/map_15344.bin"
+  },
+  {
+    "error": "No valid maps available for the current initialization settings",
+    "error_type": "ValueError",
+    "map_name": "map_16155.bin",
+    "map_path": "/home/casko/phd-code/pufferdrive-kth/datasets/nuplanCarBostonAll/map_16155.bin"
+  },
+  {
+    "error": "No valid maps available for the current initialization settings",
+    "error_type": "ValueError",
+    "map_name": "map_16990.bin",
+    "map_path": "/home/casko/phd-code/pufferdrive-kth/datasets/nuplanCarBostonAll/map_16990.bin"
+  },
+  {
+    "error": "No valid maps available for the current initialization settings",
+    "error_type": "ValueError",
+    "map_name": "map_20562.bin",
+    "map_path": "/home/casko/phd-code/pufferdrive-kth/datasets/nuplanCarBostonAll/map_20562.bin"
+  },
+  {
+    "error": "No valid maps available for the current initialization settings",
+    "error_type": "ValueError",
+    "map_name": "map_23544.bin",
+    "map_path": "/home/casko/phd-code/pufferdrive-kth/datasets/nuplanCarBostonAll/map_23544.bin"
+  },
+  {
+    "error": "No valid maps available for the current initialization settings",
+    "error_type": "ValueError",
+    "map_name": "map_24836.bin",
+    "map_path": "/home/casko/phd-code/pufferdrive-kth/datasets/nuplanCarBostonAll/map_24836.bin"
+  },
+  {
+    "error": "No valid maps available for the current initialization settings",
+    "error_type": "ValueError",
+    "map_name": "map_26099.bin",
+    "map_path": "/home/casko/phd-code/pufferdrive-kth/datasets/nuplanCarBostonAll/map_26099.bin"
+  },
+  {
+    "error": "No valid maps available for the current initialization settings",
+    "error_type": "ValueError",
+    "map_name": "map_26193.bin",
+    "map_path": "/home/casko/phd-code/pufferdrive-kth/datasets/nuplanCarBostonAll/map_26193.bin"
+  },
+  {
+    "error": "No valid maps available for the current initialization settings",
+    "error_type": "ValueError",
+    "map_name": "map_28992.bin",
+    "map_path": "/home/casko/phd-code/pufferdrive-kth/datasets/nuplanCarBostonAll/map_28992.bin"
+  },
+  {
+    "error": "No valid maps available for the current initialization settings",
+    "error_type": "ValueError",
+    "map_name": "map_29057.bin",
+    "map_path": "/home/casko/phd-code/pufferdrive-kth/datasets/nuplanCarBostonAll/map_29057.bin"
+  },
+  {
+    "error": "No valid maps available for the current initialization settings",
+    "error_type": "ValueError",
+    "map_name": "map_30543.bin",
+    "map_path": "/home/casko/phd-code/pufferdrive-kth/datasets/nuplanCarBostonAll/map_30543.bin"
+  },
+  {
+    "error": "No valid maps available for the current initialization settings",
+    "error_type": "ValueError",
+    "map_name": "map_34658.bin",
+    "map_path": "/home/casko/phd-code/pufferdrive-kth/datasets/nuplanCarBostonAll/map_34658.bin"
+  },
+  {
+    "error": "No valid maps available for the current initialization settings",
+    "error_type": "ValueError",
+    "map_name": "map_03796.bin",
+    "map_path": "/home/casko/phd-code/pufferdrive-kth/datasets/nuplanCarBostonAll/map_03796.bin"
+  },
+  {
+    "error": "No valid maps available for the current initialization settings",
+    "error_type": "ValueError",
+    "map_name": "map_36210.bin",
+    "map_path": "/home/casko/phd-code/pufferdrive-kth/datasets/nuplanCarBostonAll/map_36210.bin"
+  },
+  {
+    "error": "No valid maps available for the current initialization settings",
+    "error_type": "ValueError",
+    "map_name": "map_36355.bin",
+    "map_path": "/home/casko/phd-code/pufferdrive-kth/datasets/nuplanCarBostonAll/map_36355.bin"
+  },
+  {
+    "error": "Expecting value: line 1 column 1 (char 0)",
+    "error_type": "JSONDecodeError",
+    "map_name": "map_3882.bin",
+    "map_path": "/home/casko/phd-code/pufferdrive-kth/datasets/nuplanCarBostonAll/map_38897.bin"
+  },
+  {
+    "error": "No valid maps available for the current initialization settings",
+    "error_type": "ValueError",
+    "map_name": "map_40404.bin",
+    "map_path": "/home/casko/phd-code/pufferdrive-kth/datasets/nuplanCarBostonAll/map_40404.bin"
+  },
+  {
+    "error": "No valid maps available for the current initialization settings",
+    "error_type": "ValueError",
+    "map_name": "map_06027.bin",
+    "map_path": "/home/casko/phd-code/pufferdrive-kth/datasets/nuplanCarBostonAll/map_06027.bin"
+  }
+]

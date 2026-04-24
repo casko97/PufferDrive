@@ -1,0 +1,39 @@
+Model: /home/casko/phd-code/PufferDrive/pufferlib/resources/drive/models/car-baseline-full-boston-rl-finetune-256ag-epochs2-lr001
+Turning threshold: 45.0 deg
+
+Sample set 591b862db7e27d2e
+runs: truck_eval_final
+shared sample: sample_size=100 straight=84 turning=16
+
+== truck_eval_final ==
+completed_rows: 78
+straight (n=66)
+  score: 0.772727
+  completion_rate: 0.863636
+  collisions_per_agent: 2.409091
+  offroad_per_agent: 2.106061
+  episode_return: -1.397809
+  goals_reached_this_episode: 0.863636
+  goals_sampled_this_episode: 1.000000
+  speed_at_goal: 15.710036
+  collision_rate: 0.196970
+  offroad_rate: 0.060606
+  dnf_rate: 0.000000
+  lane_alignment_rate: 1.000000
+  episode_length: 90.000000
+  n: 1.000000
+turning (n=12)
+  score: 0.250000
+  completion_rate: 0.250000
+  collisions_per_agent: 2.000000
+  offroad_per_agent: 20.916667
+  episode_return: -11.250016
+  goals_reached_this_episode: 0.250000
+  goals_sampled_this_episode: 1.000000
+  speed_at_goal: 4.894854
+  collision_rate: 0.166667
+  offroad_rate: 0.333333
+  dnf_rate: 0.333333
+  lane_alignment_rate: 0.750000
+  episode_length: 90.000000
+  n: 1.000000
