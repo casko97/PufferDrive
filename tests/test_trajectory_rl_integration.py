@@ -6,6 +6,7 @@ import pytest
 torch = pytest.importorskip("torch")
 
 from pufferlib import pufferl
+import pufferlib.pytorch
 from pufferlib.ocean.drive.drive import Drive, save_map_binary
 from pufferlib.ocean.drive.trajectory_bc_viz import _TRAJECTORY_HISTORY_FEATURES, _TRAJECTORY_HORIZON, _base_obs_dim
 from pufferlib.ocean.torch import Drive as DrivePolicy
@@ -193,6 +194,55 @@ def test_trajectory_policy_std_controls_are_applied(tmp_path):
         assert torch.all(action_dist.scale <= 0.2)
     finally:
         env.close()
+
+
+def test_trajectory_policy_uses_squashed_normal_distribution(tmp_path):
+    map_dir = tmp_path / "maps"
+    map_dir.mkdir()
+    _write_eval_map(map_dir)
+
+    trajectory_env = _make_env(map_dir)
+    continuous_env = Drive(
+        num_agents=1,
+        num_maps=1,
+        map_dir=str(map_dir),
+        episode_length=91,
+        init_steps=0,
+        control_mode="control_sdc_only",
+        init_mode="create_all_valid",
+        resample_frequency=0,
+        action_type="continuous",
+        observation_mode="default",
+    )
+    try:
+        trajectory_policy = DrivePolicy(
+            trajectory_env,
+            input_size=64,
+            hidden_size=256,
+            initial_std_bias=-2.0,
+            min_action_std=0.01,
+            max_action_std=0.2,
+        )
+        continuous_policy = DrivePolicy(
+            continuous_env,
+            input_size=64,
+            hidden_size=256,
+            initial_std_bias=-2.0,
+            min_action_std=0.01,
+            max_action_std=0.2,
+        )
+
+        trajectory_hidden = torch.zeros((1, trajectory_policy.hidden_size), dtype=torch.float32)
+        trajectory_dist, _ = trajectory_policy.decode_actions(trajectory_hidden)
+        assert getattr(trajectory_dist, "is_squashed_normal", False) is True
+        assert isinstance(trajectory_dist, pufferlib.pytorch.SquashedNormal)
+
+        continuous_hidden = torch.zeros((1, continuous_policy.hidden_size), dtype=torch.float32)
+        continuous_dist, _ = continuous_policy.decode_actions(continuous_hidden)
+        assert isinstance(continuous_dist, torch.distributions.Normal)
+    finally:
+        trajectory_env.close()
+        continuous_env.close()
 
 
 def test_live_trajectory_rollout_keeps_ego_history_after_first_step(tmp_path):

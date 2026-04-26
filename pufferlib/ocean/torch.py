@@ -220,7 +220,10 @@ class Drive(nn.Module):
                 std = torch.clamp(std, min=self.min_action_std)
             else:
                 std = torch.clamp(std, min=self.min_action_std, max=self.max_action_std)
-            action = torch.distributions.Normal(loc, std)
+            if self.is_trajectory_policy:
+                action = pufferlib.pytorch.SquashedNormal(loc, std)
+            else:
+                action = torch.distributions.Normal(loc, std)
         else:
             action = self.actor(flat_hidden)
             action = torch.split(action, self.atn_dim, dim=1)

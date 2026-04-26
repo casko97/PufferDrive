@@ -3,6 +3,7 @@ from typing import Dict, List, Tuple, Union
 
 import numpy as np
 import torch
+import math
 from torch.distributions.utils import logits_to_probs
 
 
@@ -187,8 +188,51 @@ def entropy_probs(logits, probs):
     return -p_log_p.sum(-1)
 
 
+def _atanh(x, eps=1e-6):
+    x = torch.clamp(x, -1 + eps, 1 - eps)
+    return 0.5 * (torch.log1p(x) - torch.log1p(-x))
+
+
+class SquashedNormal:
+    is_squashed_normal = True
+
+    def __init__(self, loc, scale, eps=1e-6):
+        self.base_dist = torch.distributions.Normal(loc, scale)
+        self.eps = float(eps)
+        self.loc = torch.tanh(loc)
+        self.scale = scale
+
+    def sample(self):
+        raw = self.base_dist.sample()
+        return torch.tanh(raw)
+
+    def rsample(self):
+        raw = self.base_dist.rsample()
+        return torch.tanh(raw)
+
+    def log_prob(self, value):
+        raw = _atanh(value, self.eps)
+        base_log_prob = self.base_dist.log_prob(raw)
+        correction = torch.log1p(-value.square() + self.eps)
+        return base_log_prob - correction
+
+    def entropy(self):
+        sample = self.sample()
+        return -self.log_prob(sample)
+
+
 def sample_logits(logits, action=None):
     is_discrete = isinstance(logits, torch.Tensor)
+    if getattr(logits, "is_squashed_normal", False):
+        batch = logits.loc.shape[0]
+        if action is None:
+            action = logits.sample().view(batch, -1)
+        else:
+            action = action.view(batch, -1)
+
+        log_probs = logits.log_prob(action).view(batch, -1).sum(1)
+        logits_entropy = logits.entropy().view(batch, -1).sum(1)
+        return action, log_probs, logits_entropy
     if isinstance(logits, torch.distributions.Normal):
         batch = logits.loc.shape[0]
         if action is None:
@@ -228,6 +272,14 @@ def sample_logits(logits, action=None):
 
 
 def eval_action_from_logits(logits, deterministic=False):
+    if getattr(logits, "is_squashed_normal", False):
+        if deterministic:
+            action = logits.loc.view(logits.loc.shape[0], -1)
+            log_probs = logits.log_prob(action).view(logits.loc.shape[0], -1).sum(1)
+            logits_entropy = logits.entropy().view(logits.loc.shape[0], -1).sum(1)
+            return action, log_probs, logits_entropy
+        return sample_logits(logits)
+
     if isinstance(logits, torch.distributions.Normal):
         if deterministic:
             action = logits.loc.view(logits.loc.shape[0], -1)

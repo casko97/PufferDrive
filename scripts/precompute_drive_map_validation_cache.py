@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import time
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -29,6 +30,12 @@ def _load_args(config_path: Path) -> dict:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Precompute the Drive map validation cache in a separate process.")
     parser.add_argument("--config", type=Path, required=True, help="Packaged Drive INI config")
+    parser.add_argument(
+        "--progress-interval",
+        type=int,
+        default=500,
+        help="Emit a progress log every N processed maps",
+    )
     args_ns = parser.parse_args()
 
     config_path = args_ns.config.expanduser().resolve()
@@ -56,9 +63,48 @@ def main() -> None:
 
     updated = 0
     skipped = 0
-    for entry in entries:
+    total = len(entries)
+    start_time = time.time()
+    last_log_time = start_time
+    progress_interval = max(int(args_ns.progress_interval), 1)
+
+    def _format_eta(seconds: float) -> str:
+        if not seconds or seconds < 0 or seconds == float("inf"):
+            return "unknown"
+        minutes, sec = divmod(int(seconds), 60)
+        hours, minutes = divmod(minutes, 60)
+        if hours > 0:
+            return f"{hours:d}h{minutes:02d}m{sec:02d}s"
+        if minutes > 0:
+            return f"{minutes:d}m{sec:02d}s"
+        return f"{sec:d}s"
+
+    def _maybe_log_progress(processed: int, *, force: bool = False) -> None:
+        nonlocal last_log_time
+        if processed <= 0:
+            return
+        now = time.time()
+        if not force and processed % progress_interval != 0 and (now - last_log_time) < 15.0:
+            return
+        elapsed = max(now - start_time, 1e-6)
+        rate = processed / elapsed
+        remaining = max(total - processed, 0)
+        eta = remaining / max(rate, 1e-6)
+        print(
+            "Drive map validation cache progress: "
+            f"processed={processed}/{total} "
+            f"updated={updated} skipped={skipped} "
+            f"rate={rate:.1f} maps/s "
+            f"elapsed={_format_eta(elapsed)} "
+            f"eta={_format_eta(eta)}",
+            flush=True,
+        )
+        last_log_time = now
+
+    for index, entry in enumerate(entries, start=1):
         if cache.get(entry.map_path) is not None:
             skipped += 1
+            _maybe_log_progress(index)
             continue
         metadata = binding.inspect_map(
             map_path=entry.map_path,
@@ -75,10 +121,15 @@ def main() -> None:
         )
         cache.set(entry.map_path, metadata)
         updated += 1
+        _maybe_log_progress(index)
+
+    _maybe_log_progress(total, force=True)
 
     print(
         f"Drive map validation cache ready: dataset_root={catalog.dataset_root} "
         f"selected_maps={len(entries)} updated={updated} skipped={skipped} cache={cache.cache_path}"
+        ,
+        flush=True,
     )
 
 
