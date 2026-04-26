@@ -7,6 +7,7 @@ import hashlib
 import math
 import shutil
 import time
+from collections import deque
 from dataclasses import dataclass
 from typing import Any
 import pufferlib
@@ -19,6 +20,30 @@ _POLICY_TYPE_PADDED = 0
 _EMPTY_PARTNER_EPS = 1e-8
 _EGO_TRAILER_STATE_FEATURES = 4
 _DYNAMICS_MODEL_IDS = {"classic": 0, "jerk": 1, "articulated": 2}
+_MAX_SPEED = 100.0
+_PARTNER_POS_SCALE = 0.02
+_TRAJECTORY_HORIZON = 32
+_TRAJECTORY_FEATURES = 5
+_TRAJECTORY_ACTION_DIM = _TRAJECTORY_HORIZON * _TRAJECTORY_FEATURES
+_TRAJECTORY_HISTORY_FEATURES = 6
+_TRAJECTORY_OBSERVATION_MODE = "trajectory_history_32"
+_MAX_CLASSIC_ACCELERATION = 4.0
+_MAX_CLASSIC_STEERING = 1.0
+_DEFAULT_TRAJECTORY_LOOKAHEAD = 6.0
+_DEFAULT_TRAJECTORY_ACCEL_GAIN = 0.5
+_DEFAULT_TRAJECTORY_STEER_GAIN = 1.0
+_DEFAULT_TRAJECTORY_TRACKER = "pure_pursuit"
+_DEFAULT_TRAJECTORY_STANLEY_GAIN = 1.0
+_DEFAULT_TRAJECTORY_STANLEY_SOFTENING = 1.0
+_DEFAULT_TRAJECTORY_SMOOTHING_WINDOW = 1
+_DEFAULT_TRAJECTORY_SMOOTHING_BLEND = 0.0
+_DEFAULT_TRAJECTORY_MPC_HORIZON_STEPS = 6
+_DEFAULT_TRAJECTORY_MPC_POSITION_WEIGHT = 1.0
+_DEFAULT_TRAJECTORY_MPC_HEADING_WEIGHT = 0.1
+_DEFAULT_TRAJECTORY_MPC_SPEED_WEIGHT = 0.2
+_DEFAULT_TRAJECTORY_MPC_CONTROL_WEIGHT = 0.02
+_DEFAULT_TRAJECTORY_MPC_ACCELERATION_GRID = (-4.0, -2.0, 0.0, 1.0, 2.5)
+_DEFAULT_TRAJECTORY_MPC_STEERING_GRID = (-0.55, -0.35, -0.2, 0.0, 0.2, 0.35, 0.55)
 _NON_KINEMATIC_PARAM_ORDER = [
     "tractor_length",
     "trailer_length",
@@ -112,6 +137,42 @@ def _as_bool(value):
     if isinstance(value, str):
         return value.strip().lower() in ("1", "true", "yes", "on")
     return bool(value)
+
+
+def _wrap_to_pi(angle):
+    return (angle + math.pi) % (2.0 * math.pi) - math.pi
+
+
+def _clip_float(value, lower, upper):
+    return max(lower, min(upper, float(value)))
+
+
+def _encode_trajectory_position(value):
+    return _clip_float(value * _PARTNER_POS_SCALE, -1.0, 1.0)
+
+
+def _decode_trajectory_position(value):
+    return float(value) / _PARTNER_POS_SCALE
+
+
+def _encode_trajectory_heading(value):
+    return _clip_float(_wrap_to_pi(value) / math.pi, -1.0, 1.0)
+
+
+def _decode_trajectory_heading(value):
+    return _clip_float(value, -1.0, 1.0) * math.pi
+
+
+def _encode_trajectory_speed(value):
+    return _clip_float(float(value) / _MAX_SPEED, 0.0, 1.0)
+
+
+def _decode_trajectory_speed(value):
+    return _clip_float(value, 0.0, 1.0) * _MAX_SPEED
+
+
+def _make_history_state(x, y, heading, speed, valid):
+    return np.array([x, y, heading, speed, float(valid)], dtype=np.float32)
 
 
 def _load_non_kinematic_vehicle_params_from_bin(binary_path):
@@ -435,6 +496,7 @@ class Drive(pufferlib.PufferEnv):
         reward_goal_post_respawn=0.5,
         goal_behavior=0,
         goal_target_distance=10.0,
+        goal_at_gt_traj_end=False,
         goal_radius=2.0,
         goal_speed=20.0,
         collision_behavior=0,
@@ -467,6 +529,23 @@ class Drive(pufferlib.PufferEnv):
         sdc_runtime_truck_ref_bin=None,
         force_truck_params_from_ref_bin=None,
         force_zero_trailer_articulation_at_init=False,
+        trajectory_lookahead_distance=_DEFAULT_TRAJECTORY_LOOKAHEAD,
+        trajectory_accel_gain=_DEFAULT_TRAJECTORY_ACCEL_GAIN,
+        trajectory_steer_gain=_DEFAULT_TRAJECTORY_STEER_GAIN,
+        trajectory_tracker_type=_DEFAULT_TRAJECTORY_TRACKER,
+        trajectory_stanley_gain=_DEFAULT_TRAJECTORY_STANLEY_GAIN,
+        trajectory_stanley_softening=_DEFAULT_TRAJECTORY_STANLEY_SOFTENING,
+        trajectory_smoothing_window=_DEFAULT_TRAJECTORY_SMOOTHING_WINDOW,
+        trajectory_smoothing_blend=_DEFAULT_TRAJECTORY_SMOOTHING_BLEND,
+        trajectory_control_substeps=1,
+        substep_expert_interpolation=True,
+        trajectory_mpc_horizon_steps=_DEFAULT_TRAJECTORY_MPC_HORIZON_STEPS,
+        trajectory_mpc_position_weight=_DEFAULT_TRAJECTORY_MPC_POSITION_WEIGHT,
+        trajectory_mpc_heading_weight=_DEFAULT_TRAJECTORY_MPC_HEADING_WEIGHT,
+        trajectory_mpc_speed_weight=_DEFAULT_TRAJECTORY_MPC_SPEED_WEIGHT,
+        trajectory_mpc_control_weight=_DEFAULT_TRAJECTORY_MPC_CONTROL_WEIGHT,
+        trajectory_history_warmstart_seconds=0.0,
+        terminate_on_stop=False,
     ):
         # env
         self.dt = dt
@@ -481,6 +560,7 @@ class Drive(pufferlib.PufferEnv):
         self.goal_speed = goal_speed
         self.goal_behavior = goal_behavior
         self.goal_target_distance = goal_target_distance
+        self.goal_at_gt_traj_end = _as_bool(goal_at_gt_traj_end)
         self.collision_behavior = collision_behavior
         self.offroad_behavior = offroad_behavior
         self.human_agent_idx = human_agent_idx
@@ -512,6 +592,7 @@ class Drive(pufferlib.PufferEnv):
         self.init_mode_str = init_mode
         self.control_mode_str = control_mode
         self.observation_mode_str = observation_mode
+        self.action_type_str = action_type
         self.scenario_filter = scenario_filter
         self.scenario_filter_threshold_deg = scenario_filter_threshold_deg
         self.scenario_filter_manifest_path = scenario_filter_manifest_path
@@ -554,13 +635,51 @@ class Drive(pufferlib.PufferEnv):
             raise ValueError(
                 f"control_mode must be one of 'control_vehicles', 'control_wosac', or 'control_agents'. Got: {self.control_mode_str}"
             )
-        if self.observation_mode_str == "default":
+        self.trajectory_horizon = _TRAJECTORY_HORIZON
+        self.trajectory_action_dim = _TRAJECTORY_ACTION_DIM
+        self.trajectory_features = _TRAJECTORY_FEATURES
+        self.trajectory_history_horizon = _TRAJECTORY_HORIZON
+        self.trajectory_history_features = _TRAJECTORY_HISTORY_FEATURES
+        self.trajectory_lookahead_distance = float(trajectory_lookahead_distance)
+        self.trajectory_accel_gain = float(trajectory_accel_gain)
+        self.trajectory_steer_gain = float(trajectory_steer_gain)
+        self.trajectory_tracker_type = str(trajectory_tracker_type).strip().lower()
+        self.trajectory_stanley_gain = float(trajectory_stanley_gain)
+        self.trajectory_stanley_softening = max(float(trajectory_stanley_softening), 1e-3)
+        self.trajectory_smoothing_window = max(1, int(trajectory_smoothing_window))
+        self.trajectory_smoothing_blend = _clip_float(float(trajectory_smoothing_blend), 0.0, 1.0)
+        self.trajectory_control_substeps = max(1, int(trajectory_control_substeps))
+        self.substep_expert_interpolation = _as_bool(substep_expert_interpolation)
+        self.trajectory_mpc_horizon_steps = max(1, int(trajectory_mpc_horizon_steps))
+        self.trajectory_mpc_position_weight = float(trajectory_mpc_position_weight)
+        self.trajectory_mpc_heading_weight = float(trajectory_mpc_heading_weight)
+        self.trajectory_mpc_speed_weight = float(trajectory_mpc_speed_weight)
+        self.trajectory_mpc_control_weight = float(trajectory_mpc_control_weight)
+        self.trajectory_history_warmstart_seconds = max(float(trajectory_history_warmstart_seconds), 0.0)
+        self.terminate_on_stop = _as_bool(terminate_on_stop)
+        self.trajectory_mpc_acceleration_grid = np.asarray(_DEFAULT_TRAJECTORY_MPC_ACCELERATION_GRID, dtype=np.float32)
+        self.trajectory_mpc_steering_grid = np.asarray(_DEFAULT_TRAJECTORY_MPC_STEERING_GRID, dtype=np.float32)
+        if self.trajectory_tracker_type not in ("pure_pursuit", "stanley", "mpc"):
+            raise ValueError(
+                "trajectory_tracker_type must be one of 'pure_pursuit', 'stanley', or 'mpc'. "
+                f"Got: {trajectory_tracker_type!r}"
+            )
+        self.is_trajectory_action = self.action_type_str == "trajectory"
+        self.is_trajectory_observation = self.observation_mode_str == _TRAJECTORY_OBSERVATION_MODE
+        self.trajectory_control_is_physical = (
+            self.is_trajectory_action and self.trajectory_tracker_type == "mpc" and self.dynamics_model in ("classic", "articulated")
+        )
+        self._last_trajectory_control_debug: list[dict[str, float | int | bool | str]] = []
+        self._needs_reset = False
+
+        if self.observation_mode_str == "default" or self.is_trajectory_observation:
             self.observation_mode = 0
         elif self.observation_mode_str == "sdc_only_with_trailer":
             self.observation_mode = 1
         else:
             raise ValueError(
-                "observation_mode must be one of 'default' or 'sdc_only_with_trailer'. "
+                "observation_mode must be one of 'default', 'sdc_only_with_trailer', "
+                f"or '{_TRAJECTORY_OBSERVATION_MODE}'. "
                 f"Got: {self.observation_mode_str}"
             )
         if self.observation_mode == 0:
@@ -574,6 +693,18 @@ class Drive(pufferlib.PufferEnv):
             + self.max_partner_objects * self.partner_features
             + self.max_road_objects * self.road_features
         )
+        self._base_policy_num_obs = self.num_obs
+        self.trajectory_base_obs_dim = self._base_policy_num_obs
+        self.trajectory_ego_history_dim = 0
+        self.trajectory_partner_history_dim = 0
+        if self.is_trajectory_observation:
+            self.trajectory_ego_history_dim = self.trajectory_history_horizon * self.trajectory_history_features
+            self.trajectory_partner_history_dim = (
+                self.max_partner_objects * self.trajectory_history_horizon * self.trajectory_history_features
+            )
+            self.num_obs = (
+                self._base_policy_num_obs + self.trajectory_ego_history_dim + self.trajectory_partner_history_dim
+            )
         self.single_observation_space = gymnasium.spaces.Box(low=-1, high=1, shape=(self.num_obs,), dtype=np.float32)
         if self.init_mode_str == "create_all_valid":
             self.init_mode = 0
@@ -597,8 +728,12 @@ class Drive(pufferlib.PufferEnv):
                 raise ValueError(f"dynamics_model must be 'classic', 'articulated' or 'jerk'. Got: {dynamics_model}")
         elif action_type == "continuous":
             self.single_action_space = gymnasium.spaces.Box(low=-1, high=1, shape=(2,), dtype=np.float32)
+        elif action_type == "trajectory":
+            self.single_action_space = gymnasium.spaces.Box(
+                low=-1, high=1, shape=(self.trajectory_action_dim,), dtype=np.float32
+            )
         else:
-            raise ValueError(f"action_space must be 'discrete' or 'continuous'. Got: {action_type}")
+            raise ValueError(f"action_space must be 'discrete', 'continuous', or 'trajectory'. Got: {action_type}")
 
         self._action_type_flag = 0 if action_type == "discrete" else 1
 
@@ -649,9 +784,19 @@ class Drive(pufferlib.PufferEnv):
         self.num_envs = num_envs
         self._live_map_entries = [entry for entry, _ in selected_entries]
         super().__init__(buf=buf)
+        if self.is_trajectory_action:
+            self._policy_actions = self.actions
+            self._control_actions = np.zeros((self.num_agents, 2), dtype=np.float32)
+        else:
+            self._policy_actions = self.actions
+            self._control_actions = self.actions
         self._sim_observations = self.observations
-        if self.observation_mode == 1:
+        if self.observation_mode == 1 or self.is_trajectory_observation:
             self._sim_observations = np.zeros((self.num_agents, self._sim_num_obs), dtype=np.float32)
+        self._trajectory_entity_history = {}
+        self._cached_global_agent_state = None
+        self._cached_partner_ids = None
+        self._suspend_trajectory_history_updates = False
         self.c_envs = self._build_vector_env(self._live_map_entries, self.agent_offsets, seed)
 
     def _resample_vector_envs(self, seed):
@@ -683,11 +828,12 @@ class Drive(pufferlib.PufferEnv):
             control_mode=self.control_mode,
             init_steps=self.init_steps,
             max_controlled_agents=self.max_controlled_agents,
-            goal_behavior=self.goal_behavior,
-            goal_target_distance=self.goal_target_distance,
-            non_kinematic_vehicle_params_override=self.non_kinematic_vehicle_params_override,
-            force_zero_trailer_articulation_at_init=int(self.force_zero_trailer_articulation_at_init),
-        )
+                goal_behavior=self.goal_behavior,
+                goal_target_distance=self.goal_target_distance,
+                goal_at_gt_traj_end=int(self.goal_at_gt_traj_end),
+                non_kinematic_vehicle_params_override=self.non_kinematic_vehicle_params_override,
+                force_zero_trailer_articulation_at_init=int(self.force_zero_trailer_articulation_at_init),
+            )
         normalized = {
             "active_agent_count": int(metadata.get("active_agent_count", 0)),
             "valid_for_sampling": bool(metadata.get("valid_for_sampling", False)),
@@ -720,12 +866,14 @@ class Drive(pufferlib.PufferEnv):
             nxt = agent_offsets[i + 1]
             env_id = binding.env_init(
                 self._sim_observations[cur:nxt],
-                self.actions[cur:nxt],
+                self._control_actions[cur:nxt],
                 self.rewards[cur:nxt],
                 self.terminals[cur:nxt],
                 self.truncations[cur:nxt],
                 seed,
                 action_type=self._action_type_flag,
+                continuous_actions_are_physical=int(self.trajectory_control_is_physical),
+                substep_expert_interpolation=int(self.substep_expert_interpolation),
                 human_agent_idx=self.human_agent_idx,
                 reward_vehicle_collision=self.reward_vehicle_collision,
                 reward_offroad_collision=self.reward_offroad_collision,
@@ -735,6 +883,7 @@ class Drive(pufferlib.PufferEnv):
                 goal_speed=self.goal_speed,
                 goal_behavior=self.goal_behavior,
                 goal_target_distance=self.goal_target_distance,
+                goal_at_gt_traj_end=int(self.goal_at_gt_traj_end),
                 collision_behavior=self.collision_behavior,
                 offroad_behavior=self.offroad_behavior,
                 dt=self.dt,
@@ -757,7 +906,13 @@ class Drive(pufferlib.PufferEnv):
             env_ids.append(env_id)
         return binding.vectorize(*env_ids)
 
-    def reset(self, seed=0):
+    @property
+    def done(self):
+        return bool(self._needs_reset)
+
+    def reset(self, seed=None):
+        if seed is None:
+            seed = int(np.random.randint(0, 2**32 - 1))
         binding.vec_reset(self.c_envs, seed)
         max_resample_attempts = 8
         attempts = 0
@@ -769,14 +924,47 @@ class Drive(pufferlib.PufferEnv):
                 )
             self._resample_vector_envs(np.random.randint(0, 2**32 - 1))
         self.tick = 0
+        if self.is_trajectory_observation or self.is_trajectory_action:
+            self._clear_trajectory_history()
+        self._needs_reset = False
+        warmstart_timestep = self._trajectory_history_warmstart_timestep()
+        if warmstart_timestep > 0 and (self.is_trajectory_observation or self.is_trajectory_action):
+            for timestep in range(warmstart_timestep + 1):
+                self.set_logged_timestep(timestep, reset_history=False, update_history=True)
+            return self.observations, []
         self._postprocess_observations()
         return self.observations, []
 
     def step(self, actions):
         self.terminals[:] = 0
-        self.actions[:] = actions
-        binding.vec_step(self.c_envs)
-        self.tick += 1
+        self.truncations[:] = 0
+        self._policy_actions[:] = actions
+        terminal_stop_info = None
+        if self.is_trajectory_action and self.trajectory_control_substeps > 1:
+            sub_dt = float(self.dt) / float(self.trajectory_control_substeps)
+            decoded_actions = self._decode_trajectory_actions(actions)
+            self._control_actions[:] = self._trajectory_to_control_actions(decoded_actions)
+            interrupted = False
+            for substep_idx in range(self.trajectory_control_substeps):
+                alpha = (float(substep_idx) + 0.5) / float(self.trajectory_control_substeps)
+                binding.vec_physics_substep(self.c_envs, sub_dt, alpha)
+                self._suspend_trajectory_history_updates = True
+                self._postprocess_observations()
+                self._suspend_trajectory_history_updates = False
+                if np.any(self.terminals) or np.any(self.truncations):
+                    interrupted = True
+                    break
+            if not interrupted:
+                binding.vec_advance_logged_timestep(self.c_envs)
+                self.tick += 1
+        else:
+            if self.is_trajectory_action:
+                decoded_actions = self._decode_trajectory_actions(actions)
+                self._control_actions[:] = self._trajectory_to_control_actions(decoded_actions)
+            else:
+                self.actions[:] = actions
+            binding.vec_step(self.c_envs)
+            self.tick += 1
         info = []
         if self.tick % self.report_interval == 0:
             log = binding.vec_log(self.c_envs, self.num_agents)
@@ -788,8 +976,73 @@ class Drive(pufferlib.PufferEnv):
             seed = np.random.randint(0, 2**32 - 1)
             self._resample_vector_envs(seed)
             self.terminals[:] = 1
+            self._needs_reset = True
+            if self.is_trajectory_observation or self.is_trajectory_action:
+                self._clear_trajectory_history()
         self._postprocess_observations()
+        if self.terminate_on_stop:
+            terminal_stop_info = self._mark_terminals_for_stopped_agents()
+            if terminal_stop_info:
+                info.append({"terminal_stop_reasons": terminal_stop_info})
+        if np.any(self.terminals) or np.any(self.truncations):
+            self._needs_reset = True
         return (self.observations, self.rewards, self.terminals, self.truncations, info)
+
+    def physics_substep(self, actions, *, sub_dt: float, alpha: float, update_history: bool = True):
+        self.terminals[:] = 0
+        self.truncations[:] = 0
+        self._policy_actions[:] = actions
+        if self.is_trajectory_action:
+            decoded_actions = self._decode_trajectory_actions(actions)
+            self._control_actions[:] = self._trajectory_to_control_actions(decoded_actions)
+        else:
+            self.actions[:] = actions
+        binding.vec_physics_substep(self.c_envs, float(sub_dt), min(float(alpha), 1.0 - 1e-4))
+        self._suspend_trajectory_history_updates = not bool(update_history)
+        self._postprocess_observations()
+        self._suspend_trajectory_history_updates = False
+        return (self.observations, self.rewards, self.terminals, self.truncations, [])
+
+    def advance_logged_timestep(self, *, update_history: bool = True):
+        binding.vec_advance_logged_timestep(self.c_envs)
+        self.tick += 1
+        self._suspend_trajectory_history_updates = not bool(update_history)
+        self._postprocess_observations()
+        self._suspend_trajectory_history_updates = False
+        return (self.observations, self.rewards, self.terminals, self.truncations, [])
+
+    def set_logged_timestep(self, timestep: int, *, reset_history: bool = False, update_history: bool = True):
+        binding.vec_set_logged_timestep(self.c_envs, int(timestep))
+        self.tick = int(timestep)
+        if reset_history and (self.is_trajectory_observation or self.is_trajectory_action):
+            self._clear_trajectory_history()
+        self._suspend_trajectory_history_updates = not bool(update_history)
+        self._postprocess_observations()
+        self._suspend_trajectory_history_updates = False
+        return (self.observations, self.rewards, self.terminals, self.truncations, [])
+
+    def _mark_terminals_for_stopped_agents(self):
+        diagnostics = self.get_agent_diagnostics()
+        stopped_mask = np.asarray(diagnostics["stopped"], dtype=bool)
+        if not np.any(stopped_mask):
+            return None
+
+        reasons = []
+        for agent_idx in np.flatnonzero(stopped_mask):
+            if bool(diagnostics["reached_goal"][agent_idx]):
+                reason = "goal_stop"
+            elif bool(diagnostics["offroad_flag"][agent_idx]) or int(diagnostics["collision_state"][agent_idx]) == 2:
+                reason = "offroad_stop"
+            elif int(diagnostics["collision_state"][agent_idx]) == 1:
+                reason = "collision_stop"
+            else:
+                reason = "stopped_unknown"
+            reasons.append({"agent_idx": int(agent_idx), "reason": reason})
+        self.terminals[stopped_mask] = 1
+        return reasons
+
+    def get_last_trajectory_control_debug(self):
+        return list(self._last_trajectory_control_debug)
 
     def get_global_agent_state(self, include_sdc_trailer=False, include_types=False):
         """Get current global state of all active agents.
@@ -840,6 +1093,30 @@ class Drive(pufferlib.PufferEnv):
         binding.vec_get_partner_types(self.c_envs, types)
         return types
 
+    def get_partner_ids(self):
+        """Get partner ids in the same ordering as partner observations."""
+        ids = np.zeros((self.num_agents, self.max_partner_objects), dtype=np.int32)
+        binding.vec_get_partner_ids(self.c_envs, ids)
+        return ids
+
+    def get_agent_diagnostics(self):
+        diagnostics = {
+            "collision_state": np.zeros(self.num_agents, dtype=np.int32),
+            "offroad_flag": np.zeros(self.num_agents, dtype=np.int32),
+            "reached_goal": np.zeros(self.num_agents, dtype=np.int32),
+            "speed": np.zeros(self.num_agents, dtype=np.float32),
+            "stopped": np.zeros(self.num_agents, dtype=np.int32),
+        }
+        binding.vec_get_agent_diagnostics(
+            self.c_envs,
+            diagnostics["collision_state"],
+            diagnostics["offroad_flag"],
+            diagnostics["reached_goal"],
+            diagnostics["speed"],
+            diagnostics["stopped"],
+        )
+        return diagnostics
+
     def get_sdc_trailer_state(self):
         trailer = {
             "has_trailer": np.zeros(self.num_envs, dtype=np.int32),
@@ -882,7 +1159,423 @@ class Drive(pufferlib.PufferEnv):
         )
         return trailer_features
 
+    def _clear_trajectory_history(self):
+        self._trajectory_entity_history = {}
+        self._cached_global_agent_state = None
+        self._cached_partner_ids = None
+
+    def _trajectory_history_warmstart_timestep(self):
+        if self.trajectory_history_warmstart_seconds <= 0.0:
+            return 0
+        if self.episode_length is None:
+            return 0
+        sim_steps = max(int(self.episode_length) - int(self.init_steps), 0)
+        if sim_steps <= 0:
+            return 0
+        warmstart_timestep = int(round(self.trajectory_history_warmstart_seconds / max(float(self.dt), 1e-6)))
+        return min(max(warmstart_timestep, 0), sim_steps - 1)
+
+    def _refresh_trajectory_state_cache(self):
+        self._cached_global_agent_state = self.get_global_agent_state()
+        self._cached_partner_ids = self.get_partner_ids()
+
+    def _append_trajectory_state(self, entity_id, x, y, heading, speed, valid):
+        if entity_id < 0:
+            return
+        history = self._trajectory_entity_history.get(entity_id)
+        if history is None:
+            history = deque(maxlen=self.trajectory_history_horizon)
+            self._trajectory_entity_history[entity_id] = history
+        history.append(_make_history_state(x, y, heading, speed, valid))
+
+    def _decode_current_partner_states(self, ego_states, partner_ids):
+        partner_states = {}
+        partner_offset = self._base_ego_features
+        partner_dim = self.max_partner_objects * self._base_partner_features
+        partner_obs = self._sim_observations[:, partner_offset : partner_offset + partner_dim].reshape(
+            self.num_agents, self.max_partner_objects, self._base_partner_features
+        )
+
+        ego_x = ego_states["x"]
+        ego_y = ego_states["y"]
+        ego_heading = ego_states["heading"]
+        ego_cos = np.cos(ego_heading)
+        ego_sin = np.sin(ego_heading)
+
+        for row in range(self.num_agents):
+            for slot in range(self.max_partner_objects):
+                entity_id = int(partner_ids[row, slot])
+                if entity_id <= 0:
+                    continue
+                features = partner_obs[row, slot]
+                if not np.any(np.abs(features) > _EMPTY_PARTNER_EPS):
+                    continue
+                rel_x = float(features[0]) / _PARTNER_POS_SCALE
+                rel_y = float(features[1]) / _PARTNER_POS_SCALE
+                dx = rel_x * ego_cos[row] - rel_y * ego_sin[row]
+                dy = rel_x * ego_sin[row] + rel_y * ego_cos[row]
+                rel_heading = math.atan2(float(features[5]), float(features[4]))
+                partner_states[entity_id] = (
+                    float(ego_x[row] + dx),
+                    float(ego_y[row] + dy),
+                    _wrap_to_pi(float(ego_heading[row] + rel_heading)),
+                    float(features[6]) * _MAX_SPEED,
+                    1.0,
+                )
+        return partner_states
+
+    def _update_trajectory_history(self):
+        ego_states = self.get_global_agent_state()
+        partner_ids = self.get_partner_ids()
+        ego_speeds = self._sim_observations[:, 2] * _MAX_SPEED
+
+        self._cached_global_agent_state = ego_states
+        self._cached_partner_ids = partner_ids
+
+        for idx in range(self.num_agents):
+            self._append_trajectory_state(
+                int(ego_states["id"][idx]),
+                float(ego_states["x"][idx]),
+                float(ego_states["y"][idx]),
+                float(ego_states["heading"][idx]),
+                float(ego_speeds[idx]),
+                1.0,
+            )
+
+        for entity_id, state in self._decode_current_partner_states(ego_states, partner_ids).items():
+            self._append_trajectory_state(entity_id, *state)
+
+    def _encode_history_block(self, history, current_x, current_y, current_heading):
+        block = np.zeros((self.trajectory_history_horizon, self.trajectory_history_features), dtype=np.float32)
+        cos_heading = math.cos(current_heading)
+        sin_heading = math.sin(current_heading)
+
+        if history:
+            recent_states = list(history)[-self.trajectory_history_horizon :]
+            recent_states = recent_states[::-1]
+            for step_idx, state in enumerate(recent_states):
+                dx = float(state[0] - current_x)
+                dy = float(state[1] - current_y)
+                rel_x = dx * cos_heading + dy * sin_heading
+                rel_y = -dx * sin_heading + dy * cos_heading
+                rel_heading = _wrap_to_pi(float(state[2]) - current_heading)
+                block[step_idx, 0] = _encode_trajectory_position(rel_x)
+                block[step_idx, 1] = _encode_trajectory_position(rel_y)
+                block[step_idx, 2] = math.cos(rel_heading)
+                block[step_idx, 3] = math.sin(rel_heading)
+                block[step_idx, 4] = _encode_trajectory_speed(float(state[3]))
+                block[step_idx, 5] = float(state[4])
+        return block
+
+    def _build_trajectory_history_observations(self):
+        observations = np.zeros((self.num_agents, self.num_obs), dtype=np.float32)
+        observations[:, : self._base_policy_num_obs] = self._sim_observations[:, : self._base_policy_num_obs]
+        ego_hist_start = self._base_policy_num_obs
+        partner_hist_start = ego_hist_start + self.trajectory_ego_history_dim
+
+        ego_states = self._cached_global_agent_state
+        partner_ids = self._cached_partner_ids
+
+        for row in range(self.num_agents):
+            ego_id = int(ego_states["id"][row])
+            current_x = float(ego_states["x"][row])
+            current_y = float(ego_states["y"][row])
+            current_heading = float(ego_states["heading"][row])
+
+            ego_block = self._encode_history_block(
+                self._trajectory_entity_history.get(ego_id), current_x, current_y, current_heading
+            )
+            observations[row, ego_hist_start:partner_hist_start] = ego_block.reshape(-1)
+
+            partner_block = np.zeros(
+                (self.max_partner_objects, self.trajectory_history_horizon, self.trajectory_history_features),
+                dtype=np.float32,
+            )
+            for slot in range(self.max_partner_objects):
+                partner_id = int(partner_ids[row, slot])
+                if partner_id <= 0:
+                    continue
+                partner_block[slot] = self._encode_history_block(
+                    self._trajectory_entity_history.get(partner_id), current_x, current_y, current_heading
+                )
+            observations[row, partner_hist_start:] = partner_block.reshape(-1)
+        return observations
+
+    def _decode_trajectory_actions(self, actions):
+        actions = np.asarray(actions, dtype=np.float32)
+        if actions.shape == (self.num_agents, self.trajectory_horizon, self.trajectory_features):
+            return actions
+        if actions.shape == (self.num_agents, self.trajectory_action_dim):
+            return actions.reshape(self.num_agents, self.trajectory_horizon, self.trajectory_features)
+        raise ValueError(
+            f"Trajectory actions must have shape ({self.num_agents}, {self.trajectory_action_dim}) "
+            f"or ({self.num_agents}, {self.trajectory_horizon}, {self.trajectory_features}). Got {actions.shape}"
+        )
+
+    def _trajectory_to_control_actions(self, trajectory_actions):
+        if self._cached_global_agent_state is None:
+            self._update_trajectory_history()
+
+        low_level_actions = np.zeros((self.num_agents, 2), dtype=np.float32)
+        self._last_trajectory_control_debug = []
+        current_speeds = self._sim_observations[:, 2] * _MAX_SPEED
+        lengths = self._cached_global_agent_state["length"]
+
+        for row in range(self.num_agents):
+            traj = trajectory_actions[row]
+            valid_mask = traj[:, 4] > 0.5
+            if not np.any(valid_mask):
+                continue
+
+            decoded_xy = np.zeros((self.trajectory_horizon, 2), dtype=np.float32)
+            decoded_speed = np.zeros(self.trajectory_horizon, dtype=np.float32)
+            for step_idx in range(self.trajectory_horizon):
+                decoded_xy[step_idx, 0] = _decode_trajectory_position(float(traj[step_idx, 0]))
+                decoded_xy[step_idx, 1] = _decode_trajectory_position(float(traj[step_idx, 1]))
+                decoded_speed[step_idx] = _decode_trajectory_speed(float(traj[step_idx, 3]))
+
+            decoded_xy = self._smooth_trajectory_positions(decoded_xy, valid_mask)
+
+            if self.trajectory_tracker_type == "mpc":
+                requested_accel, requested_steer = self._mpc_trajectory_control(
+                    decoded_xy=decoded_xy,
+                    decoded_speed=decoded_speed,
+                    valid_mask=valid_mask,
+                    current_speed=float(current_speeds[row]),
+                    wheelbase=max(float(lengths[row]), 1e-3),
+                )
+                applied_accel = _clip_float(float(requested_accel), float(self.trajectory_mpc_acceleration_grid.min()), float(self.trajectory_mpc_acceleration_grid.max()))
+                applied_steer = _clip_float(float(requested_steer), float(self.trajectory_mpc_steering_grid.min()), float(self.trajectory_mpc_steering_grid.max()))
+                accel_was_clamped = not math.isclose(applied_accel, float(requested_accel), rel_tol=0.0, abs_tol=1e-6)
+                steer_was_clamped = not math.isclose(applied_steer, float(requested_steer), rel_tol=0.0, abs_tol=1e-6)
+                if self.trajectory_control_is_physical:
+                    low_level_actions[row, 0] = applied_accel
+                    low_level_actions[row, 1] = applied_steer
+                else:
+                    low_level_actions[row, 0] = _clip_float(applied_accel / _MAX_CLASSIC_ACCELERATION, -1.0, 1.0)
+                    low_level_actions[row, 1] = _clip_float(applied_steer / _MAX_CLASSIC_STEERING, -1.0, 1.0)
+                self._last_trajectory_control_debug.append(
+                    {
+                        "agent_index": int(row),
+                        "tracker_type": "mpc",
+                        "controls_are_physical": bool(self.trajectory_control_is_physical),
+                        "requested_acceleration": float(requested_accel),
+                        "requested_steering": float(requested_steer),
+                        "applied_acceleration": float(applied_accel),
+                        "applied_steering": float(applied_steer),
+                        "acceleration_was_clamped": bool(accel_was_clamped),
+                        "steering_was_clamped": bool(steer_was_clamped),
+                    }
+                )
+                continue
+
+            lookahead_target = np.flatnonzero(valid_mask)[-1]
+            for step_idx in np.flatnonzero(valid_mask):
+                if float(np.linalg.norm(decoded_xy[step_idx])) >= self.trajectory_lookahead_distance:
+                    lookahead_target = int(step_idx)
+                    break
+
+            if self.trajectory_tracker_type == "stanley":
+                steering = self._stanley_trajectory_steering(
+                    decoded_xy=decoded_xy,
+                    valid_mask=valid_mask,
+                    current_speed=float(current_speeds[row]),
+                    wheelbase=max(float(lengths[row]), 1e-3),
+                )
+            else:
+                target_x = float(decoded_xy[lookahead_target, 0])
+                target_y = float(decoded_xy[lookahead_target, 1])
+                lookahead_distance = max(float(np.linalg.norm(decoded_xy[lookahead_target])), 1e-3)
+                alpha = math.atan2(target_y, target_x)
+                curvature = (2.0 * math.sin(alpha)) / lookahead_distance
+                steering = math.atan(curvature * max(float(lengths[row]), 1e-3))
+            steering_cmd = _clip_float(
+                (self.trajectory_steer_gain * steering) / _MAX_CLASSIC_STEERING,
+                -1.0,
+                1.0,
+            )
+
+            target_speed = float(decoded_speed[np.flatnonzero(valid_mask)[0]])
+            speed_delta = target_speed - float(current_speeds[row])
+            acceleration_cmd = _clip_float(
+                (self.trajectory_accel_gain * speed_delta) / _MAX_CLASSIC_ACCELERATION,
+                -1.0,
+                1.0,
+            )
+            low_level_actions[row, 0] = acceleration_cmd
+            low_level_actions[row, 1] = steering_cmd
+
+        return low_level_actions
+
+    def _smooth_trajectory_positions(self, decoded_xy, valid_mask):
+        if self.trajectory_smoothing_window <= 1 or self.trajectory_smoothing_blend <= 0.0:
+            return decoded_xy
+
+        valid_indices = np.flatnonzero(valid_mask)
+        if valid_indices.size < 3:
+            return decoded_xy
+
+        horizon_xy = decoded_xy.copy()
+        contiguous_end = int(valid_indices[-1]) + 1
+        path_xy = horizon_xy[:contiguous_end].copy()
+        window = min(self.trajectory_smoothing_window, contiguous_end)
+        if window <= 1:
+            return decoded_xy
+        if window % 2 == 0:
+            window -= 1
+        if window <= 1:
+            return decoded_xy
+
+        kernel = np.ones(window, dtype=np.float32) / float(window)
+        pad = window // 2
+        for axis in range(2):
+            padded = np.pad(path_xy[:, axis], (pad, pad), mode="edge")
+            smoothed = np.convolve(padded, kernel, mode="valid")
+            path_xy[:, axis] = (
+                (1.0 - self.trajectory_smoothing_blend) * path_xy[:, axis]
+                + self.trajectory_smoothing_blend * smoothed.astype(np.float32)
+            )
+
+        path_xy[0] = horizon_xy[0]
+        horizon_xy[:contiguous_end] = path_xy
+        return horizon_xy
+
+    def _mpc_trajectory_control(self, decoded_xy, decoded_speed, valid_mask, current_speed, wheelbase):
+        valid_indices = np.flatnonzero(valid_mask)
+        if valid_indices.size == 0:
+            return 0.0, 0.0
+
+        horizon = min(self.trajectory_mpc_horizon_steps, int(valid_indices.size))
+        target_indices = valid_indices[:horizon]
+        target_xy = decoded_xy[target_indices]
+        target_speed = decoded_speed[target_indices]
+        target_heading = np.zeros(horizon, dtype=np.float32)
+        for step_idx in range(horizon):
+            if step_idx + 1 < horizon:
+                delta = target_xy[step_idx + 1] - target_xy[step_idx]
+            elif horizon > 1:
+                delta = target_xy[step_idx] - target_xy[step_idx - 1]
+            else:
+                delta = target_xy[step_idx]
+            target_heading[step_idx] = math.atan2(float(delta[1]), float(delta[0])) if float(np.dot(delta, delta)) > 1e-8 else 0.0
+
+        best_cost = float("inf")
+        best_action = (0.0, 0.0)
+        for accel_cmd in self.trajectory_mpc_acceleration_grid:
+            for steer_cmd in self.trajectory_mpc_steering_grid:
+                cost = self._rollout_mpc_cost(
+                    accel_cmd=float(accel_cmd),
+                    steer_angle=float(steer_cmd),
+                    target_xy=target_xy,
+                    target_speed=target_speed,
+                    target_heading=target_heading,
+                    current_speed=current_speed,
+                    wheelbase=wheelbase,
+                )
+                if cost < best_cost:
+                    best_cost = cost
+                    best_action = (float(accel_cmd), float(steer_cmd))
+        return best_action
+
+    def _rollout_mpc_cost(
+        self,
+        *,
+        accel_cmd,
+        steer_angle,
+        target_xy,
+        target_speed,
+        target_heading,
+        current_speed,
+        wheelbase,
+    ):
+        x = 0.0
+        y = 0.0
+        heading = 0.0
+        speed = float(current_speed)
+        accel = float(accel_cmd)
+        cost = 0.0
+
+        for step_idx in range(len(target_xy)):
+            speed = _clip_float(speed + accel * self.dt, -2.0, 20.0)
+            curvature = math.tan(steer_angle) / max(wheelbase, 1e-3)
+            heading = _wrap_to_pi(heading + speed * curvature * self.dt)
+            x += speed * math.cos(heading) * self.dt
+            y += speed * math.sin(heading) * self.dt
+
+            dx = x - float(target_xy[step_idx, 0])
+            dy = y - float(target_xy[step_idx, 1])
+            pos_cost = dx * dx + dy * dy
+            heading_cost = _wrap_to_pi(heading - float(target_heading[step_idx])) ** 2
+            speed_cost = (speed - float(target_speed[step_idx])) ** 2
+            step_weight = 1.0 + 0.15 * step_idx
+            cost += step_weight * (
+                self.trajectory_mpc_position_weight * pos_cost
+                + self.trajectory_mpc_heading_weight * heading_cost
+                + self.trajectory_mpc_speed_weight * speed_cost
+            )
+
+        control_cost = ((accel_cmd / _MAX_CLASSIC_ACCELERATION) ** 2) + ((steer_angle / _MAX_CLASSIC_STEERING) ** 2)
+        return cost + self.trajectory_mpc_control_weight * control_cost
+
+    def _stanley_trajectory_steering(self, decoded_xy, valid_mask, current_speed, wheelbase):
+        valid_indices = np.flatnonzero(valid_mask)
+        if valid_indices.size == 0:
+            return 0.0
+
+        path_points = decoded_xy[valid_indices]
+        if path_points.shape[0] == 1:
+            target_x = float(path_points[0, 0])
+            target_y = float(path_points[0, 1])
+            lookahead_distance = max(float(np.linalg.norm(path_points[0])), 1e-3)
+            alpha = math.atan2(target_y, target_x)
+            curvature = (2.0 * math.sin(alpha)) / lookahead_distance
+            return math.atan(curvature * wheelbase)
+
+        front_axle = np.array([wheelbase, 0.0], dtype=np.float32)
+        closest_distance = float("inf")
+        closest_point = path_points[0]
+        path_heading = math.atan2(float(path_points[1, 1] - path_points[0, 1]), float(path_points[1, 0] - path_points[0, 0]))
+
+        for seg_idx in range(path_points.shape[0] - 1):
+            start = path_points[seg_idx]
+            end = path_points[seg_idx + 1]
+            segment = end - start
+            segment_norm_sq = float(np.dot(segment, segment))
+            if segment_norm_sq <= 1e-8:
+                continue
+            projection = float(np.dot(front_axle - start, segment) / segment_norm_sq)
+            projection = min(max(projection, 0.0), 1.0)
+            projected_point = start + projection * segment
+            delta = front_axle - projected_point
+            distance = float(np.linalg.norm(delta))
+            if distance < closest_distance:
+                closest_distance = distance
+                closest_point = projected_point
+                path_heading = math.atan2(float(segment[1]), float(segment[0]))
+
+        heading_error = _wrap_to_pi(path_heading)
+        error_vector = front_axle - closest_point
+        tangent = np.array([math.cos(path_heading), math.sin(path_heading)], dtype=np.float32)
+        signed_cross_track = -float(tangent[0] * error_vector[1] - tangent[1] * error_vector[0])
+        stanley_term = math.atan2(
+            self.trajectory_stanley_gain * signed_cross_track,
+            abs(float(current_speed)) + self.trajectory_stanley_softening,
+        )
+        return heading_error + stanley_term
+
     def _postprocess_observations(self):
+        if self.is_trajectory_action and not self.is_trajectory_observation:
+            if self._suspend_trajectory_history_updates:
+                self._refresh_trajectory_state_cache()
+            else:
+                self._update_trajectory_history()
+        if self.is_trajectory_observation:
+            if self._suspend_trajectory_history_updates:
+                self._refresh_trajectory_state_cache()
+            else:
+                self._update_trajectory_history()
+            self.observations[:] = self._build_trajectory_history_observations()
+            return
         if getattr(self, "observation_mode", 0) != 1:
             return
         self.observations[:] = postprocess_sdc_only_with_trailer_observations(
@@ -928,11 +1621,63 @@ class Drive(pufferlib.PufferEnv):
             trajectories["is_vehicle"],
             trajectories["scenario_id"],
         )
-
         for key in trajectories:
             trajectories[key] = trajectories[key][:, None]
-
         return trajectories
+
+    def get_trajectory_targets(self, normalize=True):
+        trajectories = self.get_ground_truth_trajectories()
+        current_states = self._cached_global_agent_state
+        if current_states is None:
+            current_states = self.get_global_agent_state()
+
+        targets = np.zeros((self.num_agents, self.trajectory_horizon, self.trajectory_features), dtype=np.float32)
+        start_idx = int(self.tick) + 1
+
+        for row in range(self.num_agents):
+            current_x = float(current_states["x"][row])
+            current_y = float(current_states["y"][row])
+            current_heading = float(current_states["heading"][row])
+            cos_heading = math.cos(current_heading)
+            sin_heading = math.sin(current_heading)
+
+            for step_idx in range(self.trajectory_horizon):
+                traj_idx = start_idx + step_idx
+                if traj_idx >= trajectories["x"].shape[2]:
+                    break
+                valid = float(trajectories["valid"][row, 0, traj_idx])
+                if valid <= 0.0:
+                    continue
+
+                world_x = float(trajectories["x"][row, 0, traj_idx])
+                world_y = float(trajectories["y"][row, 0, traj_idx])
+                dx = world_x - current_x
+                dy = world_y - current_y
+                rel_x = dx * cos_heading + dy * sin_heading
+                rel_y = -dx * sin_heading + dy * cos_heading
+                rel_heading = _wrap_to_pi(float(trajectories["heading"][row, 0, traj_idx]) - current_heading)
+
+                prev_idx = max(traj_idx - 1, 0)
+                prev_x = float(trajectories["x"][row, 0, prev_idx])
+                prev_y = float(trajectories["y"][row, 0, prev_idx])
+                speed = math.sqrt((world_x - prev_x) ** 2 + (world_y - prev_y) ** 2) / max(float(self.dt), 1e-6)
+
+                if normalize:
+                    targets[row, step_idx, 0] = _encode_trajectory_position(rel_x)
+                    targets[row, step_idx, 1] = _encode_trajectory_position(rel_y)
+                    targets[row, step_idx, 2] = _encode_trajectory_heading(rel_heading)
+                    targets[row, step_idx, 3] = _encode_trajectory_speed(speed)
+                    targets[row, step_idx, 4] = valid
+                else:
+                    targets[row, step_idx, 0] = rel_x
+                    targets[row, step_idx, 1] = rel_y
+                    targets[row, step_idx, 2] = rel_heading
+                    targets[row, step_idx, 3] = speed
+                    targets[row, step_idx, 4] = valid
+
+        if normalize:
+            return targets.reshape(self.num_agents, self.trajectory_action_dim)
+        return targets
 
     def get_road_edge_polylines(self):
         """Get road edge polylines for all scenarios.

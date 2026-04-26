@@ -3,7 +3,11 @@
 
 import numpy as np
 import time
-import psutil
+import os
+try:
+    import psutil
+except ModuleNotFoundError:
+    psutil = None
 
 from pufferlib.emulation import GymnasiumPufferEnv, PettingZooPufferEnv
 from pufferlib import PufferEnv, set_buffers
@@ -106,7 +110,10 @@ class Serial:
                     infos[k] = []
 
                 if isinstance(v, list):
-                    infos[k].append(np.mean(v))
+                    try:
+                        infos[k].append(np.mean(v))
+                    except Exception:
+                        continue
                 else:
                     infos[k].append(v)
 
@@ -279,9 +286,11 @@ class Multiprocessing:
         if num_workers is None:
             num_workers = num_envs
 
-        import psutil
-
-        cpu_cores = psutil.cpu_count(logical=False)
+        cpu_cores = (
+            (psutil.cpu_count(logical=False) or os.cpu_count() or num_workers)
+            if psutil is not None
+            else (os.cpu_count() or num_workers)
+        )
         if num_workers > cpu_cores and not overwork:
             raise pufferlib.APIUsageError(
                 " ".join(
@@ -810,8 +819,12 @@ def autotune(
     if max_envs < batch_size:
         raise ValueError("max_envs < min_batch_size")
 
-    num_cores = psutil.cpu_count(logical=False)
-    idle_ram = psutil.Process().memory_info().rss
+    num_cores = (
+        (psutil.cpu_count(logical=False) or os.cpu_count() or 1)
+        if psutil is not None
+        else (os.cpu_count() or 1)
+    )
+    idle_ram = psutil.Process().memory_info().rss if psutil is not None else 0
     load_ram = idle_ram
 
     # Initial profile to estimate single-core performance
@@ -827,7 +840,8 @@ def autotune(
     reset_times = []
     start = time.time()
     while time.time() - start < time_per_test:
-        idle_ram = max(idle_ram, psutil.Process().memory_info().rss)
+        if psutil is not None:
+            idle_ram = max(idle_ram, psutil.Process().memory_info().rss)
         s = time.time()
         if env.done:
             env.reset()

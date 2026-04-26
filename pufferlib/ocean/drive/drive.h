@@ -315,6 +315,7 @@ struct Drive {
     int active_agent_count;
     int *active_agent_indices;
     int action_type;
+    int continuous_actions_are_physical;
     int human_agent_idx;
     Entity *entities;
     int num_entities;
@@ -347,6 +348,8 @@ struct Drive {
     int logs_capacity;
     int goal_behavior;
     float goal_target_distance;
+    int goal_at_gt_traj_end;
+    int substep_expert_interpolation;
     char *ini_file;
     char *scenario_id;
     int collision_behavior;
@@ -365,6 +368,43 @@ struct Drive {
     int control_mode;
     int observation_mode;
 };
+
+static inline int pufferdrive_substep_debug_enabled(void) {
+    const char *flag = getenv("PUFFERDRIVE_SUBSTEP_DEBUG");
+    return flag != NULL && flag[0] != '\0' && strcmp(flag, "0") != 0;
+}
+
+static inline void pufferdrive_substep_debug_log(const char *stage, Drive *env, int action_idx, int agent_idx) {
+    if (!pufferdrive_substep_debug_enabled()) {
+        return;
+    }
+    if (env == NULL || agent_idx < 0 || agent_idx >= env->num_entities) {
+        fprintf(stderr, "[substep-debug] stage=%s env=%p action_idx=%d agent_idx=%d (invalid)\n", stage, (void *)env,
+                action_idx, agent_idx);
+        fflush(stderr);
+        return;
+    }
+    Entity *agent = &env->entities[agent_idx];
+    float action_a = 0.0f;
+    float action_b = 0.0f;
+    if (env->actions != NULL && action_idx >= 0) {
+        if (env->action_type == 1) {
+            float(*action_array_f)[2] = (float(*)[2])env->actions;
+            action_a = action_array_f[action_idx][0];
+            action_b = action_array_f[action_idx][1];
+        } else {
+            int *action_array = (int *)env->actions;
+            action_a = (float)action_array[action_idx];
+        }
+    }
+    fprintf(stderr,
+            "[substep-debug] stage=%s map=%s t=%d dt=%.5f action_idx=%d agent_idx=%d action=(%.6f,%.6f) "
+            "pos=(%.6f,%.6f) vel=(%.6f,%.6f) heading=%.6f stopped=%d removed=%d collision=%d\n",
+            stage, env->map_name ? env->map_name : "<null>", env->timestep, env->dt, action_idx, agent_idx, action_a,
+            action_b, agent->x, agent->y, agent->vx, agent->vy, agent->heading, agent->stopped, agent->removed,
+            agent->collision_state);
+    fflush(stderr);
+}
 
 Entity *load_map_binary(const char *filename, Drive *env);
 
@@ -2099,6 +2139,17 @@ void remove_bad_trajectories(Drive *env) {
 void init_goal_positions(Drive *env) {
     for (int x = 0; x < env->active_agent_count; x++) {
         int agent_idx = env->active_agent_indices[x];
+        if (env->goal_at_gt_traj_end) {
+            int goal_idx = 0;
+            for (int t = 0; t < env->entities[agent_idx].array_size; t++) {
+                if (env->entities[agent_idx].traj_valid == NULL || env->entities[agent_idx].traj_valid[t]) {
+                    goal_idx = t;
+                }
+            }
+            env->entities[agent_idx].goal_position_x = env->entities[agent_idx].traj_x[goal_idx];
+            env->entities[agent_idx].goal_position_y = env->entities[agent_idx].traj_y[goal_idx];
+            env->entities[agent_idx].goal_position_z = env->entities[agent_idx].traj_z[goal_idx];
+        }
         env->entities[agent_idx].init_goal_x = env->entities[agent_idx].goal_position_x;
         env->entities[agent_idx].init_goal_y = env->entities[agent_idx].goal_position_y;
     }
@@ -2298,8 +2349,13 @@ void move_dynamics(Drive *env, int action_idx, int agent_idx) {
             acceleration = action_array_f[action_idx][0];
             steering = action_array_f[action_idx][1];
 
-            acceleration *= ACCELERATION_VALUES[6];
-            steering *= STEERING_VALUES[12];
+            if (env->continuous_actions_are_physical) {
+                acceleration = clip(acceleration, ACCELERATION_VALUES[0], ACCELERATION_VALUES[6]);
+                steering = clip(steering, STEERING_VALUES[0], STEERING_VALUES[12]);
+            } else {
+                acceleration *= ACCELERATION_VALUES[6];
+                steering *= STEERING_VALUES[12];
+            }
         } else { // discrete
             // Interpret action as a single integer: a = accel_idx * num_steer + steer_idx
             int *action_array = (int *)env->actions;
@@ -2611,6 +2667,55 @@ void c_get_partner_types(Drive *env, int *type_out) {
     }
 }
 
+void c_get_partner_ids(Drive *env, int *id_out) {
+    memset(id_out, 0, env->active_agent_count * (MAX_AGENTS - 1) * sizeof(int));
+    int (*ids)[MAX_AGENTS - 1] = (int (*)[MAX_AGENTS - 1])id_out;
+    for (int i = 0; i < env->active_agent_count; i++) {
+        Entity *ego_entity = &env->entities[env->active_agent_indices[i]];
+        if (ego_entity->type > 3) {
+            continue;
+        }
+
+        int partner_idx = 0;
+        for (int j = 0; j < MAX_AGENTS; j++) {
+            int index = -1;
+            if (j < env->active_agent_count) {
+                index = env->active_agent_indices[j];
+            } else if (j < env->num_actors) {
+                index = env->static_agent_indices[j - env->active_agent_count];
+            }
+            if (index == -1) {
+                continue;
+            }
+            if (env->entities[index].type > 3) {
+                break;
+            }
+            if (index == env->active_agent_indices[i]) {
+                continue;
+            }
+            if (has_valid_ego_trailer_pair(env) && env->active_agent_indices[i] == env->sdc_track_index &&
+                index == env->ego_trailer_track_index) {
+                continue;
+            }
+            Entity *other_entity = &env->entities[index];
+            if (ego_entity->respawn_timestep != -1 || other_entity->respawn_timestep != -1) {
+                continue;
+            }
+            float dx = other_entity->x - ego_entity->x;
+            float dy = other_entity->y - ego_entity->y;
+            float dist = (dx * dx + dy * dy);
+            if (dist > 2500.0f) {
+                continue;
+            }
+            if (partner_idx >= (MAX_AGENTS - 1)) {
+                break;
+            }
+            ids[i][partner_idx] = get_track_id_or_placeholder(env, index);
+            partner_idx++;
+        }
+    }
+}
+
 void c_get_active_agent_info(Drive *env, int *scenario_id_out, int *id_out) {
     for (int i = 0; i < env->active_agent_count; i++) {
         int agent_idx = env->active_agent_indices[i];
@@ -2720,6 +2825,84 @@ static inline void set_entity_state_to_logged_timestep(Entity *entity, int times
     entity->steering_angle = 0.0f;
 }
 
+static inline float wrap_angle_pi(float angle) {
+    while (angle > (float)M_PI)
+        angle -= 2.0f * (float)M_PI;
+    while (angle < -(float)M_PI)
+        angle += 2.0f * (float)M_PI;
+    return angle;
+}
+
+static inline float lerp_angle(float start, float end, float alpha) {
+    return start + wrap_angle_pi(end - start) * alpha;
+}
+
+static inline void set_entity_state_to_logged_timestep_fraction(Entity *entity, int timestep, float alpha) {
+    if (alpha <= 0.0f) {
+        set_entity_state_to_logged_timestep(entity, timestep);
+        return;
+    }
+    if (alpha >= 1.0f) {
+        set_entity_state_to_logged_timestep(entity, timestep + 1);
+        return;
+    }
+    if (entity->type > CYCLIST || entity->type == NONE) {
+        return;
+    }
+    int next_timestep = timestep + 1;
+    if (timestep < 0 || next_timestep >= entity->array_size || entity->traj_valid[timestep] == 0 ||
+        entity->traj_valid[next_timestep] == 0) {
+        set_entity_state_to_logged_timestep(entity, timestep);
+        return;
+    }
+
+    float beta = 1.0f - alpha;
+    entity->x = beta * entity->traj_x[timestep] + alpha * entity->traj_x[next_timestep];
+    entity->y = beta * entity->traj_y[timestep] + alpha * entity->traj_y[next_timestep];
+    entity->z = beta * entity->traj_z[timestep] + alpha * entity->traj_z[next_timestep];
+    entity->vx = beta * entity->traj_vx[timestep] + alpha * entity->traj_vx[next_timestep];
+    entity->vy = beta * entity->traj_vy[timestep] + alpha * entity->traj_vy[next_timestep];
+    entity->vz = beta * entity->traj_vz[timestep] + alpha * entity->traj_vz[next_timestep];
+    entity->heading = lerp_angle(entity->traj_heading[timestep], entity->traj_heading[next_timestep], alpha);
+    entity->heading_x = cosf(entity->heading);
+    entity->heading_y = sinf(entity->heading);
+    entity->valid = 1;
+    entity->collision_state = 0;
+    entity->combo_collision_any = 0;
+    entity->combo_collision_tractor_body = 0;
+    entity->combo_collision_trailer_body = 0;
+    entity->metrics_array[COLLISION_IDX] = 0.0f;
+    entity->metrics_array[OFFROAD_IDX] = 0.0f;
+    entity->metrics_array[REACHED_GOAL_IDX] = 0.0f;
+    entity->metrics_array[LANE_ALIGNED_IDX] = 0.0f;
+}
+
+static inline void sync_expert_entities_to_logged_fraction(Drive *env, float alpha) {
+    if (alpha <= 0.0f) {
+        for (int i = 0; i < env->expert_static_agent_count; i++) {
+            int expert_idx = env->expert_static_agent_indices[i];
+            move_expert_trajectory_only(env, expert_idx);
+        }
+        return;
+    }
+
+    if (alpha >= 1.0f) {
+        for (int i = 0; i < env->expert_static_agent_count; i++) {
+            int expert_idx = env->expert_static_agent_indices[i];
+            set_entity_state_to_logged_timestep(&env->entities[expert_idx], env->timestep + 1);
+        }
+        return;
+    }
+
+    for (int i = 0; i < env->expert_static_agent_count; i++) {
+        int expert_idx = env->expert_static_agent_indices[i];
+        set_entity_state_to_logged_timestep_fraction(&env->entities[expert_idx], env->timestep, alpha);
+    }
+}
+
+void compute_observations(Drive *env);
+void move_dynamics(Drive *env, int action_idx, int agent_idx);
+
 void c_set_logged_timestep(Drive *env, int timestep) {
     if (timestep < env->init_steps) {
         timestep = env->init_steps;
@@ -2737,6 +2920,159 @@ void c_set_logged_timestep(Drive *env, int timestep) {
     for (int i = 0; i < env->active_agent_count; i++) {
         int agent_idx = env->active_agent_indices[i];
         compute_agent_metrics(env, agent_idx);
+    }
+
+    compute_observations(env);
+}
+
+void c_physics_substep(Drive *env, float sub_dt, float alpha) {
+    if (sub_dt <= 0.0f) {
+        sub_dt = env->dt;
+    }
+    if (alpha < 0.0f) {
+        alpha = 0.0f;
+    } else if (alpha > 1.0f) {
+        alpha = 1.0f;
+    }
+
+    memset(env->rewards, 0, env->active_agent_count * sizeof(float));
+    memset(env->terminals, 0, env->active_agent_count * sizeof(unsigned char));
+
+    float original_dt = env->dt;
+    env->dt = sub_dt;
+
+    if (env->substep_expert_interpolation) {
+        sync_expert_entities_to_logged_fraction(env, alpha);
+    } else {
+        sync_expert_entities_to_logged_fraction(env, 0.0f);
+    }
+
+    for (int i = 0; i < env->active_agent_count; i++) {
+        int agent_idx = env->active_agent_indices[i];
+        env->entities[agent_idx].collision_state = 0;
+        pufferdrive_substep_debug_log("before_move_dynamics", env, i, agent_idx);
+        move_dynamics(env, i, agent_idx);
+        pufferdrive_substep_debug_log("after_move_dynamics", env, i, agent_idx);
+        if (env->dynamics_model != ARTICULATED && has_valid_ego_trailer_pair(env) && agent_idx == env->sdc_track_index) {
+            pufferdrive_substep_debug_log("before_update_trailer", env, i, agent_idx);
+            update_ego_trailer_pose(env);
+            pufferdrive_substep_debug_log("after_update_trailer", env, i, agent_idx);
+        }
+    }
+
+    env->dt = original_dt;
+
+    for (int i = 0; i < env->active_agent_count; i++) {
+        int agent_idx = env->active_agent_indices[i];
+        pufferdrive_substep_debug_log("before_compute_metrics", env, i, agent_idx);
+        compute_agent_metrics(env, agent_idx);
+        pufferdrive_substep_debug_log("after_compute_metrics", env, i, agent_idx);
+    }
+
+    compute_observations(env);
+}
+
+void sample_new_goal(Drive *env, int agent_idx);
+void respawn_agent(Drive *env, int agent_idx);
+
+void c_advance_logged_timestep_only(Drive *env) {
+    memset(env->rewards, 0, env->active_agent_count * sizeof(float));
+    memset(env->terminals, 0, env->active_agent_count * sizeof(unsigned char));
+
+    env->timestep++;
+    if (env->timestep >= env->episode_length) {
+        memset(env->terminals, 1, env->active_agent_count * sizeof(unsigned char));
+        return;
+    }
+
+    for (int i = 0; i < env->expert_static_agent_count; i++) {
+        int expert_idx = env->expert_static_agent_indices[i];
+        move_expert(env, env->actions, expert_idx);
+    }
+
+    for (int i = 0; i < env->active_agent_count; i++) {
+        int agent_idx = env->active_agent_indices[i];
+        env->logs[i].score = 0.0f;
+        env->logs[i].episode_length += 1;
+        env->entities[agent_idx].collision_state = 0;
+
+        compute_agent_metrics(env, agent_idx);
+        int collision_state = env->entities[agent_idx].collision_state;
+
+        if (collision_state > 0) {
+            if (collision_state == VEHICLE_COLLISION) {
+                env->rewards[i] += env->reward_vehicle_collision;
+                env->logs[i].episode_return += env->reward_vehicle_collision;
+                env->logs[i].collision_rate = 1.0f;
+                env->logs[i].collisions_per_agent += 1.0f;
+            } else if (collision_state == OFFROAD) {
+                env->rewards[i] += env->reward_offroad_collision;
+                env->logs[i].episode_return += env->reward_offroad_collision;
+                env->logs[i].offroad_rate = 1.0f;
+                env->logs[i].offroad_per_agent += 1.0f;
+            }
+
+            env->entities[agent_idx].collided_before_goal = 1;
+        }
+
+        float distance_to_goal =
+            relative_distance_2d(env->entities[agent_idx].x, env->entities[agent_idx].y,
+                                 env->entities[agent_idx].goal_position_x, env->entities[agent_idx].goal_position_y);
+        float current_speed = sqrtf(env->entities[agent_idx].vx * env->entities[agent_idx].vx +
+                                    env->entities[agent_idx].vy * env->entities[agent_idx].vy);
+
+        bool within_distance = distance_to_goal < env->goal_radius;
+        bool within_speed = current_speed <= env->goal_speed;
+
+        if (within_distance && within_speed && !env->entities[agent_idx].current_goal_reached) {
+            if (env->goal_behavior == GOAL_RESPAWN && env->entities[agent_idx].respawn_timestep != -1) {
+                env->rewards[i] += env->reward_goal_post_respawn;
+                env->logs[i].episode_return += env->reward_goal_post_respawn;
+                env->entities[agent_idx].current_goal_reached = 1;
+            } else if (env->goal_behavior == GOAL_GENERATE_NEW && (!env->entities[agent_idx].current_goal_reached)) {
+                env->rewards[i] += env->reward_goal;
+                env->logs[i].episode_return += env->reward_goal;
+                sample_new_goal(env, agent_idx);
+                env->entities[agent_idx].current_goal_reached = 0;
+                env->entities[agent_idx].goals_reached_this_episode += 1.0f;
+            } else {
+                env->rewards[i] = env->reward_goal;
+                env->logs[i].episode_return = env->reward_goal;
+                env->entities[agent_idx].current_goal_reached = 1;
+                env->entities[agent_idx].stopped = 1;
+                env->entities[agent_idx].vx = env->entities[agent_idx].vy = 0.0f;
+                if (agent_idx == env->sdc_track_index)
+                    freeze_ego_trailer_entity(env);
+                env->entities[agent_idx].goals_reached_this_episode += 1.0f;
+            }
+            env->entities[agent_idx].metrics_array[REACHED_GOAL_IDX] = 1.0f;
+            env->logs[i].speed_at_goal = current_speed;
+        }
+
+        int lane_aligned = env->entities[agent_idx].metrics_array[LANE_ALIGNED_IDX];
+        env->logs[i].lane_alignment_rate = lane_aligned;
+    }
+
+    if (env->goal_behavior == GOAL_RESPAWN) {
+        for (int i = 0; i < env->active_agent_count; i++) {
+            int agent_idx = env->active_agent_indices[i];
+            int reached_goal = env->entities[agent_idx].metrics_array[REACHED_GOAL_IDX];
+            if (reached_goal) {
+                respawn_agent(env, agent_idx);
+                env->entities[agent_idx].respawn_count++;
+            }
+        }
+    } else if (env->goal_behavior == GOAL_STOP) {
+        for (int i = 0; i < env->active_agent_count; i++) {
+            int agent_idx = env->active_agent_indices[i];
+            int reached_goal = env->entities[agent_idx].metrics_array[REACHED_GOAL_IDX];
+            if (reached_goal) {
+                env->entities[agent_idx].stopped = 1;
+                env->entities[agent_idx].vx = env->entities[agent_idx].vy = 0.0f;
+                if (agent_idx == env->sdc_track_index)
+                    freeze_ego_trailer_entity(env);
+            }
+        }
     }
 
     compute_observations(env);

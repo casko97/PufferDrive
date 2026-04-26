@@ -129,17 +129,18 @@ def _select_map_paths(
     sample_size: int | None,
     sample_seed: int,
 ) -> list[Path]:
+    canonical_paths = [path.resolve() for path in map_paths]
     if sample_size is None:
-        return map_paths
+        return canonical_paths
 
     if sample_size <= 0:
         raise ValueError(f"sample_size must be positive, got {sample_size}")
 
-    if sample_size >= len(map_paths):
-        return map_paths
+    if sample_size >= len(canonical_paths):
+        return canonical_paths
 
     rng = random.Random(sample_seed)
-    selected = rng.sample(map_paths, sample_size)
+    selected = rng.sample(canonical_paths, sample_size)
     return sorted(selected)
 
 
@@ -276,6 +277,14 @@ def _run_single_map_subprocess(
     if result_path.exists():
         result_path.unlink()
 
+    def _read_result() -> dict[str, Any] | None:
+        if not result_path.exists():
+            return None
+        with result_path.open("r", encoding="utf-8") as f:
+            payload = json.load(f)
+        result_path.unlink()
+        return payload
+
     cmd = [
         sys.executable,
         str(script_path),
@@ -292,21 +301,28 @@ def _run_single_map_subprocess(
         "--single-map-result-json",
         str(result_path),
     ]
+    env = os.environ.copy()
+    existing_pythonpath = env.get("PYTHONPATH")
+    repo_pythonpath = str(REPO_ROOT)
+    env["PYTHONPATH"] = (
+        f"{repo_pythonpath}{os.pathsep}{existing_pythonpath}"
+        if existing_pythonpath
+        else repo_pythonpath
+    )
 
-    proc = subprocess.Popen(cmd)
+    proc = subprocess.Popen(cmd, env=env, cwd=str(REPO_ROOT))
     deadline = time.monotonic() + timeout_sec
     try:
         while True:
-            if result_path.exists():
-                with result_path.open("r", encoding="utf-8") as f:
-                    payload = json.load(f)
-                result_path.unlink()
+            payload = _read_result()
+            if payload is not None:
                 return payload
 
             returncode = proc.poll()
             if returncode is not None:
-                if returncode == 0 and result_path.exists():
-                    continue
+                payload = _read_result()
+                if payload is not None:
+                    return payload
                 raise RuntimeError(
                     f"Single-map subprocess failed for {map_path.name} with exit code {returncode}"
                 )

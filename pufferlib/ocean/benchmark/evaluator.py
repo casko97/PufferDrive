@@ -2,7 +2,10 @@
 
 import torch
 import numpy as np
-import pandas as pd
+try:
+    import pandas as pd
+except ModuleNotFoundError:
+    pd = None
 from typing import Dict
 import matplotlib.pyplot as plt
 import configparser
@@ -41,7 +44,7 @@ class WOSACEvaluator:
         self.metrics_config = configparser.ConfigParser()
         self.metrics_config.read(wosac_metrics_path)
 
-    def _compute_metametric(self, metrics: pd.Series) -> float:
+    def _compute_metametric(self, metrics) -> float:
         metametric = 0.0
         for field_name in _METRIC_FIELD_NAMES:
             likelihood_field_name = "likelihood_" + field_name
@@ -109,7 +112,10 @@ class WOSACEvaluator:
                 with torch.no_grad():
                     ob_tensor = torch.as_tensor(obs).to(device)
                     logits, value = policy.forward_eval(ob_tensor, state)
-                    action, logprob, _ = pufferlib.pytorch.sample_logits(logits)
+                    deterministic_eval = getattr(policy, "is_trajectory_policy", False)
+                    action, logprob, _ = pufferlib.pytorch.eval_action_from_logits(
+                        logits, deterministic=deterministic_eval
+                    )
                     action_np = action.cpu().numpy().reshape(puffer_env.action_space.shape)
 
                 if isinstance(logits, torch.distributions.Normal):
@@ -466,6 +472,9 @@ class WOSACEvaluator:
         # Get agent IDs
         eval_agent_ids = ground_truth_trajectories["id"][eval_mask]
 
+        if pd is None:
+            raise ModuleNotFoundError("WOSAC evaluation requires the optional dependency 'pandas'")
+
         df = pd.DataFrame(
             {
                 "agent_id": eval_agent_ids.flatten(),
@@ -701,7 +710,10 @@ class HumanReplayEvaluator:
             with torch.no_grad():
                 ob_tensor = torch.as_tensor(obs).to(device)
                 logits, value = policy.forward_eval(ob_tensor, state)
-                action, logprob, _ = pufferlib.pytorch.sample_logits(logits)
+                deterministic_eval = getattr(policy, "is_trajectory_policy", False)
+                action, logprob, _ = pufferlib.pytorch.eval_action_from_logits(
+                    logits, deterministic=deterministic_eval
+                )
                 action_np = action.cpu().numpy().reshape(puffer_env.action_space.shape)
 
             if isinstance(logits, torch.distributions.Normal):

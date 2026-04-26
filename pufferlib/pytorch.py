@@ -225,3 +225,26 @@ def sample_logits(logits, action=None):
         return action.squeeze(0), logprob.squeeze(0), logits_entropy.squeeze(0)
 
     return action.T, logprob.sum(0), logits_entropy
+
+
+def eval_action_from_logits(logits, deterministic=False):
+    if isinstance(logits, torch.distributions.Normal):
+        if deterministic:
+            action = logits.loc.view(logits.loc.shape[0], -1)
+            log_probs = logits.log_prob(action).sum(1)
+            logits_entropy = logits.entropy().view(logits.loc.shape[0], -1).sum(1)
+            return action, log_probs, logits_entropy
+        return sample_logits(logits)
+
+    if not deterministic:
+        return sample_logits(logits)
+
+    if isinstance(logits, torch.Tensor):
+        action = logits.argmax(dim=-1)
+        normalized_logits = logits - logits.logsumexp(dim=-1, keepdim=True)
+        logprob = log_prob(normalized_logits, action)
+        logits_entropy = entropy(normalized_logits)
+        return action, logprob, logits_entropy
+
+    action = torch.stack([chunk.argmax(dim=1) for chunk in logits], dim=1)
+    return sample_logits(logits, action=action)

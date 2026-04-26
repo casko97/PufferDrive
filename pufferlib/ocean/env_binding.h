@@ -198,6 +198,42 @@ static PyObject *env_step(PyObject *self, PyObject *args) {
     Py_RETURN_NONE;
 }
 
+static PyObject *env_physics_substep(PyObject *self, PyObject *args) {
+    if (PyTuple_Size(args) != 3) {
+        PyErr_SetString(PyExc_TypeError, "env_physics_substep requires 3 arguments");
+        return NULL;
+    }
+
+    Env *env = unpack_env(args);
+    if (!env) {
+        return NULL;
+    }
+
+    float sub_dt = (float)PyFloat_AsDouble(PyTuple_GetItem(args, 1));
+    float alpha = (float)PyFloat_AsDouble(PyTuple_GetItem(args, 2));
+    if (PyErr_Occurred()) {
+        return NULL;
+    }
+
+    c_physics_substep((Drive *)env, sub_dt, alpha);
+    Py_RETURN_NONE;
+}
+
+static PyObject *env_advance_logged_timestep(PyObject *self, PyObject *args) {
+    if (PyTuple_Size(args) != 1) {
+        PyErr_SetString(PyExc_TypeError, "env_advance_logged_timestep requires 1 argument");
+        return NULL;
+    }
+
+    Env *env = unpack_env(args);
+    if (!env) {
+        return NULL;
+    }
+
+    c_advance_logged_timestep_only((Drive *)env);
+    Py_RETURN_NONE;
+}
+
 static PyObject *env_get_active_agent_count(PyObject *self, PyObject *args) {
     if (PyTuple_Size(args) != 1) {
         PyErr_SetString(PyExc_TypeError, "env_get_active_agent_count requires 1 argument");
@@ -659,6 +695,68 @@ static PyObject *vec_step(PyObject *self, PyObject *arg) {
     Py_RETURN_NONE;
 }
 
+static PyObject *vec_physics_substep(PyObject *self, PyObject *arg) {
+    if (PyTuple_Size(arg) != 3) {
+        PyErr_SetString(PyExc_TypeError, "vec_physics_substep requires 3 arguments");
+        return NULL;
+    }
+
+    VecEnv *vec = unpack_vecenv(arg);
+    if (!vec) {
+        return NULL;
+    }
+
+    float sub_dt = (float)PyFloat_AsDouble(PyTuple_GetItem(arg, 1));
+    float alpha = (float)PyFloat_AsDouble(PyTuple_GetItem(arg, 2));
+    if (PyErr_Occurred()) {
+        return NULL;
+    }
+
+    for (int i = 0; i < vec->num_envs; i++) {
+        c_physics_substep((Drive *)vec->envs[i], sub_dt, alpha);
+    }
+    Py_RETURN_NONE;
+}
+
+static PyObject *vec_advance_logged_timestep(PyObject *self, PyObject *arg) {
+    if (PyTuple_Size(arg) != 1) {
+        PyErr_SetString(PyExc_TypeError, "vec_advance_logged_timestep requires 1 argument");
+        return NULL;
+    }
+
+    VecEnv *vec = unpack_vecenv(arg);
+    if (!vec) {
+        return NULL;
+    }
+
+    for (int i = 0; i < vec->num_envs; i++) {
+        c_advance_logged_timestep_only((Drive *)vec->envs[i]);
+    }
+    Py_RETURN_NONE;
+}
+
+static PyObject *vec_set_logged_timestep(PyObject *self, PyObject *args) {
+    if (PyTuple_Size(args) != 2) {
+        PyErr_SetString(PyExc_TypeError, "vec_set_logged_timestep requires 2 arguments");
+        return NULL;
+    }
+
+    VecEnv *vec = unpack_vecenv(args);
+    if (!vec) {
+        return NULL;
+    }
+
+    int timestep = (int)PyLong_AsLong(PyTuple_GetItem(args, 1));
+    if (PyErr_Occurred()) {
+        return NULL;
+    }
+
+    for (int i = 0; i < vec->num_envs; i++) {
+        c_set_logged_timestep((Drive *)vec->envs[i], timestep);
+    }
+    Py_RETURN_NONE;
+}
+
 static PyObject *vec_render(PyObject *self, PyObject *args) {
     int num_args = PyTuple_Size(args);
     if (num_args != 2) {
@@ -680,6 +778,41 @@ static PyObject *vec_render(PyObject *self, PyObject *args) {
     int env_id = PyLong_AsLong(env_id_arg);
 
     c_render(vec->envs[env_id]);
+    Py_RETURN_NONE;
+}
+
+static PyObject *vec_get_agent_diagnostics(PyObject *self, PyObject *args) {
+    if (PyTuple_Size(args) != 6) {
+        PyErr_SetString(PyExc_TypeError, "vec_get_agent_diagnostics requires 6 arguments");
+        return NULL;
+    }
+
+    VecEnv *vec = unpack_vecenv(args);
+    if (!vec) {
+        return NULL;
+    }
+
+    PyArrayObject *collision_state = (PyArrayObject *)PyTuple_GetItem(args, 1);
+    PyArrayObject *offroad_flag = (PyArrayObject *)PyTuple_GetItem(args, 2);
+    PyArrayObject *reached_goal = (PyArrayObject *)PyTuple_GetItem(args, 3);
+    PyArrayObject *speed = (PyArrayObject *)PyTuple_GetItem(args, 4);
+    PyArrayObject *stopped = (PyArrayObject *)PyTuple_GetItem(args, 5);
+
+    for (int i = 0; i < vec->num_envs; i++) {
+        Drive *env = (Drive *)vec->envs[i];
+        for (int j = 0; j < env->active_agent_count; j++) {
+            int agent_idx = env->active_agent_indices[j];
+            ((int *)PyArray_DATA(collision_state))[i * env->active_agent_count + j] = env->entities[agent_idx].collision_state;
+            ((int *)PyArray_DATA(offroad_flag))[i * env->active_agent_count + j] =
+                (int)(env->entities[agent_idx].metrics_array[OFFROAD_IDX] > 0.5f);
+            ((int *)PyArray_DATA(reached_goal))[i * env->active_agent_count + j] =
+                (int)(env->entities[agent_idx].metrics_array[REACHED_GOAL_IDX] > 0.5f);
+            float vx = env->entities[agent_idx].vx;
+            float vy = env->entities[agent_idx].vy;
+            ((float *)PyArray_DATA(speed))[i * env->active_agent_count + j] = sqrtf(vx * vx + vy * vy);
+            ((int *)PyArray_DATA(stopped))[i * env->active_agent_count + j] = env->entities[agent_idx].stopped;
+        }
+    }
     Py_RETURN_NONE;
 }
 
@@ -948,6 +1081,34 @@ static PyObject *vec_get_partner_types(PyObject *self, PyObject *args) {
     Py_RETURN_NONE;
 }
 
+static PyObject *vec_get_partner_ids(PyObject *self, PyObject *args) {
+    if (PyTuple_Size(args) != 2) {
+        PyErr_SetString(PyExc_TypeError, "vec_get_partner_ids requires 2 arguments");
+        return NULL;
+    }
+
+    VecEnv *vec = unpack_vecenv(args);
+    if (!vec) {
+        return NULL;
+    }
+
+    PyObject *ids_arr = PyTuple_GetItem(args, 1);
+    if (!PyArray_Check(ids_arr)) {
+        PyErr_SetString(PyExc_TypeError, "Output array must be a NumPy array");
+        return NULL;
+    }
+    int *ids_base = (int *)PyArray_DATA((PyArrayObject *)ids_arr);
+
+    int offset = 0;
+    for (int i = 0; i < vec->num_envs; i++) {
+        Drive *drive = (Drive *)vec->envs[i];
+        c_get_partner_ids(drive, &ids_base[offset]);
+        offset += drive->active_agent_count * (MAX_AGENTS - 1);
+    }
+
+    Py_RETURN_NONE;
+}
+
 static PyObject *get_partner_types(PyObject *self, PyObject *args) {
     if (PyTuple_Size(args) != 2) {
         PyErr_SetString(PyExc_TypeError, "get_partner_types requires 2 arguments");
@@ -968,6 +1129,30 @@ static PyObject *get_partner_types(PyObject *self, PyObject *args) {
 
     int *types_data = (int *)PyArray_DATA((PyArrayObject *)types_arr);
     c_get_partner_types(drive, types_data);
+
+    Py_RETURN_NONE;
+}
+
+static PyObject *get_partner_ids(PyObject *self, PyObject *args) {
+    if (PyTuple_Size(args) != 2) {
+        PyErr_SetString(PyExc_TypeError, "get_partner_ids requires 2 arguments");
+        return NULL;
+    }
+
+    Env *env = unpack_env(args);
+    if (!env) {
+        return NULL;
+    }
+
+    Drive *drive = (Drive *)env;
+    PyObject *ids_arr = PyTuple_GetItem(args, 1);
+    if (!PyArray_Check(ids_arr)) {
+        PyErr_SetString(PyExc_TypeError, "Output array must be a NumPy array");
+        return NULL;
+    }
+
+    int *ids_data = (int *)PyArray_DATA((PyArrayObject *)ids_arr);
+    c_get_partner_ids(drive, ids_data);
 
     Py_RETURN_NONE;
 }
@@ -1360,6 +1545,9 @@ static PyMethodDef methods[] = {
      "Init environment with observation, action, reward, terminal, truncation arrays"},
     {"env_reset", env_reset, METH_VARARGS, "Reset the environment"},
     {"env_step", env_step, METH_VARARGS, "Step the environment"},
+    {"env_physics_substep", env_physics_substep, METH_VARARGS, "Advance physics without advancing logged time"},
+    {"env_advance_logged_timestep", env_advance_logged_timestep, METH_VARARGS,
+     "Advance logged scenario time without stepping controlled-agent physics"},
     {"env_get_active_agent_count", env_get_active_agent_count, METH_VARARGS, "Get active agent count"},
     {"env_get_active_agent_info", env_get_active_agent_info, METH_VARARGS,
      "Get active agent scenario ids and track ids"},
@@ -1375,19 +1563,28 @@ static PyMethodDef methods[] = {
     {"vec_init", (PyCFunction)vec_init, METH_VARARGS | METH_KEYWORDS, "Initialize a vector of environments"},
     {"vec_reset", vec_reset, METH_VARARGS, "Reset the vector of environments"},
     {"vec_step", vec_step, METH_VARARGS, "Step the vector of environments"},
+    {"vec_physics_substep", vec_physics_substep, METH_VARARGS,
+     "Advance vectorized env physics without advancing logged time"},
+    {"vec_advance_logged_timestep", vec_advance_logged_timestep, METH_VARARGS,
+     "Advance vectorized env logged scenario time"},
+    {"vec_set_logged_timestep", vec_set_logged_timestep, METH_VARARGS,
+     "Set vectorized envs to a logged scenario timestep"},
     {"vec_log", vec_log, METH_VARARGS, "Log the vector of environments"},
     {"vec_render", vec_render, METH_VARARGS, "Render the vector of environments"},
     {"vec_close", vec_close, METH_VARARGS, "Close the vector of environments"},
     {"shared", (PyCFunction)my_shared, METH_VARARGS | METH_KEYWORDS, "Shared state"},
     {"get_global_agent_state", get_global_agent_state, METH_VARARGS, "Get global agent state"},
     {"vec_get_global_agent_state", vec_get_global_agent_state, METH_VARARGS, "Get agent state from vectorized env"},
+    {"vec_get_agent_diagnostics", vec_get_agent_diagnostics, METH_VARARGS, "Get agent diagnostics from vectorized env"},
     {"get_global_agent_types", get_global_agent_types, METH_VARARGS, "Get global agent types"},
     {"get_partner_types", get_partner_types, METH_VARARGS, "Get partner agent types"},
+    {"get_partner_ids", get_partner_ids, METH_VARARGS, "Get partner agent ids"},
     {"get_ego_trailer_obs_features", get_ego_trailer_obs_features, METH_VARARGS,
      "Get ego trailer-relative observation features"},
     {"vec_get_global_agent_types", vec_get_global_agent_types, METH_VARARGS,
      "Get global agent types from vectorized env"},
     {"vec_get_partner_types", vec_get_partner_types, METH_VARARGS, "Get partner agent types from vectorized env"},
+    {"vec_get_partner_ids", vec_get_partner_ids, METH_VARARGS, "Get partner agent ids from vectorized env"},
     {"vec_get_ego_trailer_obs_features", vec_get_ego_trailer_obs_features, METH_VARARGS,
      "Get ego trailer-relative observation features from vectorized env"},
     {"get_sdc_trailer_state", get_sdc_trailer_state, METH_VARARGS, "Get SDC trailer state"},

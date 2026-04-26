@@ -21,9 +21,13 @@ import configparser
 from threading import Thread
 from collections import defaultdict, deque
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
-import psutil
+try:
+    import psutil
+except ModuleNotFoundError:
+    psutil = None
 
 import torch
 import torch.distributed
@@ -31,7 +35,10 @@ from torch.distributed.elastic.multiprocessing.errors import record
 import torch.utils.cpp_extension
 
 import pufferlib
-import pufferlib.sweep
+try:
+    import pufferlib.sweep
+except ModuleNotFoundError:
+    pufferlib.sweep = None
 import pufferlib.vector
 import pufferlib.pytorch
 import pufferlib.utils
@@ -44,13 +51,36 @@ except ImportError:
         "Failed to import C/CUDA advantage kernel. If you have non-default PyTorch, try installing with --no-build-isolation"
     )
 
-import rich
-import rich.traceback
-from rich.table import Table
-from rich.console import Console
-from rich_argparse import RichHelpFormatter
+try:
+    import rich
+    import rich.traceback
+    from rich.table import Table
+    from rich.console import Console
+    from rich_argparse import RichHelpFormatter
 
-rich.traceback.install(show_locals=False)
+    rich.traceback.install(show_locals=False)
+except ModuleNotFoundError:
+    class Table:
+        def __init__(self, *args, **kwargs):
+            self.rows = []
+
+        def add_column(self, *args, **kwargs):
+            return None
+
+        def add_row(self, *args, **kwargs):
+            self.rows.append(args)
+
+    class Console:
+        def print(self, *args, **kwargs):
+            return None
+
+    class RichHelpFormatter(argparse.HelpFormatter):
+        pass
+
+    rich = SimpleNamespace(
+        box=SimpleNamespace(ROUNDED=None),
+        traceback=SimpleNamespace(install=lambda **kwargs: None),
+    )
 
 import signal  # Aggressively exit on ctrl+c
 
@@ -165,9 +195,14 @@ class PuffeRL:
             )
 
         # Optimizer
+        trainable_parameters = [p for p in self.uncompiled_policy.parameters() if p.requires_grad]
+        if not trainable_parameters:
+            raise ValueError("No trainable policy parameters remain after applying trajectory training configuration")
+        self.trainable_parameters = trainable_parameters
+
         if config["optimizer"] == "adam":
             optimizer = torch.optim.Adam(
-                self.policy.parameters(),
+                self.trainable_parameters,
                 lr=config["learning_rate"],
                 betas=(config["adam_beta1"], config["adam_beta2"]),
                 eps=config["adam_eps"],
@@ -180,7 +215,7 @@ class PuffeRL:
 
             heavyball.utils.compile_mode = config["compile_mode"] if config["compile"] else None
             optimizer = ForeachMuon(
-                self.policy.parameters(),
+                self.trainable_parameters,
                 lr=config["learning_rate"],
                 betas=(config["adam_beta1"], config["adam_beta2"]),
                 eps=config["adam_eps"],
@@ -289,7 +324,9 @@ class PuffeRL:
                     state["lstm_c"] = self.lstm_c[env_id.start]
 
                 logits, value = self.policy.forward_eval(o_device, state)
-                action, logprob, _ = pufferlib.pytorch.sample_logits(logits)
+                action, logprob, _ = pufferlib.pytorch.eval_action_from_logits(
+                    logits, deterministic=False
+                )
                 r = torch.clamp(r, -1, 1)
                 if self.preference_reward is not None:
                     shaped_reward, pref_metrics = self.preference_reward.shape_rewards(
@@ -479,7 +516,7 @@ class PuffeRL:
             profile("learn", epoch)
             loss.backward()
             if (mb + 1) % self.accumulate_minibatches == 0:
-                torch.nn.utils.clip_grad_norm_(self.policy.parameters(), config["max_grad_norm"])
+                torch.nn.utils.clip_grad_norm_(self.trainable_parameters, config["max_grad_norm"])
                 self.optimizer.step()
                 self.optimizer.zero_grad()
 
@@ -492,7 +529,7 @@ class PuffeRL:
         y_true = advantages.flatten() + self.values.flatten()
         var_y = y_true.var()
         explained_var = torch.nan if var_y == 0 else 1 - (y_true - y_pred).var() / var_y
-        losses["explained_variance"] = explained_var.item()
+        losses["explained_variance"] = explained_var.item() if hasattr(explained_var, "item") else float(explained_var)
 
         profile.end()
         logs = None
@@ -740,13 +777,16 @@ class PuffeRL:
             if i == 30:
                 break
 
-        if clear:
+        if clear and hasattr(console, "clear"):
             console.clear()
 
-        with console.capture() as capture:
-            console.print(dashboard)
+        if hasattr(console, "capture"):
+            with console.capture() as capture:
+                console.print(dashboard)
 
-        print("\033[0;0H" + capture.get())
+            print("\033[0;0H" + capture.get())
+        else:
+            console.print(dashboard)
 
 
 def compute_puff_advantage(
@@ -878,9 +918,13 @@ class Utilization(Thread):
 
     def run(self):
         while not self.stopped:
-            self.cpu_util.append(psutil.cpu_percent())
-            mem = psutil.virtual_memory()
-            self.cpu_mem.append(100 * mem.active / mem.total)
+            if psutil is None:
+                self.cpu_util.append(0)
+                self.cpu_mem.append(0)
+            else:
+                self.cpu_util.append(psutil.cpu_percent())
+                mem = psutil.virtual_memory()
+                self.cpu_mem.append(100 * mem.active / mem.total)
             if torch.cuda.is_available():
                 # Monitoring in distributed crashes nvml
                 if torch.distributed.is_initialized():
@@ -1053,14 +1097,22 @@ def train(env_name, args=None, vecenv=None, policy=None, logger=None):
             if pufferl.global_step > 0.20 * train_config["total_timesteps"]:
                 all_logs.append(logs)
 
+    eval_cfg = args.get("eval", {})
+    skip_final_eval = (
+        int(eval_cfg.get("wosac_num_maps", 1)) <= 0
+        and not bool(eval_cfg.get("human_replay_eval", False))
+        and not bool(eval_cfg.get("wosac_realism_eval", False))
+    )
+
     # Final eval. You can reset the env here, but depending on
     # your env, this can skew data (i.e. you only collect the shortest
     # rollouts within a fixed number of epochs)
-    i = 0
-    stats = {}
-    while i < 32 or not stats:
-        stats = pufferl.evaluate()
-        i += 1
+    if not skip_final_eval:
+        i = 0
+        stats = {}
+        while i < 32 or not stats:
+            stats = pufferl.evaluate()
+            i += 1
 
     logs = pufferl.mean_and_log()
     if logs is not None:
@@ -1209,7 +1261,10 @@ def eval(env_name, args=None, vecenv=None, policy=None):
             with torch.no_grad():
                 ob = torch.as_tensor(ob).to(device)
                 logits, value = policy.forward_eval(ob, state)
-                action, logprob, _ = pufferlib.pytorch.sample_logits(logits)
+                deterministic_eval = getattr(policy, "is_trajectory_policy", False)
+                action, logprob, _ = pufferlib.pytorch.eval_action_from_logits(
+                    logits, deterministic=deterministic_eval
+                )
                 action = action.cpu().numpy().reshape(vecenv.action_space.shape)
 
             if isinstance(logits, torch.distributions.Normal):
@@ -1228,6 +1283,8 @@ def sweep(args=None, env_name=None):
     args = args or load_config(env_name)
     if not args["wandb"] and not args["neptune"]:
         raise pufferlib.APIUsageError("Sweeps require either wandb or neptune")
+    if pufferlib.sweep is None:
+        raise pufferlib.APIUsageError("Sweep support requires optional dependency 'pyro'")
 
     method = args["sweep"].pop("method")
     try:
@@ -1473,6 +1530,117 @@ def load_policy(args, vecenv, env_name=""):
 
     policy = policy.to(device)
 
+    def _unwrap_policy(model):
+        base_policy = model
+        while hasattr(base_policy, "policy"):
+            base_policy = base_policy.policy
+        return base_policy
+
+    def _apply_trajectory_training_configuration(model, config):
+        mode = str(config.get("trajectory_training_mode", "none"))
+        if mode in ("", "none"):
+            return
+
+        base_policy = _unwrap_policy(model)
+        if not getattr(base_policy, "is_trajectory_policy", False):
+            return
+
+        if bool(config.get("trajectory_reinit_value_head", False)):
+            base_policy.reinitialize_value_head()
+
+        freeze_backbone = bool(config.get("trajectory_freeze_backbone", True))
+        freeze_actor = bool(config.get("trajectory_freeze_actor_head", mode == "critic_warmstart"))
+        freeze_value = bool(config.get("trajectory_freeze_value_head", False))
+        train_actor = not freeze_actor
+        train_value = not freeze_value
+
+        for name, parameter in model.named_parameters():
+            qualified = f".{name}."
+            if ".actor." in qualified:
+                parameter.requires_grad = train_actor
+            elif ".value_fn." in qualified:
+                parameter.requires_grad = train_value
+            else:
+                parameter.requires_grad = not freeze_backbone
+
+    def _strip_module_prefix(state_dict):
+        return {k.replace("module.", ""): v for k, v in state_dict.items()}
+
+    def _validate_bc_checkpoint_compatibility(payload, args, policy, vecenv):
+        config = payload.get("config")
+        if not isinstance(config, dict):
+            return
+
+        checkpoint_env = config.get("env") or {}
+        checkpoint_policy = config.get("policy") or {}
+        live_env = args.get("env", {})
+        live_policy = args.get("policy", {})
+
+        mismatches = []
+
+        checkpoint_action_type = str(checkpoint_env.get("action_type", "trajectory"))
+        live_action_type = str(live_env.get("action_type", ""))
+        if live_action_type and live_action_type != checkpoint_action_type:
+            mismatches.append(
+                f"env.action_type live={live_action_type!r} checkpoint={checkpoint_action_type!r}"
+            )
+
+        for key in ("observation_mode", "dynamics_model"):
+            checkpoint_value = checkpoint_env.get(key)
+            live_value = live_env.get(key)
+            if checkpoint_value is not None and live_value is not None and live_value != checkpoint_value:
+                mismatches.append(f"env.{key} live={live_value!r} checkpoint={checkpoint_value!r}")
+
+        for key in ("input_size", "hidden_size"):
+            checkpoint_value = checkpoint_policy.get(key)
+            live_value = live_policy.get(key)
+            if checkpoint_value is not None and live_value is not None and live_value != checkpoint_value:
+                mismatches.append(f"policy.{key} live={live_value!r} checkpoint={checkpoint_value!r}")
+
+        driver_env = getattr(vecenv, "driver_env", None)
+        if driver_env is not None:
+            checkpoint_is_trajectory = checkpoint_action_type == "trajectory"
+            live_is_trajectory = bool(getattr(driver_env, "is_trajectory_action", False))
+            if live_is_trajectory != checkpoint_is_trajectory:
+                mismatches.append(
+                    f"env.is_trajectory_action live={live_is_trajectory!r} checkpoint={checkpoint_is_trajectory!r}"
+                )
+
+            checkpoint_obs_mode = checkpoint_env.get("observation_mode")
+            if checkpoint_obs_mode is not None:
+                live_obs_mode = getattr(driver_env, "observation_mode_str", None)
+                if live_obs_mode is not None and live_obs_mode != checkpoint_obs_mode:
+                    mismatches.append(
+                        f"env.observation_mode live={live_obs_mode!r} checkpoint={checkpoint_obs_mode!r}"
+                    )
+
+            expected_obs = payload["model_state_dict"].get("actor.weight")
+            if expected_obs is not None and expected_obs.shape[1] != getattr(policy.actor, "weight").shape[1]:
+                mismatches.append(
+                    "policy actor input dim differs between live policy and checkpoint "
+                    f"live={getattr(policy.actor, 'weight').shape[1]!r} checkpoint={expected_obs.shape[1]!r}"
+                )
+
+        if mismatches:
+            mismatch_text = "; ".join(mismatches)
+            raise ValueError(
+                "BC checkpoint is incompatible with the live simulator configuration: "
+                f"{mismatch_text}"
+            )
+
+    def _load_checkpoint_state(path):
+        payload = torch.load(path, map_location=device)
+        if isinstance(payload, dict) and "model_state_dict" in payload:
+            _validate_bc_checkpoint_compatibility(payload, args, policy, vecenv)
+            return _strip_module_prefix(payload["model_state_dict"])
+        if isinstance(payload, dict):
+            state_dict = _strip_module_prefix(payload)
+            known_keys = set(policy.state_dict().keys())
+            if not any(key in known_keys for key in state_dict.keys()):
+                raise ValueError(f"Unsupported checkpoint payload at {path}: expected a state_dict or BC payload")
+            return state_dict
+        raise ValueError(f"Unsupported checkpoint payload at {path}: expected a state_dict or BC payload")
+
     load_id = args["load_id"]
     if load_id is not None:
         if args["neptune"]:
@@ -1482,8 +1650,7 @@ def load_policy(args, vecenv, env_name=""):
         else:
             raise pufferlib.APIUsageError("No run id provided for eval")
 
-        state_dict = torch.load(path, map_location=device)
-        state_dict = {k.replace("module.", ""): v for k, v in state_dict.items()}
+        state_dict = _load_checkpoint_state(path)
         policy.load_state_dict(state_dict)
 
     load_path = args["load_model_path"]
@@ -1491,12 +1658,13 @@ def load_policy(args, vecenv, env_name=""):
         load_path = max(glob.glob(f"experiments/{env_name}*.pt"), key=os.path.getctime)
 
     if load_path is not None:
-        state_dict = torch.load(load_path, map_location=device)
-        state_dict = {k.replace("module.", ""): v for k, v in state_dict.items()}
+        state_dict = _load_checkpoint_state(load_path)
         policy.load_state_dict(state_dict)
         # state_path = os.path.join(*load_path.split('/')[:-1], 'state.pt')
         # optim_state = torch.load(state_path)['optimizer_state_dict']
         # pufferl.optimizer.load_state_dict(optim_state)
+
+    _apply_trajectory_training_configuration(policy, args["train"])
 
     return policy
 

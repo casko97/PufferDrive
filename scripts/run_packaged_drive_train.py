@@ -3,6 +3,7 @@ import argparse
 import ast
 import configparser
 import copy
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -98,6 +99,13 @@ def main() -> None:
         args["tag"] = args_ns.tag
     if args_ns.load_model_path is not None:
         args["load_model_path"] = args_ns.load_model_path
+
+    if args.get("env_name") == "puffer_drive":
+        helper = REPO_ROOT / "scripts" / "precompute_drive_map_validation_cache.py"
+        subprocess.run(
+            [sys.executable, str(helper), "--config", str(config_path)],
+            check=True,
+        )
 
     pufferl.train("puffer_drive", args=args)
 

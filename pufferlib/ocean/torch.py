@@ -12,10 +12,20 @@ from pufferlib.models import Convolutional as Conv  # noqa: F401
 Recurrent = pufferlib.models.LSTMWrapper
 EMPTY_PARTNER_EPS = 1e-8
 EGO_TRAILER_STATE_FEATURES = 4
+TRAJECTORY_HISTORY_FEATURES = 6
 
 
 class Drive(nn.Module):
-    def __init__(self, env, input_size=128, hidden_size=128, **kwargs):
+    def __init__(
+        self,
+        env,
+        input_size=128,
+        hidden_size=128,
+        initial_std_bias=0.0,
+        min_action_std=1e-4,
+        max_action_std=None,
+        **kwargs,
+    ):
         super().__init__()
         self.hidden_size = hidden_size
         self.observation_size = env.single_observation_space.shape[0]
@@ -25,6 +35,15 @@ class Drive(nn.Module):
         self.max_road_objects = env.max_road_objects
         self.road_features = env.road_features
         self.road_features_after_onehot = env.road_features + 6  # 6 is the number of one-hot encoded categories
+        self.is_trajectory_policy = getattr(env, "is_trajectory_action", False)
+        self.trajectory_base_obs_dim = getattr(env, "trajectory_base_obs_dim", self.observation_size)
+        self.trajectory_ego_history_dim = getattr(env, "trajectory_ego_history_dim", 0)
+        self.trajectory_partner_history_dim = getattr(env, "trajectory_partner_history_dim", 0)
+        self.trajectory_history_horizon = getattr(env, "trajectory_history_horizon", 0)
+        self.trajectory_history_features = getattr(env, "trajectory_history_features", TRAJECTORY_HISTORY_FEATURES)
+        self.initial_std_bias = float(initial_std_bias)
+        self.min_action_std = float(min_action_std)
+        self.max_action_std = None if max_action_std is None else float(max_action_std)
 
         self.base_ego_dim = 10 if env.dynamics_model == "jerk" else 7
         self.ego_dim = env.ego_features
@@ -62,9 +81,32 @@ class Drive(nn.Module):
             pufferlib.pytorch.layer_init(nn.Linear(input_size, input_size)),
         )
 
+        if self.trajectory_ego_history_dim > 0:
+            self.ego_history_encoder = nn.Sequential(
+                pufferlib.pytorch.layer_init(
+                    nn.Linear(self.trajectory_history_horizon * self.trajectory_history_features, input_size)
+                ),
+                nn.LayerNorm(input_size),
+                nn.GELU(),
+                pufferlib.pytorch.layer_init(nn.Linear(input_size, input_size)),
+            )
+            self.partner_history_encoder = nn.Sequential(
+                pufferlib.pytorch.layer_init(
+                    nn.Linear(self.trajectory_history_horizon * self.trajectory_history_features, input_size)
+                ),
+                nn.LayerNorm(input_size),
+                nn.GELU(),
+                pufferlib.pytorch.layer_init(nn.Linear(input_size, input_size)),
+            )
+            shared_input_dim = 5 * input_size
+        else:
+            self.ego_history_encoder = None
+            self.partner_history_encoder = None
+            shared_input_dim = 3 * input_size
+
         self.shared_embedding = nn.Sequential(
             nn.GELU(),
-            pufferlib.pytorch.layer_init(nn.Linear(3 * input_size, hidden_size)),
+            pufferlib.pytorch.layer_init(nn.Linear(shared_input_dim, hidden_size)),
         )
         self.is_continuous = isinstance(env.single_action_space, pufferlib.spaces.Box)
 
@@ -84,13 +126,35 @@ class Drive(nn.Module):
     def forward_train(self, x, state=None):
         return self.forward(x, state)
 
+    def forward_eval(self, x, state=None):
+        return self.forward(x, state)
+
+    def reinitialize_value_head(self):
+        refreshed = pufferlib.pytorch.layer_init(nn.Linear(self.hidden_size, 1), std=1)
+        device = self.value_fn.weight.device
+        dtype = self.value_fn.weight.dtype
+        refreshed = refreshed.to(device=device, dtype=dtype)
+        with torch.no_grad():
+            self.value_fn.weight.copy_(refreshed.weight)
+            self.value_fn.bias.copy_(refreshed.bias)
+
+    def configure_finetune_trainability(self, *, freeze_backbone=True, train_actor=True, train_value=True):
+        for name, parameter in self.named_parameters():
+            if name.startswith("actor."):
+                parameter.requires_grad = train_actor
+            elif name.startswith("value_fn."):
+                parameter.requires_grad = train_value
+            else:
+                parameter.requires_grad = not freeze_backbone
+
     def encode_observations(self, observations, state=None):
         ego_dim = self.ego_dim
         partner_dim = self.max_partner_objects * self.partner_features
         road_dim = self.max_road_objects * self.road_features
-        ego_obs = observations[:, :ego_dim]
-        partner_obs = observations[:, ego_dim : ego_dim + partner_dim]
-        road_obs = observations[:, ego_dim + partner_dim : ego_dim + partner_dim + road_dim]
+        base_obs = observations[:, : self.trajectory_base_obs_dim]
+        ego_obs = base_obs[:, :ego_dim]
+        partner_obs = base_obs[:, ego_dim : ego_dim + partner_dim]
+        road_obs = base_obs[:, ego_dim + partner_dim : ego_dim + partner_dim + road_dim]
 
         partner_objects = partner_obs.view(-1, self.max_partner_objects, self.partner_features)
         if self.has_partner_type:
@@ -125,6 +189,22 @@ class Drive(nn.Module):
         road_features, _ = self.road_encoder(road_objects).max(dim=1)
 
         concat_features = torch.cat([ego_features, road_features, partner_features], dim=1)
+        if self.trajectory_ego_history_dim > 0:
+            history_start = self.trajectory_base_obs_dim
+            history_end = history_start + self.trajectory_ego_history_dim
+            ego_history = observations[:, history_start:history_end]
+            ego_history_features = self.ego_history_encoder(ego_history)
+
+            partner_history = observations[:, history_end : history_end + self.trajectory_partner_history_dim]
+            partner_history = partner_history.view(
+                -1,
+                self.max_partner_objects,
+                self.trajectory_history_horizon * self.trajectory_history_features,
+            )
+            partner_history_features, _ = self.partner_history_encoder(partner_history).max(dim=1)
+            concat_features = torch.cat(
+                [ego_features, road_features, partner_features, ego_history_features, partner_history_features], dim=1
+            )
 
         # Pass through shared embedding
         embedding = F.relu(self.shared_embedding(concat_features))
@@ -135,7 +215,11 @@ class Drive(nn.Module):
         if self.is_continuous:
             parameters = self.actor(flat_hidden)
             loc, scale = torch.split(parameters, self.atn_dim, dim=1)
-            std = torch.nn.functional.softplus(scale) + 1e-4
+            std = torch.nn.functional.softplus(scale + self.initial_std_bias)
+            if self.max_action_std is None:
+                std = torch.clamp(std, min=self.min_action_std)
+            else:
+                std = torch.clamp(std, min=self.min_action_std, max=self.max_action_std)
             action = torch.distributions.Normal(loc, std)
         else:
             action = self.actor(flat_hidden)

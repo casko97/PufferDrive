@@ -149,6 +149,9 @@ static PyObject *my_shared(PyObject *self, PyObject *args, PyObject *kwargs) {
     int max_controlled_agents = unpack(kwargs, "max_controlled_agents");
     int goal_behavior = unpack(kwargs, "goal_behavior");
     float goal_target_distance = unpack(kwargs, "goal_target_distance");
+    int goal_at_gt_traj_end = kwargs && PyDict_GetItemString(kwargs, "goal_at_gt_traj_end")
+                                  ? (int)unpack(kwargs, "goal_at_gt_traj_end")
+                                  : 0;
     int sequential_map_sampling = unpack(kwargs, "sequential_map_sampling");
     float non_kinematic_override[13] = {0};
     int override_non_kinematic = 0;
@@ -178,6 +181,7 @@ static PyObject *my_shared(PyObject *self, PyObject *args, PyObject *kwargs) {
         env->max_controlled_agents = max_controlled_agents;
         env->goal_behavior = goal_behavior;
         env->goal_target_distance = goal_target_distance;
+        env->goal_at_gt_traj_end = goal_at_gt_traj_end;
         env->override_non_kinematic_vehicle_params = override_non_kinematic;
         env->force_zero_trailer_articulation_at_init = force_zero_trailer_articulation_at_init;
         if (override_non_kinematic) {
@@ -316,11 +320,18 @@ static int my_init(Env *env, PyObject *args, PyObject *kwargs) {
     if (kwargs && PyDict_GetItemString(kwargs, "dt")) {
         conf.dt = (float)unpack(kwargs, "dt");
     }
+    if (kwargs && PyDict_GetItemString(kwargs, "action_type")) {
+        conf.action_type = (int)unpack(kwargs, "action_type");
+    }
     if (conf.episode_length <= 0) {
         PyErr_SetString(PyExc_ValueError, "episode_length must be > 0 (set in INI or kwargs)");
         return -1;
     }
     env->action_type = conf.action_type;
+    env->continuous_actions_are_physical =
+        kwargs && PyDict_GetItemString(kwargs, "continuous_actions_are_physical")
+            ? (int)unpack(kwargs, "continuous_actions_are_physical")
+            : 0;
     env->dynamics_model = kwargs && PyDict_GetItemString(kwargs, "dynamics_model") ? (int)unpack(kwargs, "dynamics_model")
                                                                                    : conf.dynamics_model;
     env->reward_vehicle_collision = conf.reward_vehicle_collision;
@@ -337,6 +348,12 @@ static int my_init(Env *env, PyObject *args, PyObject *kwargs) {
     env->control_mode = (int)unpack(kwargs, "control_mode");
     env->goal_behavior = (int)unpack(kwargs, "goal_behavior");
     env->goal_target_distance = (float)unpack(kwargs, "goal_target_distance");
+    env->goal_at_gt_traj_end =
+        (kwargs && PyDict_GetItemString(kwargs, "goal_at_gt_traj_end")) ? (int)unpack(kwargs, "goal_at_gt_traj_end") : 0;
+    env->substep_expert_interpolation =
+        (kwargs && PyDict_GetItemString(kwargs, "substep_expert_interpolation"))
+            ? (int)unpack(kwargs, "substep_expert_interpolation")
+            : 1;
     env->goal_radius = (float)unpack(kwargs, "goal_radius");
     env->goal_speed = (float)unpack(kwargs, "goal_speed");
     env->vision_range = kwargs && PyDict_GetItemString(kwargs, "vision_range") ? (int)unpack(kwargs, "vision_range")
@@ -397,6 +414,9 @@ static PyObject *inspect_map(PyObject *self, PyObject *args, PyObject *kwargs) {
     int max_controlled_agents = unpack(kwargs, "max_controlled_agents");
     int goal_behavior = unpack(kwargs, "goal_behavior");
     float goal_target_distance = unpack(kwargs, "goal_target_distance");
+    int goal_at_gt_traj_end = kwargs && PyDict_GetItemString(kwargs, "goal_at_gt_traj_end")
+                                  ? (int)unpack(kwargs, "goal_at_gt_traj_end")
+                                  : 0;
     float non_kinematic_override[13] = {0};
     int override_non_kinematic = 0;
     if (unpack_non_kinematic_override(kwargs, non_kinematic_override, &override_non_kinematic) != 0) {
@@ -413,6 +433,7 @@ static PyObject *inspect_map(PyObject *self, PyObject *args, PyObject *kwargs) {
     env->max_controlled_agents = max_controlled_agents;
     env->goal_behavior = goal_behavior;
     env->goal_target_distance = goal_target_distance;
+    env->goal_at_gt_traj_end = goal_at_gt_traj_end;
     env->override_non_kinematic_vehicle_params = override_non_kinematic;
     env->force_zero_trailer_articulation_at_init = force_zero_trailer_articulation_at_init;
     if (override_non_kinematic) {
