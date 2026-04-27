@@ -4,6 +4,7 @@
 
 import contextlib
 import warnings
+import copy
 
 warnings.filterwarnings("error", category=RuntimeWarning)
 
@@ -88,6 +89,46 @@ signal.signal(signal.SIGINT, lambda sig, frame: os._exit(0))
 
 # Assume advantage kernel has been built if CUDA compiler is available
 ADVANTAGE_CUDA = shutil.which("nvcc") is not None
+
+
+def _strip_module_prefix(state_dict):
+    return {k.replace("module.", ""): v for k, v in state_dict.items()}
+
+
+def _load_checkpoint_state_dict(path, map_location="cpu"):
+    payload = torch.load(path, map_location=map_location)
+    if isinstance(payload, dict) and "model_state_dict" in payload:
+        payload = payload["model_state_dict"]
+    if not isinstance(payload, dict):
+        raise ValueError(f"Unsupported checkpoint payload at {path}: expected a state_dict or BC payload")
+    return _strip_module_prefix(payload)
+
+
+def _distribution_anchor_loss(current_logits, reference_logits, *, scale_weight=0.0):
+    if getattr(current_logits, "is_squashed_normal", False) and getattr(reference_logits, "is_squashed_normal", False):
+        loss = torch.nn.functional.mse_loss(current_logits.loc, reference_logits.loc)
+        if scale_weight > 0.0:
+            loss = loss + float(scale_weight) * torch.nn.functional.mse_loss(current_logits.scale, reference_logits.scale)
+        return loss
+
+    if isinstance(current_logits, torch.distributions.Normal) and isinstance(reference_logits, torch.distributions.Normal):
+        loss = torch.nn.functional.mse_loss(current_logits.loc, reference_logits.loc)
+        if scale_weight > 0.0:
+            loss = loss + float(scale_weight) * torch.nn.functional.mse_loss(current_logits.scale, reference_logits.scale)
+        return loss
+
+    if isinstance(current_logits, torch.Tensor) and isinstance(reference_logits, torch.Tensor):
+        reference_probs = torch.softmax(reference_logits, dim=-1)
+        current_log_probs = torch.log_softmax(current_logits, dim=-1)
+        return torch.nn.functional.kl_div(current_log_probs, reference_probs, reduction="batchmean")
+
+    if isinstance(current_logits, tuple) and isinstance(reference_logits, tuple):
+        total = 0.0
+        for cur, ref in zip(current_logits, reference_logits):
+            total = total + _distribution_anchor_loss(cur, ref, scale_weight=scale_weight)
+        return total
+
+    raise TypeError(f"Unsupported logits types for anchor loss: {type(current_logits)!r}, {type(reference_logits)!r}")
 
 
 class PuffeRL:
@@ -256,6 +297,19 @@ class PuffeRL:
         self.stats = defaultdict(list)
         self.last_stats = defaultdict(list)
         self.losses = {}
+        self.bc_anchor_weight = float(config.get("trajectory_bc_anchor_weight", 0.0) or 0.0)
+        self.bc_anchor_scale_weight = float(config.get("trajectory_bc_anchor_scale_weight", 0.0) or 0.0)
+        self.bc_anchor_policy = None
+        bc_anchor_checkpoint = config.get("trajectory_bc_anchor_checkpoint")
+        if self.bc_anchor_weight > 0.0:
+            if not bc_anchor_checkpoint:
+                raise ValueError("trajectory_bc_anchor_weight requires trajectory_bc_anchor_checkpoint")
+            anchor_policy = copy.deepcopy(self.uncompiled_policy).to(device)
+            anchor_policy.load_state_dict(_load_checkpoint_state_dict(bc_anchor_checkpoint, map_location=device))
+            anchor_policy.eval()
+            for parameter in anchor_policy.parameters():
+                parameter.requires_grad = False
+            self.bc_anchor_policy = anchor_policy
         self.preference_reward = PreferenceRewardManager.from_config(
             config.get("preference_reward"),
             env_config=config.get("env_config", {}),
@@ -456,6 +510,15 @@ class PuffeRL:
 
             logits, newvalue = self.policy(mb_obs, state)
             actions, newlogprob, entropy = pufferlib.pytorch.sample_logits(logits, action=mb_actions)
+            bc_anchor_loss = None
+            if self.bc_anchor_policy is not None:
+                with torch.no_grad():
+                    ref_logits, _ = self.bc_anchor_policy(mb_obs, state)
+                bc_anchor_loss = _distribution_anchor_loss(
+                    logits,
+                    ref_logits,
+                    scale_weight=self.bc_anchor_scale_weight,
+                )
 
             profile("train_misc", epoch)
             newlogprob = newlogprob.reshape(mb_logprobs.shape)
@@ -497,6 +560,8 @@ class PuffeRL:
             entropy_loss = entropy.mean()
 
             loss = pg_loss + config["vf_coef"] * v_loss - config["ent_coef"] * entropy_loss
+            if bc_anchor_loss is not None:
+                loss = loss + self.bc_anchor_weight * bc_anchor_loss
             self.amp_context.__enter__()  # TODO: AMP needs some debugging
 
             # This breaks vloss clipping?
@@ -511,6 +576,8 @@ class PuffeRL:
             losses["approx_kl"] += approx_kl.item() / self.total_minibatches
             losses["clipfrac"] += clipfrac.item() / self.total_minibatches
             losses["importance"] += ratio.mean().item() / self.total_minibatches
+            if bc_anchor_loss is not None:
+                losses["bc_anchor"] += bc_anchor_loss.item() / self.total_minibatches
 
             # Learn on accumulated minibatches
             profile("learn", epoch)

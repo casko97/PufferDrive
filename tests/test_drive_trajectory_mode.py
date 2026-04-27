@@ -324,6 +324,52 @@ def test_trajectory_smoothing_reduces_lateral_zigzag(tmp_path):
         env.close()
 
 
+def test_trajectory_smoothness_penalty_prefers_smoother_paths(tmp_path):
+    env = _make_env(
+        tmp_path / "smooth_reward",
+        trajectory_smoothness_xy_weight=0.1,
+    )
+    try:
+        straight_xy = np.zeros((env.trajectory_horizon, 2), dtype=np.float32)
+        straight_xy[:, 0] = np.linspace(1.0, 32.0, env.trajectory_horizon, dtype=np.float32)
+        zigzag_xy = straight_xy.copy()
+        zigzag_xy[:, 1] = np.where(np.arange(env.trajectory_horizon) % 2 == 0, 1.0, -1.0).astype(np.float32)
+        heading = np.zeros(env.trajectory_horizon, dtype=np.float32)
+        speed = np.ones(env.trajectory_horizon, dtype=np.float32)
+        valid_mask = np.ones(env.trajectory_horizon, dtype=bool)
+
+        straight_penalty = env._compute_trajectory_smoothness_penalty(straight_xy, heading, speed, valid_mask)
+        zigzag_penalty = env._compute_trajectory_smoothness_penalty(zigzag_xy, heading, speed, valid_mask)
+
+        np.testing.assert_allclose(straight_penalty, 0.0, atol=1e-6)
+        assert zigzag_penalty < straight_penalty
+    finally:
+        env.close()
+
+
+def test_trajectory_step_adds_smoothness_reward_penalty(tmp_path):
+    env = _make_env(
+        tmp_path / "step_smooth_reward",
+        trajectory_smoothness_xy_weight=0.1,
+    )
+    try:
+        env.reset(seed=0)
+        action = np.zeros((env.num_agents, env.trajectory_horizon, env.trajectory_features), dtype=np.float32)
+        action[:, :, 0] = np.linspace(0.02, 0.64, env.trajectory_horizon, dtype=np.float32)
+        action[:, :, 3] = 0.1
+        action[:, :, 4] = 1.0
+        zigzag_action = action.copy()
+        zigzag_action[:, :, 1] = np.where(np.arange(env.trajectory_horizon) % 2 == 0, 0.04, -0.04).astype(np.float32)
+
+        _, rewards, _, _, _ = env.step(zigzag_action.reshape(env.num_agents, env.trajectory_action_dim))
+
+        assert np.all(env._trajectory_smoothness_penalties < 0.0)
+        assert np.all(rewards < env._trajectory_smoothness_penalties + 1e-6)
+        assert np.all(np.abs(rewards - env._trajectory_smoothness_penalties) < 1e-2)
+    finally:
+        env.close()
+
+
 def test_physics_substep_advances_state_without_advancing_logged_tick(tmp_path):
     env = _make_env(tmp_path / "substep", num_agents=1)
     try:

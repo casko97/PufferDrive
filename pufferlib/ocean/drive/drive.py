@@ -537,6 +537,9 @@ class Drive(pufferlib.PufferEnv):
         trajectory_stanley_softening=_DEFAULT_TRAJECTORY_STANLEY_SOFTENING,
         trajectory_smoothing_window=_DEFAULT_TRAJECTORY_SMOOTHING_WINDOW,
         trajectory_smoothing_blend=_DEFAULT_TRAJECTORY_SMOOTHING_BLEND,
+        trajectory_smoothness_xy_weight=0.0,
+        trajectory_smoothness_heading_weight=0.0,
+        trajectory_smoothness_speed_weight=0.0,
         trajectory_control_substeps=1,
         substep_expert_interpolation=True,
         trajectory_mpc_horizon_steps=_DEFAULT_TRAJECTORY_MPC_HORIZON_STEPS,
@@ -648,6 +651,9 @@ class Drive(pufferlib.PufferEnv):
         self.trajectory_stanley_softening = max(float(trajectory_stanley_softening), 1e-3)
         self.trajectory_smoothing_window = max(1, int(trajectory_smoothing_window))
         self.trajectory_smoothing_blend = _clip_float(float(trajectory_smoothing_blend), 0.0, 1.0)
+        self.trajectory_smoothness_xy_weight = max(float(trajectory_smoothness_xy_weight), 0.0)
+        self.trajectory_smoothness_heading_weight = max(float(trajectory_smoothness_heading_weight), 0.0)
+        self.trajectory_smoothness_speed_weight = max(float(trajectory_smoothness_speed_weight), 0.0)
         self.trajectory_control_substeps = max(1, int(trajectory_control_substeps))
         self.substep_expert_interpolation = _as_bool(substep_expert_interpolation)
         self.trajectory_mpc_horizon_steps = max(1, int(trajectory_mpc_horizon_steps))
@@ -787,9 +793,11 @@ class Drive(pufferlib.PufferEnv):
         if self.is_trajectory_action:
             self._policy_actions = self.actions
             self._control_actions = np.zeros((self.num_agents, 2), dtype=np.float32)
+            self._trajectory_smoothness_penalties = np.zeros(self.num_agents, dtype=np.float32)
         else:
             self._policy_actions = self.actions
             self._control_actions = self.actions
+            self._trajectory_smoothness_penalties = np.zeros(self.num_agents, dtype=np.float32)
         self._sim_observations = self.observations
         if self.observation_mode == 1 or self.is_trajectory_observation:
             self._sim_observations = np.zeros((self.num_agents, self._sim_num_obs), dtype=np.float32)
@@ -939,6 +947,7 @@ class Drive(pufferlib.PufferEnv):
         self.terminals[:] = 0
         self.truncations[:] = 0
         self._policy_actions[:] = actions
+        self._trajectory_smoothness_penalties.fill(0.0)
         terminal_stop_info = None
         if self.is_trajectory_action and self.trajectory_control_substeps > 1:
             sub_dt = float(self.dt) / float(self.trajectory_control_substeps)
@@ -965,6 +974,8 @@ class Drive(pufferlib.PufferEnv):
                 self.actions[:] = actions
             binding.vec_step(self.c_envs)
             self.tick += 1
+        if self.is_trajectory_action:
+            self.rewards[:] = self.rewards + self._trajectory_smoothness_penalties
         info = []
         if self.tick % self.report_interval == 0:
             log = binding.vec_log(self.c_envs, self.num_agents)
@@ -992,12 +1003,15 @@ class Drive(pufferlib.PufferEnv):
         self.terminals[:] = 0
         self.truncations[:] = 0
         self._policy_actions[:] = actions
+        self._trajectory_smoothness_penalties.fill(0.0)
         if self.is_trajectory_action:
             decoded_actions = self._decode_trajectory_actions(actions)
             self._control_actions[:] = self._trajectory_to_control_actions(decoded_actions)
         else:
             self.actions[:] = actions
         binding.vec_physics_substep(self.c_envs, float(sub_dt), min(float(alpha), 1.0 - 1e-4))
+        if self.is_trajectory_action:
+            self.rewards[:] = self.rewards + self._trajectory_smoothness_penalties
         self._suspend_trajectory_history_updates = not bool(update_history)
         self._postprocess_observations()
         self._suspend_trajectory_history_updates = False
@@ -1318,6 +1332,7 @@ class Drive(pufferlib.PufferEnv):
 
         low_level_actions = np.zeros((self.num_agents, 2), dtype=np.float32)
         self._last_trajectory_control_debug = []
+        self._trajectory_smoothness_penalties.fill(0.0)
         current_speeds = self._sim_observations[:, 2] * _MAX_SPEED
         lengths = self._cached_global_agent_state["length"]
 
@@ -1333,8 +1348,15 @@ class Drive(pufferlib.PufferEnv):
                 decoded_xy[step_idx, 0] = _decode_trajectory_position(float(traj[step_idx, 0]))
                 decoded_xy[step_idx, 1] = _decode_trajectory_position(float(traj[step_idx, 1]))
                 decoded_speed[step_idx] = _decode_trajectory_speed(float(traj[step_idx, 3]))
+            decoded_heading = np.asarray([_decode_trajectory_heading(float(value)) for value in traj[:, 2]], dtype=np.float32)
 
             decoded_xy = self._smooth_trajectory_positions(decoded_xy, valid_mask)
+            self._trajectory_smoothness_penalties[row] = self._compute_trajectory_smoothness_penalty(
+                decoded_xy=decoded_xy,
+                decoded_heading=decoded_heading,
+                decoded_speed=decoded_speed,
+                valid_mask=valid_mask,
+            )
 
             if self.trajectory_tracker_type == "mpc":
                 requested_accel, requested_steer = self._mpc_trajectory_control(
@@ -1406,6 +1428,38 @@ class Drive(pufferlib.PufferEnv):
             low_level_actions[row, 1] = steering_cmd
 
         return low_level_actions
+
+    def _compute_trajectory_smoothness_penalty(self, decoded_xy, decoded_heading, decoded_speed, valid_mask):
+        valid_indices = np.flatnonzero(valid_mask)
+        if valid_indices.size < 3:
+            return 0.0
+
+        contiguous_end = int(valid_indices[-1]) + 1
+        if contiguous_end < 3:
+            return 0.0
+
+        penalty = 0.0
+        if self.trajectory_smoothness_xy_weight > 0.0:
+            deltas2_xy = decoded_xy[2:contiguous_end] - (2.0 * decoded_xy[1 : contiguous_end - 1]) + decoded_xy[: contiguous_end - 2]
+            penalty -= self.trajectory_smoothness_xy_weight * float(np.linalg.norm(deltas2_xy, axis=1).mean())
+
+        if self.trajectory_smoothness_heading_weight > 0.0:
+            delta_heading_1 = np.asarray(
+                [_wrap_to_pi(float(decoded_heading[idx + 1] - decoded_heading[idx])) for idx in range(contiguous_end - 1)],
+                dtype=np.float32,
+            )
+            delta_heading_2 = np.asarray(
+                [_wrap_to_pi(float(delta_heading_1[idx + 1] - delta_heading_1[idx])) for idx in range(delta_heading_1.shape[0] - 1)],
+                dtype=np.float32,
+            )
+            if delta_heading_2.size > 0:
+                penalty -= self.trajectory_smoothness_heading_weight * float(np.abs(delta_heading_2).mean())
+
+        if self.trajectory_smoothness_speed_weight > 0.0:
+            delta_speed_2 = decoded_speed[2:contiguous_end] - (2.0 * decoded_speed[1 : contiguous_end - 1]) + decoded_speed[: contiguous_end - 2]
+            penalty -= self.trajectory_smoothness_speed_weight * float(np.abs(delta_speed_2).mean())
+
+        return penalty
 
     def _smooth_trajectory_positions(self, decoded_xy, valid_mask):
         if self.trajectory_smoothing_window <= 1 or self.trajectory_smoothing_blend <= 0.0:

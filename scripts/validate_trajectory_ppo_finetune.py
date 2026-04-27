@@ -18,6 +18,7 @@ from scripts.plot_drive_trajectory_bc_deterministic_rollout import (
     dump_rollout_frames_json,
     render_deterministic_rollout_grid_from_json,
 )
+from scripts.run_packaged_drive_human_replay_eval import _select_map_paths
 from scripts.validate_trajectory_critic_warmstart import (
     DEFAULT_MAP_IDS,
     _config_warmstart_seconds,
@@ -28,9 +29,20 @@ from scripts.validate_trajectory_critic_warmstart import (
     summarize_weight_changes,
 )
 
+DEFAULT_PPO_VALIDATION_SAMPLE_SIZE = 16
+
 
 def default_map_paths(validation_map_dir: Path) -> list[Path]:
-    return [validation_map_dir / f"map_{map_id}.bin" for map_id in DEFAULT_MAP_IDS]
+    preferred = [validation_map_dir / f"map_{map_id}.bin" for map_id in DEFAULT_MAP_IDS]
+    all_map_paths = sorted(validation_map_dir.glob("map_*.bin"))
+    if not all_map_paths:
+        return preferred
+
+    preferred_existing = [path for path in preferred if path.exists()]
+    remaining_candidates = [path for path in all_map_paths if path.name not in {item.name for item in preferred_existing}]
+    remaining_budget = max(DEFAULT_PPO_VALIDATION_SAMPLE_SIZE - len(preferred_existing), 0)
+    sampled_remaining = _select_map_paths(remaining_candidates, remaining_budget, sample_seed=0)
+    return sorted(preferred_existing + sampled_remaining)
 
 
 def parse_args() -> argparse.Namespace:
@@ -51,7 +63,19 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         nargs="*",
         default=None,
-        help="Optional explicit held-out map paths; defaults to a small validation subset",
+        help="Optional explicit held-out map paths; defaults to a deterministic held-out validation subset",
+    )
+    parser.add_argument(
+        "--sample-size",
+        type=int,
+        default=DEFAULT_PPO_VALIDATION_SAMPLE_SIZE,
+        help="Held-out validation subset size when map paths are not explicitly provided",
+    )
+    parser.add_argument(
+        "--sample-seed",
+        type=int,
+        default=0,
+        help="Sampling seed for held-out validation subset selection",
     )
     parser.add_argument("--device", type=str, default="cpu")
     parser.add_argument("--seed", type=int, default=0, help="Reset seed for deterministic rollout collection")
@@ -288,7 +312,14 @@ def main() -> None:
     output_dir = args.output_dir.expanduser().resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
     validation_map_dir = args.validation_map_dir.expanduser().resolve()
-    map_paths = [path.expanduser().resolve() for path in (args.map_paths or default_map_paths(validation_map_dir))]
+    if args.map_paths:
+        candidate_paths = [path.expanduser().resolve() for path in args.map_paths]
+    else:
+        candidate_paths = [path.expanduser().resolve() for path in default_map_paths(validation_map_dir)]
+        if args.sample_size is not None and len(candidate_paths) != args.sample_size:
+            all_validation_maps = sorted(path.expanduser().resolve() for path in validation_map_dir.glob("map_*.bin"))
+            candidate_paths = _select_map_paths(all_validation_maps, args.sample_size, args.sample_seed)
+    map_paths = candidate_paths
     grid_map = (args.grid_map.expanduser().resolve() if args.grid_map else map_paths[0])
 
     rows_by_model = {
