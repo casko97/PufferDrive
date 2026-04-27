@@ -21,9 +21,9 @@ from pufferlib.ocean.drive.trajectory_bc_viz import (
     _decode_observation_road_segments,
     _parse_roads_with_fallback,
     _transform_points_to_ego_frame,
+    _trajectory_history_feature_dims,
     _TRAJECTORY_FEATURES,
     _TRAJECTORY_HORIZON,
-    _TRAJECTORY_HISTORY_FEATURES,
 )
 from pufferlib.pytorch import eval_action_from_logits
 from scripts.animate_drive_model_trajectories import build_args
@@ -642,11 +642,15 @@ def collect_deterministic_rollout_frames(
             rollout_world_positions.append([current_x, current_y])
 
             observation = np.asarray(obs[0], dtype=np.float32)
-            base_observation = observation[:_base_obs_dim()]
-            ego_hist_start = _base_obs_dim()
-            partner_hist_start = ego_hist_start + (_TRAJECTORY_HORIZON * _TRAJECTORY_HISTORY_FEATURES)
+            base_dim = _base_obs_dim(driver.dynamics_model, driver.observation_mode_str)
+            _ego_history_features, partner_history_features = _trajectory_history_feature_dims(
+                driver.observation_mode_str
+            )
+            base_observation = observation[:base_dim]
+            ego_hist_start = base_dim
+            partner_hist_start = ego_hist_start + (_TRAJECTORY_HORIZON * _ego_history_features)
             partner_history = observation[partner_hist_start:].reshape(
-                -1, _TRAJECTORY_HORIZON, _TRAJECTORY_HISTORY_FEATURES
+                -1, _TRAJECTORY_HORIZON, partner_history_features
             )
 
             with torch.no_grad():
@@ -675,7 +679,12 @@ def collect_deterministic_rollout_frames(
             observation_road_segments = (
                 []
                 if road_source == "map"
-                else _decode_observation_road_segments(base_observation, treat_length_as_half_segment=False)
+                else _decode_observation_road_segments(
+                    base_observation,
+                    dynamics_model=driver.dynamics_model,
+                    observation_mode=driver.observation_mode_str,
+                    treat_length_as_half_segment=False,
+                )
             )
             frames.append(
                 RolloutFrame(

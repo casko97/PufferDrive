@@ -12,6 +12,8 @@ from pufferlib.ocean.drive.trajectory_bc import (
     _base_obs_dim,
     _iter_sample_timesteps,
     _resolve_training_device,
+    _trajectory_history_feature_dims,
+    _trajectory_obs_dim,
     _TRAJECTORY_HISTORY_FEATURES,
     _TRAJECTORY_HORIZON,
     TrajectoryBCEnvConfig,
@@ -135,6 +137,49 @@ def _write_simple_trajectory_map(map_dir: Path):
     return scenario
 
 
+def _write_trailer_trajectory_map(map_dir: Path):
+    scenario = {
+        "metadata": {
+            "sdc_track_index": 0,
+            "has_ego_trailer": True,
+            "ego_trailer_track_index": 1,
+            "tracks_to_predict": [{"track_index": 0}],
+        },
+        "objects": [
+            {
+                "id": 200,
+                "type": "vehicle",
+                "length": 6.0,
+                "width": 2.5,
+                "height": 3.2,
+                **_linear_traj(0.0, 0.0, 1.0, 0.0),
+                "goalPosition": {"x": 100.0, "y": 0.0, "z": 0.0},
+            },
+            {
+                "id": 201,
+                "type": "vehicle",
+                "length": 10.0,
+                "width": 2.5,
+                "height": 3.2,
+                **_linear_traj(-8.0, 0.0, 1.0, 0.0),
+                "goalPosition": {"x": 90.0, "y": 0.0, "z": 0.0},
+            },
+            {
+                "id": 202,
+                "type": "vehicle",
+                "length": 4.5,
+                "width": 1.9,
+                "height": 1.6,
+                **_linear_traj(10.0, 0.0, 1.0, 0.0),
+                "goalPosition": {"x": 110.0, "y": 0.0, "z": 0.0},
+            },
+        ],
+        "roads": [],
+    }
+    save_map_binary(scenario, str(map_dir / "map_000.bin"), unique_map_id=10)
+    return scenario
+
+
 def test_iter_trajectory_bc_samples_produces_history_observations(tmp_path):
     map_dir = tmp_path / "maps"
     map_dir.mkdir()
@@ -149,12 +194,88 @@ def test_iter_trajectory_bc_samples_produces_history_observations(tmp_path):
     assert target.reshape(32, 5)[0, 4] == pytest.approx(1.0)
 
 
+def test_iter_trajectory_bc_samples_supports_extended_trailer_history(tmp_path):
+    map_dir = tmp_path / "maps"
+    map_dir.mkdir()
+    _write_trailer_trajectory_map(map_dir)
+    env_config = TrajectoryBCEnvConfig(
+        observation_mode="trajectory_history_32_sdc_only_with_trailer",
+        control_mode="control_sdc_only",
+    )
+
+    samples = list(
+        iter_trajectory_bc_samples(
+            map_dir / "map_000.bin",
+            env_config,
+            sample_stride=32,
+            sample_start_offset=31,
+            sample_end_offset=31,
+        )
+    )
+    assert samples
+
+    observation, target = samples[0]
+    assert observation.shape == (_trajectory_obs_dim("classic", env_config.observation_mode),)
+    assert target.shape == (160,)
+
+    base_dim = _base_obs_dim("classic", env_config.observation_mode)
+    ego_history_features, _partner_history_features = _trajectory_history_feature_dims(env_config.observation_mode)
+    ego_hist_start = base_dim
+    partner_hist_start = ego_hist_start + (_TRAJECTORY_HORIZON * ego_history_features)
+    ego_history = observation[ego_hist_start:partner_hist_start].reshape(
+        _TRAJECTORY_HORIZON,
+        ego_history_features,
+    )
+
+    assert ego_history[0, 6] == pytest.approx(4.0)
+    assert ego_history[0, 7] == pytest.approx(-8.0 * 0.02)
+    assert ego_history[1, 7] == pytest.approx(-9.0 * 0.02)
+
+
+def test_iter_trajectory_bc_samples_adds_active_partner_history_type(tmp_path):
+    map_dir = tmp_path / "maps"
+    map_dir.mkdir()
+    _write_simple_trajectory_map(map_dir)
+    env_config = TrajectoryBCEnvConfig(observation_mode="trajectory_history_32_sdc_only_with_trailer")
+
+    samples = list(
+        iter_trajectory_bc_samples(
+            map_dir / "map_000.bin",
+            env_config,
+            sample_stride=32,
+            sample_start_offset=31,
+            sample_end_offset=31,
+        )
+    )
+    assert samples
+
+    observation, _target = samples[0]
+    base_dim = _base_obs_dim("classic", env_config.observation_mode)
+    ego_history_features, partner_history_features = _trajectory_history_feature_dims(env_config.observation_mode)
+    partner_hist_start = base_dim + (_TRAJECTORY_HORIZON * ego_history_features)
+    partner_history = observation[partner_hist_start:].reshape(
+        -1,
+        _TRAJECTORY_HORIZON,
+        partner_history_features,
+    )
+
+    assert partner_history[0, 0, 5] == pytest.approx(1.0)
+    assert partner_history[0, 0, 6] == pytest.approx(1.0)
+
+
 def test_iter_trajectory_bc_samples_respects_stride_and_offsets(tmp_path):
     map_dir = tmp_path / "maps"
     map_dir.mkdir()
     _write_simple_trajectory_map(map_dir)
 
-    timesteps = list(_iter_sample_timesteps(91, start_offset=4, end_offset=8, stride=3))
+    timesteps = list(
+        _iter_sample_timesteps(
+            91,
+            start_offset=max(4, _TRAJECTORY_HORIZON - 1),
+            end_offset=max(8, _TRAJECTORY_HORIZON - 1),
+            stride=3,
+        )
+    )
     samples = list(
         iter_trajectory_bc_samples(
             map_dir / "map_000.bin",
@@ -345,6 +466,43 @@ def test_trajectory_bc_trainer_smoke(tmp_path):
     assert summary["history"]
     assert (tmp_path / "outputs" / "last.pt").exists()
     assert (tmp_path / "outputs" / "metrics.json").exists()
+
+
+def test_trajectory_bc_trainer_extended_trailer_history_smoke(tmp_path):
+    dataset_dir = tmp_path / "dataset"
+    dataset_dir.mkdir()
+    _write_trailer_trajectory_map(dataset_dir)
+
+    experiment = TrajectoryBCExperimentConfig(
+        train=TrajectoryBCTrainConfig(
+            dataset_dir=str(dataset_dir),
+            output_dir=str(tmp_path / "outputs_extended"),
+            device="cpu",
+            epochs=1,
+            batch_size=4,
+            learning_rate=1e-3,
+            num_workers=0,
+            val_fraction=0.5,
+            max_maps=-1,
+            save_best=True,
+            log_interval=0,
+            seed=7,
+            max_train_samples_per_epoch=8,
+            max_val_samples=4,
+        ),
+        env=TrajectoryBCEnvConfig(
+            observation_mode="trajectory_history_32_sdc_only_with_trailer",
+            control_mode="control_sdc_only",
+        ),
+        policy={"input_size": 32, "hidden_size": 64},
+    )
+
+    trainer = TrajectoryBCTrainer(experiment)
+    summary = trainer.train()
+
+    assert summary["history"]
+    assert (tmp_path / "outputs_extended" / "last.pt").exists()
+    assert (tmp_path / "outputs_extended" / "metrics.json").exists()
 
 
 def test_trajectory_bc_config_reads_wandb_fields(tmp_path):

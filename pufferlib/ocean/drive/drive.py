@@ -27,6 +27,10 @@ _TRAJECTORY_FEATURES = 5
 _TRAJECTORY_ACTION_DIM = _TRAJECTORY_HORIZON * _TRAJECTORY_FEATURES
 _TRAJECTORY_HISTORY_FEATURES = 6
 _TRAJECTORY_OBSERVATION_MODE = "trajectory_history_32"
+_TRAJECTORY_EXTENDED_OBSERVATION_MODE = "trajectory_history_32_sdc_only_with_trailer"
+_TRAJECTORY_OBSERVATION_MODES = {_TRAJECTORY_OBSERVATION_MODE, _TRAJECTORY_EXTENDED_OBSERVATION_MODE}
+_TRAJECTORY_EXTENDED_EGO_HISTORY_FEATURES = _TRAJECTORY_HISTORY_FEATURES + 1 + _EGO_TRAILER_STATE_FEATURES
+_TRAJECTORY_EXTENDED_PARTNER_HISTORY_FEATURES = _TRAJECTORY_HISTORY_FEATURES + 1
 _MAX_CLASSIC_ACCELERATION = 4.0
 _MAX_CLASSIC_STEERING = 1.0
 _DEFAULT_TRAJECTORY_LOOKAHEAD = 6.0
@@ -171,8 +175,47 @@ def _decode_trajectory_speed(value):
     return _clip_float(value, 0.0, 1.0) * _MAX_SPEED
 
 
-def _make_history_state(x, y, heading, speed, valid):
-    return np.array([x, y, heading, speed, float(valid)], dtype=np.float32)
+def _make_history_state(
+    x,
+    y,
+    heading,
+    speed,
+    valid,
+    policy_type=0,
+    trailer_x=0.0,
+    trailer_y=0.0,
+    trailer_heading=0.0,
+    trailer_valid=0.0,
+):
+    return np.array(
+        [
+            x,
+            y,
+            heading,
+            speed,
+            float(valid),
+            float(policy_type),
+            trailer_x,
+            trailer_y,
+            trailer_heading,
+            float(trailer_valid),
+        ],
+        dtype=np.float32,
+    )
+
+
+def _is_trajectory_observation_mode(observation_mode):
+    return str(observation_mode) in _TRAJECTORY_OBSERVATION_MODES
+
+
+def _trajectory_uses_augmented_base_observation(observation_mode):
+    return str(observation_mode) == _TRAJECTORY_EXTENDED_OBSERVATION_MODE
+
+
+def _trajectory_history_feature_dims(observation_mode):
+    if str(observation_mode) == _TRAJECTORY_EXTENDED_OBSERVATION_MODE:
+        return _TRAJECTORY_EXTENDED_EGO_HISTORY_FEATURES, _TRAJECTORY_EXTENDED_PARTNER_HISTORY_FEATURES
+    return _TRAJECTORY_HISTORY_FEATURES, _TRAJECTORY_HISTORY_FEATURES
 
 
 def _load_non_kinematic_vehicle_params_from_bin(binary_path):
@@ -642,7 +685,9 @@ class Drive(pufferlib.PufferEnv):
         self.trajectory_action_dim = _TRAJECTORY_ACTION_DIM
         self.trajectory_features = _TRAJECTORY_FEATURES
         self.trajectory_history_horizon = _TRAJECTORY_HORIZON
-        self.trajectory_history_features = _TRAJECTORY_HISTORY_FEATURES
+        history_feature_dims = _trajectory_history_feature_dims(observation_mode)
+        self.trajectory_ego_history_features, self.trajectory_partner_history_features = history_feature_dims
+        self.trajectory_history_features = self.trajectory_ego_history_features
         self.trajectory_lookahead_distance = float(trajectory_lookahead_distance)
         self.trajectory_accel_gain = float(trajectory_accel_gain)
         self.trajectory_steer_gain = float(trajectory_steer_gain)
@@ -671,21 +716,23 @@ class Drive(pufferlib.PufferEnv):
                 f"Got: {trajectory_tracker_type!r}"
             )
         self.is_trajectory_action = self.action_type_str == "trajectory"
-        self.is_trajectory_observation = self.observation_mode_str == _TRAJECTORY_OBSERVATION_MODE
+        self.is_trajectory_observation = _is_trajectory_observation_mode(self.observation_mode_str)
         self.trajectory_control_is_physical = (
             self.is_trajectory_action and self.trajectory_tracker_type == "mpc" and self.dynamics_model in ("classic", "articulated")
         )
         self._last_trajectory_control_debug: list[dict[str, float | int | bool | str]] = []
         self._needs_reset = False
 
-        if self.observation_mode_str == "default" or self.is_trajectory_observation:
+        if self.observation_mode_str == "default" or self.observation_mode_str == _TRAJECTORY_OBSERVATION_MODE:
             self.observation_mode = 0
-        elif self.observation_mode_str == "sdc_only_with_trailer":
+        elif self.observation_mode_str == "sdc_only_with_trailer" or _trajectory_uses_augmented_base_observation(
+            self.observation_mode_str
+        ):
             self.observation_mode = 1
         else:
             raise ValueError(
                 "observation_mode must be one of 'default', 'sdc_only_with_trailer', "
-                f"or '{_TRAJECTORY_OBSERVATION_MODE}'. "
+                f"'{_TRAJECTORY_OBSERVATION_MODE}', or '{_TRAJECTORY_EXTENDED_OBSERVATION_MODE}'. "
                 f"Got: {self.observation_mode_str}"
             )
         if self.observation_mode == 0:
@@ -704,9 +751,9 @@ class Drive(pufferlib.PufferEnv):
         self.trajectory_ego_history_dim = 0
         self.trajectory_partner_history_dim = 0
         if self.is_trajectory_observation:
-            self.trajectory_ego_history_dim = self.trajectory_history_horizon * self.trajectory_history_features
+            self.trajectory_ego_history_dim = self.trajectory_history_horizon * self.trajectory_ego_history_features
             self.trajectory_partner_history_dim = (
-                self.max_partner_objects * self.trajectory_history_horizon * self.trajectory_history_features
+                self.max_partner_objects * self.trajectory_history_horizon * self.trajectory_partner_history_features
             )
             self.num_obs = (
                 self._base_policy_num_obs + self.trajectory_ego_history_dim + self.trajectory_partner_history_dim
@@ -1193,16 +1240,42 @@ class Drive(pufferlib.PufferEnv):
         self._cached_global_agent_state = self.get_global_agent_state()
         self._cached_partner_ids = self.get_partner_ids()
 
-    def _append_trajectory_state(self, entity_id, x, y, heading, speed, valid):
+    def _append_trajectory_state(
+        self,
+        entity_id,
+        x,
+        y,
+        heading,
+        speed,
+        valid,
+        policy_type=0,
+        trailer_x=0.0,
+        trailer_y=0.0,
+        trailer_heading=0.0,
+        trailer_valid=0.0,
+    ):
         if entity_id < 0:
             return
         history = self._trajectory_entity_history.get(entity_id)
         if history is None:
             history = deque(maxlen=self.trajectory_history_horizon)
             self._trajectory_entity_history[entity_id] = history
-        history.append(_make_history_state(x, y, heading, speed, valid))
+        history.append(
+            _make_history_state(
+                x,
+                y,
+                heading,
+                speed,
+                valid,
+                policy_type=policy_type,
+                trailer_x=trailer_x,
+                trailer_y=trailer_y,
+                trailer_heading=trailer_heading,
+                trailer_valid=trailer_valid,
+            )
+        )
 
-    def _decode_current_partner_states(self, ego_states, partner_ids):
+    def _decode_current_partner_states(self, ego_states, partner_ids, partner_types=None):
         partner_states = {}
         partner_offset = self._base_ego_features
         partner_dim = self.max_partner_objects * self._base_partner_features
@@ -1235,18 +1308,47 @@ class Drive(pufferlib.PufferEnv):
                     _wrap_to_pi(float(ego_heading[row] + rel_heading)),
                     float(features[6]) * _MAX_SPEED,
                     1.0,
+                    int(partner_types[row, slot]) if partner_types is not None else 0,
                 )
         return partner_states
+
+    def _agent_row_env_index(self, row):
+        return max(0, min(int(np.searchsorted(self.agent_offsets, row, side="right") - 1), self.num_envs - 1))
 
     def _update_trajectory_history(self):
         ego_states = self.get_global_agent_state()
         partner_ids = self.get_partner_ids()
         ego_speeds = self._sim_observations[:, 2] * _MAX_SPEED
+        extended_history = self.trajectory_ego_history_features > _TRAJECTORY_HISTORY_FEATURES
+        ego_types = self.get_global_agent_types() if extended_history else None
+        partner_types = self.get_partner_types() if extended_history else None
+        trailer_features = self.get_ego_trailer_obs_features() if extended_history else None
+        trailer_state = self.get_sdc_trailer_state() if extended_history else None
 
         self._cached_global_agent_state = ego_states
         self._cached_partner_ids = partner_ids
 
         for idx in range(self.num_agents):
+            trailer_valid = 0.0
+            trailer_x = 0.0
+            trailer_y = 0.0
+            trailer_heading = 0.0
+            if extended_history and trailer_features is not None and trailer_state is not None:
+                env_idx = self._agent_row_env_index(idx)
+                has_trailer = int(trailer_state["has_trailer"][env_idx]) > 0
+                feature_values = (
+                    float(trailer_features["rel_x"][idx]),
+                    float(trailer_features["rel_y"][idx]),
+                    float(trailer_features["rel_heading_x"][idx]),
+                    float(trailer_features["rel_heading_y"][idx]),
+                )
+                row_has_trailer = any(abs(value) > _EMPTY_PARTNER_EPS for value in feature_values)
+                if has_trailer and row_has_trailer:
+                    trailer_valid = 1.0
+                    trailer_x = float(trailer_state["x"][env_idx])
+                    trailer_y = float(trailer_state["y"][env_idx])
+                    trailer_heading = float(trailer_state["heading"][env_idx])
+
             self._append_trajectory_state(
                 int(ego_states["id"][idx]),
                 float(ego_states["x"][idx]),
@@ -1254,13 +1356,26 @@ class Drive(pufferlib.PufferEnv):
                 float(ego_states["heading"][idx]),
                 float(ego_speeds[idx]),
                 1.0,
+                policy_type=int(ego_types[idx]) if ego_types is not None else 0,
+                trailer_x=trailer_x,
+                trailer_y=trailer_y,
+                trailer_heading=trailer_heading,
+                trailer_valid=trailer_valid,
             )
 
-        for entity_id, state in self._decode_current_partner_states(ego_states, partner_ids).items():
-            self._append_trajectory_state(entity_id, *state)
+        for entity_id, state in self._decode_current_partner_states(ego_states, partner_ids, partner_types).items():
+            self._append_trajectory_state(
+                entity_id,
+                state[0],
+                state[1],
+                state[2],
+                state[3],
+                state[4],
+                policy_type=state[5],
+            )
 
-    def _encode_history_block(self, history, current_x, current_y, current_heading):
-        block = np.zeros((self.trajectory_history_horizon, self.trajectory_history_features), dtype=np.float32)
+    def _encode_history_block(self, history, current_x, current_y, current_heading, history_features, include_trailer):
+        block = np.zeros((self.trajectory_history_horizon, history_features), dtype=np.float32)
         cos_heading = math.cos(current_heading)
         sin_heading = math.sin(current_heading)
 
@@ -1279,11 +1394,40 @@ class Drive(pufferlib.PufferEnv):
                 block[step_idx, 3] = math.sin(rel_heading)
                 block[step_idx, 4] = _encode_trajectory_speed(float(state[3]))
                 block[step_idx, 5] = float(state[4])
+                if history_features > _TRAJECTORY_HISTORY_FEATURES and float(state[4]) > 0.0:
+                    block[step_idx, 6] = float(state[5])
+                if include_trailer and history_features >= _TRAJECTORY_EXTENDED_EGO_HISTORY_FEATURES:
+                    if len(state) > 9 and float(state[9]) > 0.0:
+                        trailer_dx = float(state[6] - current_x)
+                        trailer_dy = float(state[7] - current_y)
+                        trailer_rel_x = trailer_dx * cos_heading + trailer_dy * sin_heading
+                        trailer_rel_y = -trailer_dx * sin_heading + trailer_dy * cos_heading
+                        trailer_rel_heading = _wrap_to_pi(float(state[8]) - current_heading)
+                        block[step_idx, 7] = _encode_trajectory_position(trailer_rel_x)
+                        block[step_idx, 8] = _encode_trajectory_position(trailer_rel_y)
+                        block[step_idx, 9] = math.cos(trailer_rel_heading)
+                        block[step_idx, 10] = math.sin(trailer_rel_heading)
         return block
+
+    def _build_policy_base_observations(self):
+        if self.observation_mode != 1:
+            return self._sim_observations[:, : self._base_policy_num_obs]
+        return postprocess_sdc_only_with_trailer_observations(
+            sim_observations=self._sim_observations,
+            ego_types=self.get_global_agent_types(),
+            partner_types=self.get_partner_types(),
+            ego_trailer_features=self.get_ego_trailer_obs_features(),
+            base_ego_features=self._base_ego_features,
+            base_partner_features=self._base_partner_features,
+            max_partner_objects=self.max_partner_objects,
+            max_road_objects=self.max_road_objects,
+            road_features=self.road_features,
+            type_classes=self.type_classes,
+        )
 
     def _build_trajectory_history_observations(self):
         observations = np.zeros((self.num_agents, self.num_obs), dtype=np.float32)
-        observations[:, : self._base_policy_num_obs] = self._sim_observations[:, : self._base_policy_num_obs]
+        observations[:, : self._base_policy_num_obs] = self._build_policy_base_observations()
         ego_hist_start = self._base_policy_num_obs
         partner_hist_start = ego_hist_start + self.trajectory_ego_history_dim
 
@@ -1297,12 +1441,17 @@ class Drive(pufferlib.PufferEnv):
             current_heading = float(ego_states["heading"][row])
 
             ego_block = self._encode_history_block(
-                self._trajectory_entity_history.get(ego_id), current_x, current_y, current_heading
+                self._trajectory_entity_history.get(ego_id),
+                current_x,
+                current_y,
+                current_heading,
+                self.trajectory_ego_history_features,
+                include_trailer=True,
             )
             observations[row, ego_hist_start:partner_hist_start] = ego_block.reshape(-1)
 
             partner_block = np.zeros(
-                (self.max_partner_objects, self.trajectory_history_horizon, self.trajectory_history_features),
+                (self.max_partner_objects, self.trajectory_history_horizon, self.trajectory_partner_history_features),
                 dtype=np.float32,
             )
             for slot in range(self.max_partner_objects):
@@ -1310,7 +1459,12 @@ class Drive(pufferlib.PufferEnv):
                 if partner_id <= 0:
                     continue
                 partner_block[slot] = self._encode_history_block(
-                    self._trajectory_entity_history.get(partner_id), current_x, current_y, current_heading
+                    self._trajectory_entity_history.get(partner_id),
+                    current_x,
+                    current_y,
+                    current_heading,
+                    self.trajectory_partner_history_features,
+                    include_trailer=False,
                 )
             observations[row, partner_hist_start:] = partner_block.reshape(-1)
         return observations

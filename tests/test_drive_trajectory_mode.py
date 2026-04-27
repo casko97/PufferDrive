@@ -1,6 +1,8 @@
 import numpy as np
+import torch
 
 from pufferlib.ocean.drive.drive import Drive, save_map_binary
+from pufferlib.ocean.torch import Drive as DrivePolicy
 
 
 def _linear_traj(x0, y0, dx, dy, heading=0.0, length=91):
@@ -56,6 +58,70 @@ def _make_env(tmp_path, **kwargs):
         resample_frequency=0,
         action_type="trajectory",
         observation_mode="trajectory_history_32",
+    )
+    base_kwargs.update(kwargs)
+    return Drive(**base_kwargs)
+
+
+def _write_trailer_history_map(map_dir):
+    objects = [
+        {
+            "id": 200,
+            "type": "vehicle",
+            "length": 6.0,
+            "width": 2.5,
+            "height": 3.2,
+            **_linear_traj(0.0, 0.0, 1.0, 0.0),
+            "goalPosition": {"x": 100.0, "y": 0.0, "z": 0.0},
+        },
+        {
+            "id": 201,
+            "type": "vehicle",
+            "length": 10.0,
+            "width": 2.5,
+            "height": 3.2,
+            **_linear_traj(-8.0, 0.0, 1.0, 0.0),
+            "goalPosition": {"x": 90.0, "y": 0.0, "z": 0.0},
+        },
+        {
+            "id": 202,
+            "type": "vehicle",
+            "length": 4.5,
+            "width": 1.9,
+            "height": 1.6,
+            **_linear_traj(10.0, 0.0, 1.0, 0.0),
+            "goalPosition": {"x": 110.0, "y": 0.0, "z": 0.0},
+        },
+    ]
+    map_data = {
+        "metadata": {
+            "sdc_track_index": 0,
+            "has_ego_trailer": True,
+            "ego_trailer_track_index": 1,
+            "tracks_to_predict": [{"track_index": 0}],
+        },
+        "objects": objects,
+        "roads": [],
+    }
+    save_map_binary(map_data, str(map_dir / "map_000.bin"), unique_map_id=8)
+
+
+def _make_trailer_history_env(tmp_path, **kwargs):
+    map_dir = tmp_path / "maps"
+    map_dir.mkdir(parents=True)
+    _write_trailer_history_map(map_dir)
+    base_kwargs = dict(
+        num_agents=1,
+        num_maps=1,
+        map_dir=str(map_dir),
+        episode_length=91,
+        init_steps=0,
+        control_mode="control_sdc_only",
+        init_mode="create_all_valid",
+        resample_frequency=0,
+        action_type="trajectory",
+        observation_mode="trajectory_history_32_sdc_only_with_trailer",
+        trajectory_history_warmstart_seconds=0.3,
     )
     base_kwargs.update(kwargs)
     return Drive(**base_kwargs)
@@ -168,6 +234,61 @@ def test_trajectory_history_observation_tracks_previous_ego_state(tmp_path):
         assert ego_hist[0, 1, 5] == 1.0
         assert ego_hist[0, 1, 0] < 0.0
         np.testing.assert_allclose(ego_hist[0, 1, 1], 0.0, atol=1e-2)
+    finally:
+        env.close()
+
+
+def test_extended_trajectory_history_contains_trailer_pose_and_types(tmp_path):
+    env = _make_trailer_history_env(tmp_path)
+    try:
+        obs, _ = env.reset(seed=0)
+        assert env.trajectory_ego_history_features == 11
+        assert env.trajectory_partner_history_features == 7
+
+        base_ego = env._base_ego_features
+        base_trailer = obs[0, base_ego + 1 : base_ego + 5]
+        ego_hist_start = env.trajectory_base_obs_dim
+        ego_hist_end = ego_hist_start + env.trajectory_ego_history_dim
+        ego_hist = obs[:, ego_hist_start:ego_hist_end].reshape(
+            env.num_agents,
+            env.trajectory_history_horizon,
+            env.trajectory_ego_history_features,
+        )
+
+        np.testing.assert_allclose(ego_hist[0, 0, 7:11], base_trailer, atol=1e-6)
+        np.testing.assert_allclose(ego_hist[0, 0, 6], 4.0, atol=1e-6)
+
+        # Warmstart places the env at logged timestep 3. Slot 1 is the trailer at
+        # timestep 2 transformed into the current ego frame, so it is 9m behind.
+        np.testing.assert_allclose(ego_hist[0, 1, 7], -9.0 * 0.02, atol=1e-6)
+        np.testing.assert_allclose(ego_hist[0, 1, 8], 0.0, atol=1e-6)
+        np.testing.assert_allclose(ego_hist[0, 1, 9], 1.0, atol=1e-6)
+        np.testing.assert_allclose(ego_hist[0, 1, 10], 0.0, atol=1e-6)
+
+        policy = DrivePolicy(env, input_size=32, hidden_size=64)
+        with torch.no_grad():
+            actions, value = policy(torch.as_tensor(obs, dtype=torch.float32))
+        action_loc = actions.mean if hasattr(actions, "mean") else actions.loc
+        assert torch.isfinite(action_loc).all()
+        assert torch.isfinite(value).all()
+    finally:
+        env.close()
+
+
+def test_extended_partner_history_contains_type_for_active_partner(tmp_path):
+    env = _make_env(tmp_path, observation_mode="trajectory_history_32_sdc_only_with_trailer")
+    try:
+        obs, _ = env.reset(seed=0)
+        partner_hist_start = env.trajectory_base_obs_dim + env.trajectory_ego_history_dim
+        partner_hist = obs[:, partner_hist_start:].reshape(
+            env.num_agents,
+            env.max_partner_objects,
+            env.trajectory_history_horizon,
+            env.trajectory_partner_history_features,
+        )
+
+        np.testing.assert_allclose(partner_hist[0, 0, 0, 5], 1.0, atol=1e-6)
+        np.testing.assert_allclose(partner_hist[0, 0, 0, 6], 1.0, atol=1e-6)
     finally:
         env.close()
 

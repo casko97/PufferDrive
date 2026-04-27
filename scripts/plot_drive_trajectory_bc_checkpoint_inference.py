@@ -20,9 +20,9 @@ from pufferlib.ocean.drive.trajectory_bc_viz import (
     _parse_roads_with_fallback,
     _set_zoomed_limits,
     _transform_points_to_ego_frame,
+    _trajectory_history_feature_dims,
     _TRAJECTORY_FEATURES,
     _TRAJECTORY_HORIZON,
-    _TRAJECTORY_HISTORY_FEATURES,
     collect_visualization_sample,
 )
 from pufferlib.ocean.torch import Drive as DrivePolicy
@@ -31,7 +31,10 @@ from pufferlib.ocean.torch import Drive as DrivePolicy
 def _load_policy(checkpoint_path: Path, device: torch.device) -> tuple[DrivePolicy, dict]:
     payload = torch.load(checkpoint_path, map_location=device)
     config = payload["config"]
-    env = _build_policy_env_spec(config["env"]["dynamics_model"])
+    env = _build_policy_env_spec(
+        config["env"]["dynamics_model"],
+        config["env"].get("observation_mode", "trajectory_history_32"),
+    )
     policy = DrivePolicy(env, **config["policy"])
     policy.load_state_dict(payload["model_state_dict"])
     policy.to(device)
@@ -86,11 +89,13 @@ def render_checkpoint_inference_plot(
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    base_observation = observation[:_base_obs_dim()]
-    ego_hist_start = _base_obs_dim()
-    partner_hist_start = ego_hist_start + (_TRAJECTORY_HORIZON * _TRAJECTORY_HISTORY_FEATURES)
-    ego_history = observation[ego_hist_start:partner_hist_start].reshape(_TRAJECTORY_HORIZON, _TRAJECTORY_HISTORY_FEATURES)
-    partner_history = observation[partner_hist_start:].reshape(-1, _TRAJECTORY_HORIZON, _TRAJECTORY_HISTORY_FEATURES)
+    base_dim = _base_obs_dim(env_config.dynamics_model, env_config.observation_mode)
+    ego_history_features, partner_history_features = _trajectory_history_feature_dims(env_config.observation_mode)
+    base_observation = observation[:base_dim]
+    ego_hist_start = base_dim
+    partner_hist_start = ego_hist_start + (_TRAJECTORY_HORIZON * ego_history_features)
+    ego_history = observation[ego_hist_start:partner_hist_start].reshape(_TRAJECTORY_HORIZON, ego_history_features)
+    partner_history = observation[partner_hist_start:].reshape(-1, _TRAJECTORY_HORIZON, partner_history_features)
 
     current_x = float(current_states["x"][ego_row])
     current_y = float(current_states["y"][ego_row])
@@ -106,7 +111,12 @@ def render_checkpoint_inference_plot(
             local_x, local_y = _transform_points_to_ego_frame(road_x, road_y, current_x, current_y, current_heading)
             road_segments.append({"x": local_x, "y": local_y, "type": road_type})
     else:
-        road_segments = _decode_observation_road_segments(base_observation, treat_length_as_half_segment=False)
+        road_segments = _decode_observation_road_segments(
+            base_observation,
+            dynamics_model=env_config.dynamics_model,
+            observation_mode=env_config.observation_mode,
+            treat_length_as_half_segment=False,
+        )
 
     ego_xy = _decode_history_slot(ego_history)
     partner_xy_groups = []

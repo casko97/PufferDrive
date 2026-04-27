@@ -10,20 +10,28 @@ import numpy as np
 from pufferlib.ocean.drive.trajectory_bc import (
     _PARTNER_POS_SCALE,
     _TRAJECTORY_FEATURES,
-    _TRAJECTORY_HORIZON,
     _TRAJECTORY_HISTORY_FEATURES,
+    _TRAJECTORY_HORIZON,
     _append_history,
     _base_obs_dim,
+    _build_policy_base_observations,
     _build_trajectory_history_observations,
     _build_trajectory_targets,
     _decode_partner_states,
     _discover_map_paths,
     _get_active_agent_ids,
+    _get_ego_trailer_obs_features,
     _get_global_agent_state,
+    _get_global_agent_types,
     _get_ground_truth,
     _get_partner_ids,
+    _get_partner_types,
+    _get_sdc_trailer_state,
     _init_env_handle,
+    _raw_base_obs_dim,
     _staged_map_dir,
+    _trajectory_history_feature_dims,
+    _trajectory_uses_augmented_base_observation,
     TrajectoryBCEnvConfig,
 )
 from pufferlib.ocean.drive.drive import binding
@@ -49,12 +57,28 @@ def _decode_history_slot(slot_block: np.ndarray) -> np.ndarray:
     return np.stack([x, y], axis=1)
 
 
+def _decode_trailer_history_slot(slot_block: np.ndarray) -> np.ndarray:
+    if slot_block.shape[1] < 11:
+        return np.zeros((0, 2), dtype=np.float32)
+    trailer_heading = np.abs(slot_block[:, 9]) + np.abs(slot_block[:, 10])
+    valid_mask = (slot_block[:, 5] > 0.5) & (trailer_heading > 1e-6)
+    if not np.any(valid_mask):
+        return np.zeros((0, 2), dtype=np.float32)
+    x = slot_block[valid_mask, 7] / _PARTNER_POS_SCALE
+    y = slot_block[valid_mask, 8] / _PARTNER_POS_SCALE
+    return np.stack([x, y], axis=1)
+
+
 def _decode_observation_road_segments(
     base_observation: np.ndarray,
     *,
+    dynamics_model: str = "classic",
+    observation_mode: str = "trajectory_history_32",
     treat_length_as_half_segment: bool = False,
 ) -> list[dict[str, np.ndarray | float | int]]:
-    road_start = binding.EGO_FEATURES_CLASSIC + (binding.MAX_AGENTS - 1) * binding.PARTNER_FEATURES
+    road_start = _base_obs_dim(dynamics_model, observation_mode) - (
+        binding.MAX_ROAD_SEGMENT_OBSERVATIONS * binding.ROAD_FEATURES
+    )
     road_obs = base_observation[road_start : road_start + binding.MAX_ROAD_SEGMENT_OBSERVATIONS * binding.ROAD_FEATURES]
     road_obs = road_obs.reshape(binding.MAX_ROAD_SEGMENT_OBSERVATIONS, binding.ROAD_FEATURES)
 
@@ -221,13 +245,45 @@ def collect_visualization_sample(map_path: str | Path, timestep: int | None, env
 
             for logged_timestep in range(timestep + 1):
                 binding.env_set_logged_timestep(env_handle, logged_timestep)
-                base_observations = np.zeros((active_count, _base_obs_dim()), dtype=np.float32)
-                binding.env_copy_observations(env_handle, base_observations)
+                raw_base_observations = np.zeros(
+                    (active_count, _raw_base_obs_dim(env_config.dynamics_model)),
+                    dtype=np.float32,
+                )
+                binding.env_copy_observations(env_handle, raw_base_observations)
                 current_states = _get_global_agent_state(env_handle, active_count)
                 partner_ids = _get_partner_ids(env_handle, active_count)
-                current_speeds = base_observations[:, 2] * 100.0
+                extended_observation = _trajectory_uses_augmented_base_observation(env_config.observation_mode)
+                ego_types = _get_global_agent_types(env_handle, active_count) if extended_observation else None
+                partner_types = _get_partner_types(env_handle, active_count) if extended_observation else None
+                ego_trailer_features = (
+                    _get_ego_trailer_obs_features(env_handle, active_count) if extended_observation else None
+                )
+                trailer_state = _get_sdc_trailer_state(env_handle) if extended_observation else None
+                current_speeds = raw_base_observations[:, 2] * 100.0
 
                 for row in range(active_count):
+                    trailer_valid = 0.0
+                    trailer_x = 0.0
+                    trailer_y = 0.0
+                    trailer_heading = 0.0
+                    if (
+                        extended_observation
+                        and ego_trailer_features is not None
+                        and trailer_state is not None
+                        and int(trailer_state["has_trailer"][0]) > 0
+                    ):
+                        feature_values = (
+                            float(ego_trailer_features["rel_x"][row]),
+                            float(ego_trailer_features["rel_y"][row]),
+                            float(ego_trailer_features["rel_heading_x"][row]),
+                            float(ego_trailer_features["rel_heading_y"][row]),
+                        )
+                        if any(abs(value) > 1e-8 for value in feature_values):
+                            trailer_valid = 1.0
+                            trailer_x = float(trailer_state["x"][0])
+                            trailer_y = float(trailer_state["y"][0])
+                            trailer_heading = float(trailer_state["heading"][0])
+
                     _append_history(
                         history,
                         int(ego_ids[row]),
@@ -235,17 +291,39 @@ def collect_visualization_sample(map_path: str | Path, timestep: int | None, env
                         float(current_states["y"][row]),
                         float(current_states["heading"][row]),
                         float(current_speeds[row]),
+                        policy_type=int(ego_types[row]) if ego_types is not None else 0,
+                        trailer_x=trailer_x,
+                        trailer_y=trailer_y,
+                        trailer_heading=trailer_heading,
+                        trailer_valid=trailer_valid,
                     )
 
-                for entity_id, state in _decode_partner_states(base_observations, current_states, partner_ids).items():
-                    _append_history(history, entity_id, state[0], state[1], state[2], state[3])
+                for entity_id, state in _decode_partner_states(
+                    raw_base_observations,
+                    current_states,
+                    partner_ids,
+                    dynamics_model=env_config.dynamics_model,
+                    partner_types=partner_types,
+                ).items():
+                    _append_history(history, entity_id, state[0], state[1], state[2], state[3], policy_type=state[5])
 
+            base_observations = _build_policy_base_observations(
+                raw_base_observations,
+                env_handle,
+                active_count,
+                env_config,
+                ego_types=ego_types,
+                partner_types=partner_types,
+                ego_trailer_features=ego_trailer_features,
+            )
             observations = _build_trajectory_history_observations(
                 base_observations=base_observations,
                 ego_states=current_states,
                 ego_ids=ego_ids,
                 partner_ids=partner_ids,
                 history=history,
+                dynamics_model=env_config.dynamics_model,
+                observation_mode=env_config.observation_mode,
             )
             targets = _build_trajectory_targets(
                 trajectories=trajectories,
@@ -292,15 +370,18 @@ def render_trajectory_bc_sample_plot(
     current_x = float(current_states["x"][ego_row])
     current_y = float(current_states["y"][ego_row])
     current_heading = float(current_states["heading"][ego_row])
-    base_observation = observations[ego_row, : _base_obs_dim()]
+    base_dim = _base_obs_dim(env_config.dynamics_model, env_config.observation_mode)
+    ego_history_features, partner_history_features = _trajectory_history_feature_dims(env_config.observation_mode)
+    base_observation = observations[ego_row, :base_dim]
 
-    ego_hist_start = _base_obs_dim()
-    partner_hist_start = ego_hist_start + (_TRAJECTORY_HORIZON * _TRAJECTORY_HISTORY_FEATURES)
+    ego_hist_start = base_dim
+    partner_hist_start = ego_hist_start + (_TRAJECTORY_HORIZON * ego_history_features)
     ego_history = observations[ego_row, ego_hist_start:partner_hist_start].reshape(
-        _TRAJECTORY_HORIZON, _TRAJECTORY_HISTORY_FEATURES
+        _TRAJECTORY_HORIZON,
+        ego_history_features,
     )
     partner_history = observations[ego_row, partner_hist_start:].reshape(
-        -1, _TRAJECTORY_HORIZON, _TRAJECTORY_HISTORY_FEATURES
+        -1, _TRAJECTORY_HORIZON, partner_history_features
     )
     target = targets[ego_row].reshape(_TRAJECTORY_HORIZON, _TRAJECTORY_FEATURES)
 
@@ -315,9 +396,19 @@ def render_trajectory_bc_sample_plot(
             local_x, local_y = _transform_points_to_ego_frame(road_x, road_y, current_x, current_y, current_heading)
             road_segments.append({"x": local_x, "y": local_y, "type": road_type})
     elif road_source == "observation":
-        road_segments = _decode_observation_road_segments(base_observation, treat_length_as_half_segment=False)
+        road_segments = _decode_observation_road_segments(
+            base_observation,
+            dynamics_model=env_config.dynamics_model,
+            observation_mode=env_config.observation_mode,
+            treat_length_as_half_segment=False,
+        )
     else:
-        road_segments = _decode_observation_road_segments(base_observation, treat_length_as_half_segment=True)
+        road_segments = _decode_observation_road_segments(
+            base_observation,
+            dynamics_model=env_config.dynamics_model,
+            observation_mode=env_config.observation_mode,
+            treat_length_as_half_segment=True,
+        )
 
     for road in road_segments:
         road_x = road["x"]
@@ -337,6 +428,19 @@ def render_trajectory_bc_sample_plot(
             marker="o",
             markersize=3,
             label="Ego history",
+        )
+
+    trailer_xy = _decode_trailer_history_slot(ego_history)
+    if trailer_xy.shape[0] > 0:
+        ax.plot(
+            trailer_xy[:, 0],
+            trailer_xy[:, 1],
+            color="tab:red",
+            linewidth=2.0,
+            linestyle="-.",
+            marker="s",
+            markersize=3,
+            label="Trailer history",
         )
 
     plotted_partner = False
@@ -377,7 +481,7 @@ def render_trajectory_bc_sample_plot(
     ax.scatter([0.0], [0.0], color="crimson", s=50, zorder=5, label="Current ego")
     _set_zoomed_limits(
         ax,
-        [ego_xy, target_xy] + [_decode_history_slot(slot_block) for slot_block in partner_history],
+        [ego_xy, trailer_xy, target_xy] + [_decode_history_slot(slot_block) for slot_block in partner_history],
     )
     road_title = {
         "map": "map-road",
@@ -454,13 +558,45 @@ def render_trajectory_bc_single_bin_grid(
             selected_set = set(timesteps)
             for logged_timestep in range(max(timesteps) + 1):
                 binding.env_set_logged_timestep(env_handle, logged_timestep)
-                base_observations = np.zeros((active_count, _base_obs_dim()), dtype=np.float32)
-                binding.env_copy_observations(env_handle, base_observations)
+                raw_base_observations = np.zeros(
+                    (active_count, _raw_base_obs_dim(env_config.dynamics_model)),
+                    dtype=np.float32,
+                )
+                binding.env_copy_observations(env_handle, raw_base_observations)
                 current_states = _get_global_agent_state(env_handle, active_count)
                 partner_ids = _get_partner_ids(env_handle, active_count)
-                current_speeds = base_observations[:, 2] * 100.0
+                extended_observation = _trajectory_uses_augmented_base_observation(env_config.observation_mode)
+                ego_types = _get_global_agent_types(env_handle, active_count) if extended_observation else None
+                partner_types = _get_partner_types(env_handle, active_count) if extended_observation else None
+                ego_trailer_features = (
+                    _get_ego_trailer_obs_features(env_handle, active_count) if extended_observation else None
+                )
+                trailer_state = _get_sdc_trailer_state(env_handle) if extended_observation else None
+                current_speeds = raw_base_observations[:, 2] * 100.0
 
                 for row in range(active_count):
+                    trailer_valid = 0.0
+                    trailer_x = 0.0
+                    trailer_y = 0.0
+                    trailer_heading = 0.0
+                    if (
+                        extended_observation
+                        and ego_trailer_features is not None
+                        and trailer_state is not None
+                        and int(trailer_state["has_trailer"][0]) > 0
+                    ):
+                        feature_values = (
+                            float(ego_trailer_features["rel_x"][row]),
+                            float(ego_trailer_features["rel_y"][row]),
+                            float(ego_trailer_features["rel_heading_x"][row]),
+                            float(ego_trailer_features["rel_heading_y"][row]),
+                        )
+                        if any(abs(value) > 1e-8 for value in feature_values):
+                            trailer_valid = 1.0
+                            trailer_x = float(trailer_state["x"][0])
+                            trailer_y = float(trailer_state["y"][0])
+                            trailer_heading = float(trailer_state["heading"][0])
+
                     _append_history(
                         history,
                         int(ego_ids[row]),
@@ -468,20 +604,42 @@ def render_trajectory_bc_single_bin_grid(
                         float(current_states["y"][row]),
                         float(current_states["heading"][row]),
                         float(current_speeds[row]),
+                        policy_type=int(ego_types[row]) if ego_types is not None else 0,
+                        trailer_x=trailer_x,
+                        trailer_y=trailer_y,
+                        trailer_heading=trailer_heading,
+                        trailer_valid=trailer_valid,
                     )
 
-                for entity_id, state in _decode_partner_states(base_observations, current_states, partner_ids).items():
-                    _append_history(history, entity_id, state[0], state[1], state[2], state[3])
+                for entity_id, state in _decode_partner_states(
+                    raw_base_observations,
+                    current_states,
+                    partner_ids,
+                    dynamics_model=env_config.dynamics_model,
+                    partner_types=partner_types,
+                ).items():
+                    _append_history(history, entity_id, state[0], state[1], state[2], state[3], policy_type=state[5])
 
                 if logged_timestep not in selected_set:
                     continue
 
+                base_observations = _build_policy_base_observations(
+                    raw_base_observations,
+                    env_handle,
+                    active_count,
+                    env_config,
+                    ego_types=ego_types,
+                    partner_types=partner_types,
+                    ego_trailer_features=ego_trailer_features,
+                )
                 observations = _build_trajectory_history_observations(
                     base_observations=base_observations,
                     ego_states=current_states,
                     ego_ids=ego_ids,
                     partner_ids=partner_ids,
                     history=history,
+                    dynamics_model=env_config.dynamics_model,
+                    observation_mode=env_config.observation_mode,
                 )
                 targets = _build_trajectory_targets(
                     trajectories=trajectories,
@@ -507,15 +665,18 @@ def render_trajectory_bc_single_bin_grid(
         current_x = float(current_states["x"][ego_row])
         current_y = float(current_states["y"][ego_row])
         current_heading = float(current_states["heading"][ego_row])
-        base_observation = observations[ego_row, : _base_obs_dim()]
+        base_dim = _base_obs_dim(env_config.dynamics_model, env_config.observation_mode)
+        ego_history_features, partner_history_features = _trajectory_history_feature_dims(env_config.observation_mode)
+        base_observation = observations[ego_row, :base_dim]
 
-        ego_hist_start = _base_obs_dim()
-        partner_hist_start = ego_hist_start + (_TRAJECTORY_HORIZON * _TRAJECTORY_HISTORY_FEATURES)
+        ego_hist_start = base_dim
+        partner_hist_start = ego_hist_start + (_TRAJECTORY_HORIZON * ego_history_features)
         ego_history = observations[ego_row, ego_hist_start:partner_hist_start].reshape(
-            _TRAJECTORY_HORIZON, _TRAJECTORY_HISTORY_FEATURES
+            _TRAJECTORY_HORIZON,
+            ego_history_features,
         )
         partner_history = observations[ego_row, partner_hist_start:].reshape(
-            -1, _TRAJECTORY_HORIZON, _TRAJECTORY_HISTORY_FEATURES
+            -1, _TRAJECTORY_HORIZON, partner_history_features
         )
         target = targets[ego_row].reshape(_TRAJECTORY_HORIZON, _TRAJECTORY_FEATURES)
 
@@ -530,11 +691,15 @@ def render_trajectory_bc_single_bin_grid(
         elif road_source == "observation":
             road_segments = _decode_observation_road_segments(
                 base_observation,
+                dynamics_model=env_config.dynamics_model,
+                observation_mode=env_config.observation_mode,
                 treat_length_as_half_segment=False,
             )
         else:
             road_segments = _decode_observation_road_segments(
                 base_observation,
+                dynamics_model=env_config.dynamics_model,
+                observation_mode=env_config.observation_mode,
                 treat_length_as_half_segment=True,
             )
 
@@ -549,6 +714,18 @@ def render_trajectory_bc_single_bin_grid(
         ego_xy = _decode_history_slot(ego_history)
         if ego_xy.shape[0] > 0:
             ax.plot(ego_xy[:, 0], ego_xy[:, 1], color="tab:blue", linewidth=2.0, marker="o", markersize=2.5)
+
+        trailer_xy = _decode_trailer_history_slot(ego_history)
+        if trailer_xy.shape[0] > 0:
+            ax.plot(
+                trailer_xy[:, 0],
+                trailer_xy[:, 1],
+                color="tab:red",
+                linewidth=1.7,
+                linestyle="-.",
+                marker="s",
+                markersize=2.2,
+            )
 
         partner_xy_groups = []
         for slot_block in partner_history:
@@ -577,7 +754,7 @@ def render_trajectory_bc_single_bin_grid(
             ax.plot(target_xy[:, 0], target_xy[:, 1], color="tab:green", linewidth=2.1, marker="x", markersize=3)
 
         ax.scatter([0.0], [0.0], color="crimson", s=35, zorder=5)
-        _set_zoomed_limits(ax, [ego_xy, target_xy] + partner_xy_groups)
+        _set_zoomed_limits(ax, [ego_xy, trailer_xy, target_xy] + partner_xy_groups)
         ax.set_title(f"t={timestep}")
         ax.axhline(0.0, color="0.92", linewidth=0.8)
         ax.axvline(0.0, color="0.92", linewidth=0.8)

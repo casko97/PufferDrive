@@ -262,7 +262,8 @@ def test_live_trajectory_rollout_keeps_ego_history_after_first_step(tmp_path):
         observations, _ = env.reset(seed=0)
         with torch.no_grad():
             action_dist, _value = loaded(torch.as_tensor(observations, dtype=torch.float32))
-            actions = action_dist.mean.cpu().numpy()
+            action_mean = action_dist.mean if hasattr(action_dist, "mean") else action_dist.loc
+            actions = action_mean.cpu().numpy()
 
         next_obs, _rewards, _terminals, _truncations, _info = env.step(actions)
         history_start = _base_obs_dim()

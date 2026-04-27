@@ -121,13 +121,13 @@ def _make_args(load_path, *, action_type="trajectory", observation_mode="traject
     }
 
 
-def _make_bc_payload(policy: DrivePolicy):
+def _make_bc_payload(policy: DrivePolicy, observation_mode: str = "trajectory_history_32"):
     return {
         "model_state_dict": policy.state_dict(),
         "config": {
             "env": {
                 "action_type": "trajectory",
-                "observation_mode": "trajectory_history_32",
+                "observation_mode": observation_mode,
                 "dynamics_model": "classic",
             },
             "policy": {"input_size": 64, "hidden_size": 256},
@@ -173,6 +173,38 @@ def test_load_policy_accepts_bc_payload_checkpoint(tmp_path):
             assert torch.equal(value, loaded.state_dict()[key])
     finally:
         env.close()
+
+
+def test_load_policy_accepts_extended_history_bc_payload_and_rejects_default_env(tmp_path):
+    map_dir = tmp_path / "maps"
+    map_dir.mkdir()
+    _write_eval_map(map_dir)
+    observation_mode = "trajectory_history_32_sdc_only_with_trailer"
+
+    extended_env = _make_env(map_dir, observation_mode=observation_mode)
+    default_env = _make_env(map_dir)
+    try:
+        checkpoint_policy = DrivePolicy(extended_env, input_size=64, hidden_size=256)
+        checkpoint_path = tmp_path / "extended_bc_payload.pt"
+        torch.save(_make_bc_payload(checkpoint_policy, observation_mode=observation_mode), checkpoint_path)
+
+        loaded = pufferl.load_policy(
+            _make_args(checkpoint_path, observation_mode=observation_mode),
+            SimpleNamespace(driver_env=extended_env),
+            env_name="puffer_drive",
+        )
+        for key, value in checkpoint_policy.state_dict().items():
+            assert torch.equal(value, loaded.state_dict()[key])
+
+        with pytest.raises(ValueError, match="BC checkpoint is incompatible"):
+            pufferl.load_policy(
+                _make_args(checkpoint_path),
+                SimpleNamespace(driver_env=default_env),
+                env_name="puffer_drive",
+            )
+    finally:
+        extended_env.close()
+        default_env.close()
 
 
 def test_load_policy_rejects_unknown_checkpoint_payload(tmp_path):
@@ -234,7 +266,8 @@ def test_bc_checkpoint_eval_rollout_smoke(tmp_path):
         observations, _ = env.reset(seed=0)
         with torch.no_grad():
             action_dist, _value = policy(torch.as_tensor(observations, dtype=torch.float32))
-            actions = action_dist.mean.cpu().numpy()
+            action_mean = action_dist.mean if hasattr(action_dist, "mean") else action_dist.loc
+            actions = action_mean.cpu().numpy()
 
         next_obs, rewards, terminals, truncations, info = env.step(actions)
 

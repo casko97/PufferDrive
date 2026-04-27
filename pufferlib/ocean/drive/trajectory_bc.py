@@ -22,6 +22,7 @@ from torch.utils.data import DataLoader, IterableDataset, get_worker_info
 
 from pufferlib.ocean.drive.drive import (
     _DYNAMICS_MODEL_IDS,
+    _EGO_TRAILER_STATE_FEATURES,
     _EMPTY_PARTNER_EPS,
     _MAX_SPEED,
     _PARTNER_POS_SCALE,
@@ -34,12 +35,17 @@ from pufferlib.ocean.drive.drive import (
     _encode_trajectory_heading,
     _encode_trajectory_position,
     _encode_trajectory_speed,
+    _trajectory_history_feature_dims,
+    _trajectory_uses_augmented_base_observation,
     _make_history_state,
     _wrap_to_pi,
     binding,
+    postprocess_sdc_only_with_trailer_observations,
 )
 from pufferlib.ocean.drive.trajectory_supervision import masked_trajectory_loss, trajectory_metrics
 from pufferlib.ocean.torch import Drive as DrivePolicy
+
+_ENV_HANDLE_BUFFERS: dict[int, tuple[np.ndarray, ...]] = {}
 
 
 def _parse_value(value: str) -> Any:
@@ -204,26 +210,57 @@ def _init_mode_id(value: str) -> int:
     return mapping[key]
 
 
-def _base_obs_dim() -> int:
+def _base_ego_features(dynamics_model: str) -> int:
+    return binding.EGO_FEATURES_JERK if str(dynamics_model).strip().lower() == "jerk" else binding.EGO_FEATURES_CLASSIC
+
+
+def _raw_base_obs_dim(dynamics_model: str = "classic") -> int:
+    base_ego_features = _base_ego_features(dynamics_model)
     return (
-        binding.EGO_FEATURES_CLASSIC
+        base_ego_features
         + (binding.MAX_AGENTS - 1) * binding.PARTNER_FEATURES
         + binding.MAX_ROAD_SEGMENT_OBSERVATIONS * binding.ROAD_FEATURES
     )
 
 
-def _trajectory_obs_dim() -> int:
-    return _base_obs_dim() + (_TRAJECTORY_HORIZON * _TRAJECTORY_HISTORY_FEATURES) + (
-        (binding.MAX_AGENTS - 1) * _TRAJECTORY_HORIZON * _TRAJECTORY_HISTORY_FEATURES
+def _base_obs_dim(dynamics_model: str = "classic", observation_mode: str = _TRAJECTORY_OBSERVATION_MODE) -> int:
+    base_ego_features = _base_ego_features(dynamics_model)
+    partner_features = binding.PARTNER_FEATURES
+    if _trajectory_uses_augmented_base_observation(observation_mode):
+        base_ego_features += 1 + _EGO_TRAILER_STATE_FEATURES
+        partner_features += 1
+    return (
+        base_ego_features
+        + (binding.MAX_AGENTS - 1) * partner_features
+        + binding.MAX_ROAD_SEGMENT_OBSERVATIONS * binding.ROAD_FEATURES
     )
 
 
-def _build_policy_env_spec(dynamics_model: str) -> SimpleNamespace:
+def _trajectory_obs_dim(dynamics_model: str = "classic", observation_mode: str = _TRAJECTORY_OBSERVATION_MODE) -> int:
+    ego_history_features, partner_history_features = _trajectory_history_feature_dims(observation_mode)
+    return _base_obs_dim(dynamics_model, observation_mode) + (_TRAJECTORY_HORIZON * ego_history_features) + (
+        (binding.MAX_AGENTS - 1) * _TRAJECTORY_HORIZON * partner_history_features
+    )
+
+
+def _build_policy_env_spec(
+    dynamics_model: str,
+    observation_mode: str = _TRAJECTORY_OBSERVATION_MODE,
+) -> SimpleNamespace:
+    base_ego_features = _base_ego_features(dynamics_model)
+    partner_features = binding.PARTNER_FEATURES
+    numeric_observation_mode = 0
+    if _trajectory_uses_augmented_base_observation(observation_mode):
+        numeric_observation_mode = 1
+        base_ego_features += 1 + _EGO_TRAILER_STATE_FEATURES
+        partner_features += 1
+    ego_history_features, partner_history_features = _trajectory_history_feature_dims(observation_mode)
+    trajectory_base_obs_dim = _base_obs_dim(dynamics_model, observation_mode)
     return SimpleNamespace(
         single_observation_space=gymnasium.spaces.Box(
             low=-1.0,
             high=1.0,
-            shape=(_trajectory_obs_dim(),),
+            shape=(_trajectory_obs_dim(dynamics_model, observation_mode),),
             dtype=np.float32,
         ),
         single_action_space=gymnasium.spaces.Box(
@@ -232,20 +269,22 @@ def _build_policy_env_spec(dynamics_model: str) -> SimpleNamespace:
             shape=(_TRAJECTORY_ACTION_DIM,),
             dtype=np.float32,
         ),
-        observation_mode=0,
+        observation_mode=numeric_observation_mode,
         max_partner_objects=binding.MAX_AGENTS - 1,
-        partner_features=binding.PARTNER_FEATURES,
+        partner_features=partner_features,
         max_road_objects=binding.MAX_ROAD_SEGMENT_OBSERVATIONS,
         road_features=binding.ROAD_FEATURES,
         dynamics_model=dynamics_model,
-        ego_features=binding.EGO_FEATURES_CLASSIC,
+        ego_features=base_ego_features,
         type_classes=binding.POLICY_TYPE_CLASS_COUNT,
         is_trajectory_action=True,
-        trajectory_base_obs_dim=_base_obs_dim(),
-        trajectory_ego_history_dim=_TRAJECTORY_HORIZON * _TRAJECTORY_HISTORY_FEATURES,
-        trajectory_partner_history_dim=(binding.MAX_AGENTS - 1) * _TRAJECTORY_HORIZON * _TRAJECTORY_HISTORY_FEATURES,
+        trajectory_base_obs_dim=trajectory_base_obs_dim,
+        trajectory_ego_history_dim=_TRAJECTORY_HORIZON * ego_history_features,
+        trajectory_partner_history_dim=(binding.MAX_AGENTS - 1) * _TRAJECTORY_HORIZON * partner_history_features,
         trajectory_history_horizon=_TRAJECTORY_HORIZON,
-        trajectory_history_features=_TRAJECTORY_HISTORY_FEATURES,
+        trajectory_history_features=ego_history_features,
+        trajectory_ego_history_features=ego_history_features,
+        trajectory_partner_history_features=partner_history_features,
     )
 
 
@@ -272,6 +311,7 @@ class TrajectoryBCTrainConfig:
     sample_stride: int = 1
     sample_start_offset: int = 0
     sample_end_offset: int = 0
+    require_full_windows: bool = True
     wandb: bool = False
     wandb_project: str = "pufferdrive"
     wandb_group: str = "trajectory_bc"
@@ -334,6 +374,7 @@ class TrajectoryBCExperimentConfig:
             sample_stride=int(train_cfg.get("sample_stride", 1)),
             sample_start_offset=int(train_cfg.get("sample_start_offset", 0)),
             sample_end_offset=int(train_cfg.get("sample_end_offset", 0)),
+            require_full_windows=bool(train_cfg.get("require_full_windows", True)),
             wandb=bool(train_cfg.get("wandb", False)),
             wandb_project=str(train_cfg.get("wandb_project", "pufferdrive")),
             wandb_group=str(train_cfg.get("wandb_group", "trajectory_bc")),
@@ -377,7 +418,7 @@ def _staged_map_dir(map_path: Path) -> Iterator[Path]:
 
 
 def _init_env_handle(map_dir: Path, env_config: TrajectoryBCEnvConfig):
-    obs = np.zeros((binding.MAX_AGENTS, _base_obs_dim()), dtype=np.float32)
+    obs = np.zeros((binding.MAX_AGENTS, _raw_base_obs_dim(env_config.dynamics_model)), dtype=np.float32)
     actions = np.zeros(binding.MAX_AGENTS, dtype=np.int32)
     rewards = np.zeros(binding.MAX_AGENTS, dtype=np.float32)
     terminals = np.zeros(binding.MAX_AGENTS, dtype=np.uint8)
@@ -391,7 +432,7 @@ def _init_env_handle(map_dir: Path, env_config: TrajectoryBCEnvConfig):
         truncations,
         0,
         human_agent_idx=0,
-        ini_file="pufferlib/config/ocean/drive.ini",
+        ini_file="pufferlib/config/ocean/drive_trajectory_bc_sampler.ini",
         map_dir=str(map_dir),
         map_id=0,
         max_agents=int(binding.MAX_AGENTS),
@@ -411,6 +452,7 @@ def _init_env_handle(map_dir: Path, env_config: TrajectoryBCEnvConfig):
         dynamics_model=int(_DYNAMICS_MODEL_IDS.get(env_config.dynamics_model, 0)),
         force_zero_trailer_articulation_at_init=0,
     )
+    _ENV_HANDLE_BUFFERS[int(env_handle)] = (obs, actions, rewards, terminals, truncations)
     return env_handle
 
 
@@ -441,6 +483,60 @@ def _get_partner_ids(env_handle, active_count: int) -> np.ndarray:
     ids = np.zeros((active_count, binding.MAX_AGENTS - 1), dtype=np.int32)
     binding.get_partner_ids(env_handle, ids)
     return ids
+
+
+def _get_global_agent_types(env_handle, active_count: int) -> np.ndarray:
+    types = np.zeros(active_count, dtype=np.int32)
+    binding.get_global_agent_types(env_handle, types)
+    return types
+
+
+def _get_partner_types(env_handle, active_count: int) -> np.ndarray:
+    types = np.zeros((active_count, binding.MAX_AGENTS - 1), dtype=np.int32)
+    binding.get_partner_types(env_handle, types)
+    return types
+
+
+def _get_ego_trailer_obs_features(env_handle, active_count: int) -> dict[str, np.ndarray]:
+    trailer_features = {
+        "rel_x": np.zeros(active_count, dtype=np.float32),
+        "rel_y": np.zeros(active_count, dtype=np.float32),
+        "rel_heading_x": np.zeros(active_count, dtype=np.float32),
+        "rel_heading_y": np.zeros(active_count, dtype=np.float32),
+    }
+    binding.get_ego_trailer_obs_features(
+        env_handle,
+        trailer_features["rel_x"],
+        trailer_features["rel_y"],
+        trailer_features["rel_heading_x"],
+        trailer_features["rel_heading_y"],
+    )
+    return trailer_features
+
+
+def _get_sdc_trailer_state(env_handle) -> dict[str, np.ndarray]:
+    trailer = {
+        "has_trailer": np.zeros(1, dtype=np.int32),
+        "x": np.zeros(1, dtype=np.float32),
+        "y": np.zeros(1, dtype=np.float32),
+        "z": np.zeros(1, dtype=np.float32),
+        "heading": np.zeros(1, dtype=np.float32),
+        "id": np.zeros(1, dtype=np.int32),
+        "length": np.zeros(1, dtype=np.float32),
+        "width": np.zeros(1, dtype=np.float32),
+    }
+    binding.get_sdc_trailer_state(
+        env_handle,
+        trailer["has_trailer"],
+        trailer["x"],
+        trailer["y"],
+        trailer["z"],
+        trailer["heading"],
+        trailer["id"],
+        trailer["length"],
+        trailer["width"],
+    )
+    return trailer
 
 
 def _get_ground_truth(env_handle, active_count: int, episode_length: int, init_steps: int) -> dict[str, np.ndarray]:
@@ -476,18 +572,51 @@ def _get_active_agent_ids(env_handle, active_count: int) -> np.ndarray:
     return agent_ids
 
 
-def _append_history(history: dict[int, list[np.ndarray]], entity_id: int, x: float, y: float, heading: float, speed: float) -> None:
+def _append_history(
+    history: dict[int, list[np.ndarray]],
+    entity_id: int,
+    x: float,
+    y: float,
+    heading: float,
+    speed: float,
+    *,
+    policy_type: int = 0,
+    trailer_x: float = 0.0,
+    trailer_y: float = 0.0,
+    trailer_heading: float = 0.0,
+    trailer_valid: float = 0.0,
+) -> None:
     if entity_id < 0:
         return
     entries = history.setdefault(entity_id, [])
-    entries.append(_make_history_state(x, y, heading, speed, 1.0))
+    entries.append(
+        _make_history_state(
+            x,
+            y,
+            heading,
+            speed,
+            1.0,
+            policy_type=policy_type,
+            trailer_x=trailer_x,
+            trailer_y=trailer_y,
+            trailer_heading=trailer_heading,
+            trailer_valid=trailer_valid,
+        )
+    )
     if len(entries) > _TRAJECTORY_HORIZON:
         del entries[:-_TRAJECTORY_HORIZON]
 
 
-def _decode_partner_states(base_observations: np.ndarray, ego_states: dict[str, np.ndarray], partner_ids: np.ndarray) -> dict[int, tuple[float, float, float, float, float]]:
-    partner_states: dict[int, tuple[float, float, float, float, float]] = {}
-    partner_offset = binding.EGO_FEATURES_CLASSIC
+def _decode_partner_states(
+    base_observations: np.ndarray,
+    ego_states: dict[str, np.ndarray],
+    partner_ids: np.ndarray,
+    *,
+    dynamics_model: str = "classic",
+    partner_types: np.ndarray | None = None,
+) -> dict[int, tuple[float, float, float, float, float, int]]:
+    partner_states: dict[int, tuple[float, float, float, float, float, int]] = {}
+    partner_offset = _base_ego_features(dynamics_model)
     partner_dim = (binding.MAX_AGENTS - 1) * binding.PARTNER_FEATURES
     partner_obs = base_observations[:, partner_offset : partner_offset + partner_dim].reshape(
         base_observations.shape[0],
@@ -517,12 +646,57 @@ def _decode_partner_states(base_observations: np.ndarray, ego_states: dict[str, 
                 _wrap_to_pi(float(ego_states["heading"][row] + rel_heading)),
                 float(features[6]) * _MAX_SPEED,
                 1.0,
+                int(partner_types[row, slot]) if partner_types is not None else 0,
             )
     return partner_states
 
 
-def _encode_history_block(history: list[np.ndarray] | None, current_x: float, current_y: float, current_heading: float) -> np.ndarray:
-    block = np.zeros((_TRAJECTORY_HORIZON, _TRAJECTORY_HISTORY_FEATURES), dtype=np.float32)
+def _build_policy_base_observations(
+    raw_observations: np.ndarray,
+    env_handle,
+    active_count: int,
+    env_config: TrajectoryBCEnvConfig,
+    *,
+    ego_types: np.ndarray | None = None,
+    partner_types: np.ndarray | None = None,
+    ego_trailer_features: dict[str, np.ndarray] | None = None,
+) -> np.ndarray:
+    if not _trajectory_uses_augmented_base_observation(env_config.observation_mode):
+        return raw_observations
+
+    resolved_ego_types = ego_types if ego_types is not None else _get_global_agent_types(env_handle, active_count)
+    resolved_partner_types = (
+        partner_types if partner_types is not None else _get_partner_types(env_handle, active_count)
+    )
+    resolved_trailer_features = (
+        ego_trailer_features
+        if ego_trailer_features is not None
+        else _get_ego_trailer_obs_features(env_handle, active_count)
+    )
+    return postprocess_sdc_only_with_trailer_observations(
+        sim_observations=raw_observations,
+        ego_types=resolved_ego_types,
+        partner_types=resolved_partner_types,
+        ego_trailer_features=resolved_trailer_features,
+        base_ego_features=_base_ego_features(env_config.dynamics_model),
+        base_partner_features=binding.PARTNER_FEATURES,
+        max_partner_objects=binding.MAX_AGENTS - 1,
+        max_road_objects=binding.MAX_ROAD_SEGMENT_OBSERVATIONS,
+        road_features=binding.ROAD_FEATURES,
+        type_classes=binding.POLICY_TYPE_CLASS_COUNT,
+    )
+
+
+def _encode_history_block(
+    history: list[np.ndarray] | None,
+    current_x: float,
+    current_y: float,
+    current_heading: float,
+    *,
+    history_features: int = _TRAJECTORY_HISTORY_FEATURES,
+    include_trailer: bool = False,
+) -> np.ndarray:
+    block = np.zeros((_TRAJECTORY_HORIZON, history_features), dtype=np.float32)
     if not history:
         return block
 
@@ -541,6 +715,19 @@ def _encode_history_block(history: list[np.ndarray] | None, current_x: float, cu
         block[step_idx, 3] = math.sin(rel_heading)
         block[step_idx, 4] = _encode_trajectory_speed(float(state[3]))
         block[step_idx, 5] = float(state[4])
+        if history_features > _TRAJECTORY_HISTORY_FEATURES and float(state[4]) > 0.0:
+            block[step_idx, 6] = float(state[5])
+        if include_trailer and history_features >= (_TRAJECTORY_HISTORY_FEATURES + 1 + _EGO_TRAILER_STATE_FEATURES):
+            if len(state) > 9 and float(state[9]) > 0.0:
+                trailer_dx = float(state[6] - current_x)
+                trailer_dy = float(state[7] - current_y)
+                trailer_rel_x = trailer_dx * cos_heading + trailer_dy * sin_heading
+                trailer_rel_y = -trailer_dx * sin_heading + trailer_dy * cos_heading
+                trailer_rel_heading = _wrap_to_pi(float(state[8]) - current_heading)
+                block[step_idx, 7] = _encode_trajectory_position(trailer_rel_x)
+                block[step_idx, 8] = _encode_trajectory_position(trailer_rel_y)
+                block[step_idx, 9] = math.cos(trailer_rel_heading)
+                block[step_idx, 10] = math.sin(trailer_rel_heading)
     return block
 
 
@@ -550,12 +737,20 @@ def _build_trajectory_history_observations(
     ego_ids: np.ndarray,
     partner_ids: np.ndarray,
     history: dict[int, list[np.ndarray]],
+    *,
+    dynamics_model: str = "classic",
+    observation_mode: str = _TRAJECTORY_OBSERVATION_MODE,
 ) -> np.ndarray:
-    observations = np.zeros((base_observations.shape[0], _trajectory_obs_dim()), dtype=np.float32)
-    observations[:, : _base_obs_dim()] = base_observations
+    ego_history_features, partner_history_features = _trajectory_history_feature_dims(observation_mode)
+    base_obs_dim = _base_obs_dim(dynamics_model, observation_mode)
+    observations = np.zeros(
+        (base_observations.shape[0], _trajectory_obs_dim(dynamics_model, observation_mode)),
+        dtype=np.float32,
+    )
+    observations[:, :base_obs_dim] = base_observations
 
-    ego_hist_start = _base_obs_dim()
-    partner_hist_start = ego_hist_start + (_TRAJECTORY_HORIZON * _TRAJECTORY_HISTORY_FEATURES)
+    ego_hist_start = base_obs_dim
+    partner_hist_start = ego_hist_start + (_TRAJECTORY_HORIZON * ego_history_features)
 
     for row in range(base_observations.shape[0]):
         current_x = float(ego_states["x"][row])
@@ -563,18 +758,32 @@ def _build_trajectory_history_observations(
         current_heading = float(ego_states["heading"][row])
         ego_id = int(ego_ids[row])
 
-        ego_block = _encode_history_block(history.get(ego_id), current_x, current_y, current_heading)
+        ego_block = _encode_history_block(
+            history.get(ego_id),
+            current_x,
+            current_y,
+            current_heading,
+            history_features=ego_history_features,
+            include_trailer=True,
+        )
         observations[row, ego_hist_start:partner_hist_start] = ego_block.reshape(-1)
 
         partner_block = np.zeros(
-            (binding.MAX_AGENTS - 1, _TRAJECTORY_HORIZON, _TRAJECTORY_HISTORY_FEATURES),
+            (binding.MAX_AGENTS - 1, _TRAJECTORY_HORIZON, partner_history_features),
             dtype=np.float32,
         )
         for slot in range(binding.MAX_AGENTS - 1):
             partner_id = int(partner_ids[row, slot])
             if partner_id <= 0:
                 continue
-            partner_block[slot] = _encode_history_block(history.get(partner_id), current_x, current_y, current_heading)
+            partner_block[slot] = _encode_history_block(
+                history.get(partner_id),
+                current_x,
+                current_y,
+                current_heading,
+                history_features=partner_history_features,
+                include_trailer=False,
+            )
         observations[row, partner_hist_start:] = partner_block.reshape(-1)
     return observations
 
@@ -625,6 +834,15 @@ def _build_trajectory_targets(
     return targets.reshape(current_states["x"].shape[0], _TRAJECTORY_ACTION_DIM)
 
 
+def _full_history_valid_rows(trajectories: dict[str, np.ndarray], current_timestep: int) -> np.ndarray:
+    start_idx = int(current_timestep) - _TRAJECTORY_HORIZON + 1
+    if start_idx < 0:
+        return np.zeros(trajectories["valid"].shape[0], dtype=bool)
+
+    history_valid = trajectories["valid"][:, start_idx : int(current_timestep) + 1] > 0
+    return history_valid.all(axis=1)
+
+
 def _iter_sample_timesteps(total_steps: int, *, start_offset: int, end_offset: int, stride: int) -> range:
     effective_stride = max(1, int(stride))
     start = max(0, int(start_offset))
@@ -641,6 +859,7 @@ def iter_trajectory_bc_samples(
     sample_stride: int = 1,
     sample_start_offset: int = 0,
     sample_end_offset: int = 0,
+    require_full_windows: bool = True,
 ) -> Iterator[tuple[np.ndarray, np.ndarray]]:
     map_path = Path(map_path).expanduser().resolve()
     with _staged_map_dir(map_path) as staged_dir:
@@ -654,11 +873,17 @@ def iter_trajectory_bc_samples(
             trajectories = _get_ground_truth(env_handle, active_count, env_config.episode_length, env_config.init_steps)
             ego_ids = _get_active_agent_ids(env_handle, active_count)
             history: dict[int, list[np.ndarray]] = {}
+            effective_start_offset = int(sample_start_offset)
+            effective_end_offset = int(sample_end_offset)
+            if require_full_windows:
+                effective_start_offset = max(effective_start_offset, _TRAJECTORY_HORIZON - 1)
+                effective_end_offset = max(effective_end_offset, _TRAJECTORY_HORIZON - 1)
+
             sample_timesteps = list(
                 _iter_sample_timesteps(
                     trajectories["x"].shape[1],
-                    start_offset=sample_start_offset,
-                    end_offset=sample_end_offset,
+                    start_offset=effective_start_offset,
+                    end_offset=effective_end_offset,
                     stride=sample_stride,
                 )
             )
@@ -668,13 +893,45 @@ def iter_trajectory_bc_samples(
 
             for timestep in range(max(sample_timesteps) + 1):
                 binding.env_set_logged_timestep(env_handle, timestep)
-                base_observations = np.zeros((active_count, _base_obs_dim()), dtype=np.float32)
-                binding.env_copy_observations(env_handle, base_observations)
+                raw_base_observations = np.zeros(
+                    (active_count, _raw_base_obs_dim(env_config.dynamics_model)),
+                    dtype=np.float32,
+                )
+                binding.env_copy_observations(env_handle, raw_base_observations)
                 current_states = _get_global_agent_state(env_handle, active_count)
                 partner_ids = _get_partner_ids(env_handle, active_count)
-                current_speeds = base_observations[:, 2] * _MAX_SPEED
+                extended_observation = _trajectory_uses_augmented_base_observation(env_config.observation_mode)
+                ego_types = _get_global_agent_types(env_handle, active_count) if extended_observation else None
+                partner_types = _get_partner_types(env_handle, active_count) if extended_observation else None
+                ego_trailer_features = (
+                    _get_ego_trailer_obs_features(env_handle, active_count) if extended_observation else None
+                )
+                trailer_state = _get_sdc_trailer_state(env_handle) if extended_observation else None
+                current_speeds = raw_base_observations[:, 2] * _MAX_SPEED
 
                 for row in range(active_count):
+                    trailer_valid = 0.0
+                    trailer_x = 0.0
+                    trailer_y = 0.0
+                    trailer_heading = 0.0
+                    if (
+                        extended_observation
+                        and ego_trailer_features is not None
+                        and trailer_state is not None
+                        and int(trailer_state["has_trailer"][0]) > 0
+                    ):
+                        feature_values = (
+                            float(ego_trailer_features["rel_x"][row]),
+                            float(ego_trailer_features["rel_y"][row]),
+                            float(ego_trailer_features["rel_heading_x"][row]),
+                            float(ego_trailer_features["rel_heading_y"][row]),
+                        )
+                        if any(abs(value) > _EMPTY_PARTNER_EPS for value in feature_values):
+                            trailer_valid = 1.0
+                            trailer_x = float(trailer_state["x"][0])
+                            trailer_y = float(trailer_state["y"][0])
+                            trailer_heading = float(trailer_state["heading"][0])
+
                     _append_history(
                         history,
                         int(ego_ids[row]),
@@ -682,20 +939,42 @@ def iter_trajectory_bc_samples(
                         float(current_states["y"][row]),
                         float(current_states["heading"][row]),
                         float(current_speeds[row]),
+                        policy_type=int(ego_types[row]) if ego_types is not None else 0,
+                        trailer_x=trailer_x,
+                        trailer_y=trailer_y,
+                        trailer_heading=trailer_heading,
+                        trailer_valid=trailer_valid,
                     )
 
-                for entity_id, state in _decode_partner_states(base_observations, current_states, partner_ids).items():
-                    _append_history(history, entity_id, state[0], state[1], state[2], state[3])
+                for entity_id, state in _decode_partner_states(
+                    raw_base_observations,
+                    current_states,
+                    partner_ids,
+                    dynamics_model=env_config.dynamics_model,
+                    partner_types=partner_types,
+                ).items():
+                    _append_history(history, entity_id, state[0], state[1], state[2], state[3], policy_type=state[5])
 
                 if timestep not in selected_timesteps:
                     continue
 
+                policy_base_observations = _build_policy_base_observations(
+                    raw_base_observations,
+                    env_handle,
+                    active_count,
+                    env_config,
+                    ego_types=ego_types,
+                    partner_types=partner_types,
+                    ego_trailer_features=ego_trailer_features,
+                )
                 observations = _build_trajectory_history_observations(
-                    base_observations=base_observations,
+                    base_observations=policy_base_observations,
                     ego_states=current_states,
                     ego_ids=ego_ids,
                     partner_ids=partner_ids,
                     history=history,
+                    dynamics_model=env_config.dynamics_model,
+                    observation_mode=env_config.observation_mode,
                 )
                 targets = _build_trajectory_targets(
                     trajectories=trajectories,
@@ -705,12 +984,21 @@ def iter_trajectory_bc_samples(
                 )
 
                 anchor_valid = trajectories["valid"][:, timestep] > 0
-                target_valid = targets.reshape(active_count, _TRAJECTORY_HORIZON, _TRAJECTORY_FEATURES)[:, :, 4].sum(axis=1) > 0
-                keep_rows = np.flatnonzero(anchor_valid & target_valid)
+                target_valid = targets.reshape(active_count, _TRAJECTORY_HORIZON, _TRAJECTORY_FEATURES)[:, :, 4] > 0
+                if require_full_windows:
+                    history_valid = _full_history_valid_rows(trajectories, timestep)
+                    target_keep = target_valid.all(axis=1)
+                    keep_mask = anchor_valid & history_valid & target_keep
+                else:
+                    target_keep = target_valid.any(axis=1)
+                    keep_mask = anchor_valid & target_keep
+
+                keep_rows = np.flatnonzero(keep_mask)
                 for row in keep_rows:
                     yield observations[row].astype(np.float32), targets[row].astype(np.float32)
         finally:
             binding.env_close(env_handle)
+            _ENV_HANDLE_BUFFERS.pop(int(env_handle), None)
 
 
 class TrajectoryBCIterableDataset(IterableDataset):
@@ -726,6 +1014,7 @@ class TrajectoryBCIterableDataset(IterableDataset):
         sample_stride: int = 1,
         sample_start_offset: int = 0,
         sample_end_offset: int = 0,
+        require_full_windows: bool = True,
     ):
         self.map_paths = [Path(path) for path in map_paths]
         self.env_config = env_config
@@ -736,6 +1025,7 @@ class TrajectoryBCIterableDataset(IterableDataset):
         self.sample_stride = int(sample_stride)
         self.sample_start_offset = int(sample_start_offset)
         self.sample_end_offset = int(sample_end_offset)
+        self.require_full_windows = bool(require_full_windows)
 
     def with_epoch(self, epoch: int) -> "TrajectoryBCIterableDataset":
         return TrajectoryBCIterableDataset(
@@ -748,6 +1038,7 @@ class TrajectoryBCIterableDataset(IterableDataset):
             sample_stride=self.sample_stride,
             sample_start_offset=self.sample_start_offset,
             sample_end_offset=self.sample_end_offset,
+            require_full_windows=self.require_full_windows,
         )
 
     def __iter__(self):
@@ -773,6 +1064,7 @@ class TrajectoryBCIterableDataset(IterableDataset):
                 sample_stride=self.sample_stride,
                 sample_start_offset=self.sample_start_offset,
                 sample_end_offset=self.sample_end_offset,
+                require_full_windows=self.require_full_windows,
             ):
                 yield {
                     "observation": torch.from_numpy(observation),
@@ -812,7 +1104,7 @@ class TrajectoryBCTrainer:
                 max_maps=experiment.train.max_maps,
             )
 
-        policy_env = _build_policy_env_spec(experiment.env.dynamics_model)
+        policy_env = _build_policy_env_spec(experiment.env.dynamics_model, experiment.env.observation_mode)
         self.policy = DrivePolicy(policy_env, **experiment.policy)
         self.device = _resolve_training_device(experiment.train.device)
         print(f"[trajectory-bc] using device={self.device}")
@@ -863,6 +1155,7 @@ class TrajectoryBCTrainer:
             sample_stride=self.experiment.train.sample_stride,
             sample_start_offset=self.experiment.train.sample_start_offset,
             sample_end_offset=self.experiment.train.sample_end_offset,
+            require_full_windows=self.experiment.train.require_full_windows,
         )
         return DataLoader(
             dataset,

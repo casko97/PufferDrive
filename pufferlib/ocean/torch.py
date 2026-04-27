@@ -41,6 +41,12 @@ class Drive(nn.Module):
         self.trajectory_partner_history_dim = getattr(env, "trajectory_partner_history_dim", 0)
         self.trajectory_history_horizon = getattr(env, "trajectory_history_horizon", 0)
         self.trajectory_history_features = getattr(env, "trajectory_history_features", TRAJECTORY_HISTORY_FEATURES)
+        self.trajectory_ego_history_features = getattr(
+            env, "trajectory_ego_history_features", self.trajectory_history_features
+        )
+        self.trajectory_partner_history_features = getattr(
+            env, "trajectory_partner_history_features", self.trajectory_history_features
+        )
         self.initial_std_bias = float(initial_std_bias)
         self.min_action_std = float(min_action_std)
         self.max_action_std = None if max_action_std is None else float(max_action_std)
@@ -84,7 +90,7 @@ class Drive(nn.Module):
         if self.trajectory_ego_history_dim > 0:
             self.ego_history_encoder = nn.Sequential(
                 pufferlib.pytorch.layer_init(
-                    nn.Linear(self.trajectory_history_horizon * self.trajectory_history_features, input_size)
+                    nn.Linear(self.trajectory_history_horizon * self.trajectory_ego_history_features, input_size)
                 ),
                 nn.LayerNorm(input_size),
                 nn.GELU(),
@@ -92,7 +98,7 @@ class Drive(nn.Module):
             )
             self.partner_history_encoder = nn.Sequential(
                 pufferlib.pytorch.layer_init(
-                    nn.Linear(self.trajectory_history_horizon * self.trajectory_history_features, input_size)
+                    nn.Linear(self.trajectory_history_horizon * self.trajectory_partner_history_features, input_size)
                 ),
                 nn.LayerNorm(input_size),
                 nn.GELU(),
@@ -199,7 +205,7 @@ class Drive(nn.Module):
             partner_history = partner_history.view(
                 -1,
                 self.max_partner_objects,
-                self.trajectory_history_horizon * self.trajectory_history_features,
+                self.trajectory_history_horizon * self.trajectory_partner_history_features,
             )
             partner_history_features, _ = self.partner_history_encoder(partner_history).max(dim=1)
             concat_features = torch.cat(
