@@ -34,8 +34,13 @@ def test_reward_model_accepts_cached_offline_preferences():
     inserted = load_preferences_into_reward_model(model, pref_payload)
     assert inserted == 3
     assert model.buffer_index == 3
-    acc = model.train_reward()
-    assert acc.shape == (1,)
+    metrics = model.train_reward(return_metrics=True, timestep_loss_weight=0.5)
+    assert metrics["acc"].shape == (1,)
+    assert metrics["loss"].shape == (1,)
+    assert metrics["timestep_acc"].shape == (1,)
+    assert metrics["timestep_loss"].shape == (1,)
+    assert metrics["total_loss"].shape == (1,)
+    assert np.all(np.isfinite(metrics["total_loss"]))
 
 
 def test_reward_model_rejects_dimension_mismatch():

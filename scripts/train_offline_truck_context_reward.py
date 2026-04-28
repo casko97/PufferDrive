@@ -264,16 +264,23 @@ def evaluate_reward_model(model, preferred_sa: np.ndarray, rejected_sa: np.ndarr
     ensemble_probs = []
     ensemble_losses = []
     ensemble_margins = []
+    ensemble_timestep_losses = []
     member_accuracies = []
     member_confidences = []
+    member_timestep_accuracies = []
     for member in range(model.de):
         probs = model.p_hat_member(preferred_sa, rejected_sa, member=member).detach().cpu().numpy()
         ensemble_probs.append(probs.astype(np.float32))
-        r_hat1 = model.r_hat_member(preferred_sa, member=member).sum(axis=1)
-        r_hat2 = model.r_hat_member(rejected_sa, member=member).sum(axis=1)
+        r_hat1_steps = model.r_hat_member(preferred_sa, member=member)
+        r_hat2_steps = model.r_hat_member(rejected_sa, member=member)
+        r_hat1 = r_hat1_steps.sum(axis=1)
+        r_hat2 = r_hat2_steps.sum(axis=1)
         logits = torch.cat([r_hat1, r_hat2], axis=-1)
         labels_tensor = torch.from_numpy(labels_long).long().to(logits.device)
         ensemble_losses.append(float(model.CEloss(logits, labels_tensor).detach().cpu().item()))
+        timestep_logits = torch.cat([r_hat1_steps, r_hat2_steps], axis=-1).reshape(-1, 2)
+        timestep_labels = labels_tensor[:, None].expand(-1, preferred_sa.shape[1]).reshape(-1)
+        ensemble_timestep_losses.append(float(model.CEloss(timestep_logits, timestep_labels).detach().cpu().item()))
         margin = (r_hat1 - r_hat2).detach().cpu().numpy().reshape(-1)
         signed_margin = np.where(labels_long == 0, margin, -margin)
         ensemble_margins.append(signed_margin.astype(np.float32))
@@ -282,6 +289,11 @@ def evaluate_reward_model(model, preferred_sa: np.ndarray, rejected_sa: np.ndarr
         member_correct = member_predicted_labels == labels_long
         member_accuracies.append(float(np.mean(member_correct)) if len(member_correct) > 0 else float("nan"))
         member_confidences.append(float(np.mean(np.abs(probs - 0.5) * 2.0)) if len(probs) > 0 else float("nan"))
+        _, timestep_predicted_labels = torch.max(timestep_logits.data, 1)
+        timestep_correct = timestep_predicted_labels.detach().cpu().numpy() == timestep_labels.detach().cpu().numpy()
+        member_timestep_accuracies.append(
+            float(np.mean(timestep_correct)) if len(timestep_correct) > 0 else float("nan")
+        )
     probs = np.mean(np.stack(ensemble_probs, axis=0), axis=0)
     signed_margin = np.mean(np.stack(ensemble_margins, axis=0), axis=0)
     pred_first = (probs >= 0.5).astype(np.int64)
@@ -291,10 +303,16 @@ def evaluate_reward_model(model, preferred_sa: np.ndarray, rejected_sa: np.ndarr
     return {
         "accuracy": float(np.mean(correct)) if len(correct) > 0 else float("nan"),
         "loss": float(np.mean(ensemble_losses)) if ensemble_losses else float("nan"),
+        "timestep_loss": float(np.mean(ensemble_timestep_losses)) if ensemble_timestep_losses else float("nan"),
+        "timestep_accuracy": (
+            float(np.mean(member_timestep_accuracies)) if member_timestep_accuracies else float("nan")
+        ),
         "margin_mean": float(np.mean(signed_margin)) if len(signed_margin) > 0 else float("nan"),
         "confidence_mean": float(np.mean(confidence)) if len(confidence) > 0 else float("nan"),
         "member_losses": [float(x) for x in ensemble_losses],
+        "member_timestep_losses": [float(x) for x in ensemble_timestep_losses],
         "member_accuracies": [float(x) for x in member_accuracies],
+        "member_timestep_accuracies": [float(x) for x in member_timestep_accuracies],
         "member_confidences": [float(x) for x in member_confidences],
         "prob_preferred_first": probs,
         "predicted_labels": predicted_labels,
@@ -314,10 +332,14 @@ def evaluate_reward_model_on_indices(
     total = 0
     total_correct = 0
     weighted_loss_sum = 0.0
+    weighted_timestep_loss_sum = 0.0
+    weighted_timestep_acc_sum = 0.0
     weighted_margin_sum = 0.0
     weighted_confidence_sum = 0.0
     weighted_member_loss_sum = None
+    weighted_member_timestep_loss_sum = None
     weighted_member_acc_sum = None
+    weighted_member_timestep_acc_sum = None
     weighted_member_conf_sum = None
     collected_examples = []
     total_shards = 0
@@ -347,17 +369,25 @@ def evaluate_reward_model_on_indices(
         total += len(correct)
         total_correct += int(np.sum(correct))
         weighted_loss_sum += float(evaluation["loss"]) * len(correct)
+        weighted_timestep_loss_sum += float(evaluation["timestep_loss"]) * len(correct)
+        weighted_timestep_acc_sum += float(evaluation["timestep_accuracy"]) * len(correct)
         weighted_margin_sum += float(evaluation["margin_mean"]) * len(correct)
         weighted_confidence_sum += float(evaluation["confidence_mean"]) * len(correct)
         member_losses = np.asarray(evaluation["member_losses"], dtype=np.float64)
+        member_timestep_losses = np.asarray(evaluation["member_timestep_losses"], dtype=np.float64)
         member_accs = np.asarray(evaluation["member_accuracies"], dtype=np.float64)
+        member_timestep_accs = np.asarray(evaluation["member_timestep_accuracies"], dtype=np.float64)
         member_confs = np.asarray(evaluation["member_confidences"], dtype=np.float64)
         if weighted_member_loss_sum is None:
             weighted_member_loss_sum = np.zeros_like(member_losses, dtype=np.float64)
+            weighted_member_timestep_loss_sum = np.zeros_like(member_timestep_losses, dtype=np.float64)
             weighted_member_acc_sum = np.zeros_like(member_accs, dtype=np.float64)
+            weighted_member_timestep_acc_sum = np.zeros_like(member_timestep_accs, dtype=np.float64)
             weighted_member_conf_sum = np.zeros_like(member_confs, dtype=np.float64)
         weighted_member_loss_sum += member_losses * len(correct)
+        weighted_member_timestep_loss_sum += member_timestep_losses * len(correct)
         weighted_member_acc_sum += member_accs * len(correct)
+        weighted_member_timestep_acc_sum += member_timestep_accs * len(correct)
         weighted_member_conf_sum += member_confs * len(correct)
 
         if max_examples > 0:
@@ -392,19 +422,35 @@ def evaluate_reward_model_on_indices(
 
     accuracy = float(total_correct / total) if total > 0 else float("nan")
     loss = float(weighted_loss_sum / total) if total > 0 else float("nan")
+    timestep_loss = float(weighted_timestep_loss_sum / total) if total > 0 else float("nan")
+    timestep_accuracy = float(weighted_timestep_acc_sum / total) if total > 0 else float("nan")
     margin_mean = float(weighted_margin_sum / total) if total > 0 else float("nan")
     confidence_mean = float(weighted_confidence_sum / total) if total > 0 else float("nan")
     member_losses = (weighted_member_loss_sum / total).tolist() if total > 0 and weighted_member_loss_sum is not None else []
+    member_timestep_losses = (
+        (weighted_member_timestep_loss_sum / total).tolist()
+        if total > 0 and weighted_member_timestep_loss_sum is not None
+        else []
+    )
     member_accuracies = (weighted_member_acc_sum / total).tolist() if total > 0 and weighted_member_acc_sum is not None else []
+    member_timestep_accuracies = (
+        (weighted_member_timestep_acc_sum / total).tolist()
+        if total > 0 and weighted_member_timestep_acc_sum is not None
+        else []
+    )
     member_confidences = (weighted_member_conf_sum / total).tolist() if total > 0 and weighted_member_conf_sum is not None else []
     if max_examples <= 0:
         return {
             "accuracy": accuracy,
             "loss": loss,
+            "timestep_loss": timestep_loss,
+            "timestep_accuracy": timestep_accuracy,
             "margin_mean": margin_mean,
             "confidence_mean": confidence_mean,
             "member_losses": member_losses,
+            "member_timestep_losses": member_timestep_losses,
             "member_accuracies": member_accuracies,
+            "member_timestep_accuracies": member_timestep_accuracies,
             "member_confidences": member_confidences,
             "count": total,
             "examples": {"correct_examples": [], "incorrect_examples": []},
@@ -417,10 +463,14 @@ def evaluate_reward_model_on_indices(
     return {
         "accuracy": accuracy,
         "loss": loss,
+        "timestep_loss": timestep_loss,
+        "timestep_accuracy": timestep_accuracy,
         "margin_mean": margin_mean,
         "confidence_mean": confidence_mean,
         "member_losses": member_losses,
+        "member_timestep_losses": member_timestep_losses,
         "member_accuracies": member_accuracies,
+        "member_timestep_accuracies": member_timestep_accuracies,
         "member_confidences": member_confidences,
         "count": total,
         "examples": {
@@ -507,7 +557,12 @@ def train_offline_truck_context_reward(
     tag: str | None = None,
     init_from_dir: Path | None = None,
     init_checkpoint_stem: str = DEFAULT_INIT_CHECKPOINT_STEM,
+    timestep_loss_weight: float = 0.0,
 ) -> dict:
+    timestep_loss_weight = float(timestep_loss_weight)
+    if timestep_loss_weight < 0:
+        raise ValueError(f"timestep_loss_weight must be non-negative, got {timestep_loss_weight}")
+
     manifest = _manifest_metadata(preference_path)
     meta = manifest["metadata"]
     obs_dim = int(meta["obs_dim"])
@@ -542,7 +597,7 @@ def train_offline_truck_context_reward(
     )
     LOGGER.info(
         "Streaming configuration: train_shards=%d val_shards=%d max_train_windows_per_shard=%d mb_size=%d "
-        "train_batch_size=%d lr=%g activation=%s max_buffer_windows=%d",
+        "train_batch_size=%d lr=%g activation=%s max_buffer_windows=%d timestep_loss_weight=%g",
         total_train_shards,
         total_val_shards,
         max_buffer_windows,
@@ -551,6 +606,7 @@ def train_offline_truck_context_reward(
         lr,
         activation,
         max_buffer_windows,
+        timestep_loss_weight,
     )
 
     wandb_logger = None
@@ -582,6 +638,7 @@ def train_offline_truck_context_reward(
                 "max_buffer_windows": max_buffer_windows,
                 "init_from_dir": str(init_from_dir) if init_from_dir is not None else None,
                 "init_checkpoint_stem": init_checkpoint_stem,
+                "timestep_loss_weight": timestep_loss_weight,
             },
         )
         LOGGER.info(
@@ -611,12 +668,18 @@ def train_offline_truck_context_reward(
     inserted = int(len(train_indices))
     round_acc = []
     round_loss = []
+    round_timestep_acc = []
+    round_timestep_loss = []
+    round_total_loss = []
     round_member_acc = []
     round_member_loss = []
     for round_idx in range(rounds):
         LOGGER.info("Round %d/%d: training started", round_idx + 1, rounds)
         shard_accs = []
         shard_losses = []
+        shard_timestep_accs = []
+        shard_timestep_losses = []
+        shard_total_losses = []
         shard_counts = []
         processed_shards = 0
         processed_chunks = 0
@@ -627,11 +690,17 @@ def train_offline_truck_context_reward(
             loaded = load_preferences_into_reward_model(model, train_payload)
             if loaded <= 0:
                 continue
-            metrics = model.train_reward(return_metrics=True)
+            metrics = model.train_reward(return_metrics=True, timestep_loss_weight=timestep_loss_weight)
             acc = np.asarray(metrics["acc"], dtype=np.float32)
             loss = np.asarray(metrics["loss"], dtype=np.float32)
+            timestep_acc = np.asarray(metrics["timestep_acc"], dtype=np.float32)
+            timestep_loss = np.asarray(metrics["timestep_loss"], dtype=np.float32)
+            total_loss = np.asarray(metrics["total_loss"], dtype=np.float32)
             shard_accs.append(acc)
             shard_losses.append(loss)
+            shard_timestep_accs.append(timestep_acc)
+            shard_timestep_losses.append(timestep_loss)
+            shard_total_losses.append(total_loss)
             shard_counts.append(loaded)
             processed_chunks += 1
             chunk_shards = list(chunk_info["shard_infos"])
@@ -644,12 +713,22 @@ def train_offline_truck_context_reward(
             ):
                 current_acc = np.average(np.stack(shard_accs, axis=0), axis=0, weights=np.asarray(shard_counts, dtype=np.float32))
                 current_loss = np.average(np.stack(shard_losses, axis=0), axis=0, weights=np.asarray(shard_counts, dtype=np.float32))
+                current_timestep_acc = np.average(
+                    np.stack(shard_timestep_accs, axis=0), axis=0, weights=np.asarray(shard_counts, dtype=np.float32)
+                )
+                current_timestep_loss = np.average(
+                    np.stack(shard_timestep_losses, axis=0), axis=0, weights=np.asarray(shard_counts, dtype=np.float32)
+                )
+                current_total_loss = np.average(
+                    np.stack(shard_total_losses, axis=0), axis=0, weights=np.asarray(shard_counts, dtype=np.float32)
+                )
                 windows_fraction = processed_windows / max(len(train_indices), 1)
                 shard_fraction = processed_shards / max(total_train_shards, 1)
                 overall_fraction = ((round_idx + windows_fraction) / max(rounds, 1)) * 100.0
                 LOGGER.info(
                     "Progress %.2f%% | Round %d/%d | shard %d/%d (%.2f%%) | windows %d/%d (%.2f%%) | "
                     "chunk %d | loaded=%d | current_train_loss=%s | current_train_acc=%s | "
+                    "current_timestep_loss=%s | current_timestep_acc=%s | current_total_loss=%s | "
                     "shards=%s..%s (%d shards)",
                     overall_fraction,
                     round_idx + 1,
@@ -664,6 +743,9 @@ def train_offline_truck_context_reward(
                     loaded,
                     np.array2string(current_loss, precision=4),
                     np.array2string(current_acc, precision=4),
+                    np.array2string(current_timestep_loss, precision=4),
+                    np.array2string(current_timestep_acc, precision=4),
+                    np.array2string(current_total_loss, precision=4),
                     Path(chunk_shards[0]["path"]).name,
                     Path(chunk_shards[-1]["path"]).name,
                     len(chunk_shards),
@@ -679,6 +761,9 @@ def train_offline_truck_context_reward(
                             "progress/train_window_fraction": windows_fraction,
                             "preference_train/stream_ce_loss": float(np.mean(current_loss)),
                             "preference_train/stream_pair_accuracy": float(np.mean(current_acc)),
+                            "preference_train/stream_timestep_ce_loss": float(np.mean(current_timestep_loss)),
+                            "preference_train/stream_timestep_pair_accuracy": float(np.mean(current_timestep_acc)),
+                            "preference_train/stream_total_loss": float(np.mean(current_total_loss)),
                             "preference_train/stream_windows_processed": processed_windows,
                         },
                         step=(round_idx * total_train_shards) + processed_shards,
@@ -688,8 +773,14 @@ def train_offline_truck_context_reward(
         weights = np.asarray(shard_counts, dtype=np.float32)
         weighted_acc = np.average(np.stack(shard_accs, axis=0), axis=0, weights=weights)
         weighted_loss = np.average(np.stack(shard_losses, axis=0), axis=0, weights=weights)
+        weighted_timestep_acc = np.average(np.stack(shard_timestep_accs, axis=0), axis=0, weights=weights)
+        weighted_timestep_loss = np.average(np.stack(shard_timestep_losses, axis=0), axis=0, weights=weights)
+        weighted_total_loss = np.average(np.stack(shard_total_losses, axis=0), axis=0, weights=weights)
         round_acc.append(weighted_acc.astype(np.float32))
         round_loss.append(weighted_loss.astype(np.float32))
+        round_timestep_acc.append(weighted_timestep_acc.astype(np.float32))
+        round_timestep_loss.append(weighted_timestep_loss.astype(np.float32))
+        round_total_loss.append(weighted_total_loss.astype(np.float32))
         round_member_acc.append(weighted_acc.astype(np.float32))
         round_member_loss.append(weighted_loss.astype(np.float32))
         train_eval_round = evaluate_reward_model_on_indices(
@@ -710,8 +801,10 @@ def train_offline_truck_context_reward(
         )
         LOGGER.info(
             "Round %d/%d complete | processed_chunks=%d processed_shards=%d processed_windows=%d | "
-            "batch_train_loss=%s batch_train_acc=%s | full_train_loss=%.6f full_train_acc=%.6f | "
-            "heldout_val_loss=%.6f heldout_val_acc=%.6f",
+            "batch_train_loss=%s batch_train_acc=%s | batch_timestep_loss=%s batch_timestep_acc=%s | "
+            "batch_total_loss=%s | full_train_loss=%.6f full_train_acc=%.6f full_train_timestep_loss=%.6f "
+            "full_train_timestep_acc=%.6f | heldout_val_loss=%.6f heldout_val_acc=%.6f "
+            "heldout_val_timestep_loss=%.6f heldout_val_timestep_acc=%.6f",
             round_idx + 1,
             rounds,
             processed_chunks,
@@ -719,39 +812,67 @@ def train_offline_truck_context_reward(
             processed_windows,
             np.array2string(weighted_loss, precision=4),
             np.array2string(weighted_acc, precision=4),
+            np.array2string(weighted_timestep_loss, precision=4),
+            np.array2string(weighted_timestep_acc, precision=4),
+            np.array2string(weighted_total_loss, precision=4),
             train_eval_round["loss"],
             train_eval_round["accuracy"],
+            train_eval_round["timestep_loss"],
+            train_eval_round["timestep_accuracy"],
             val_eval_round["loss"],
             val_eval_round["accuracy"],
+            val_eval_round["timestep_loss"],
+            val_eval_round["timestep_accuracy"],
         )
         if wandb_logger is not None:
             wandb_metrics = {
                 "round/index": round_idx + 1,
                 "preference_train/batch_ce_loss": float(np.mean(weighted_loss)),
                 "preference_train/batch_pair_accuracy": float(np.mean(weighted_acc)),
+                "preference_train/batch_timestep_ce_loss": float(np.mean(weighted_timestep_loss)),
+                "preference_train/batch_timestep_pair_accuracy": float(np.mean(weighted_timestep_acc)),
+                "preference_train/batch_total_loss": float(np.mean(weighted_total_loss)),
                 "preference_train/full_ce_loss": float(train_eval_round["loss"]),
                 "preference_train/full_pair_accuracy": float(train_eval_round["accuracy"]),
+                "preference_train/full_timestep_ce_loss": float(train_eval_round["timestep_loss"]),
+                "preference_train/full_timestep_pair_accuracy": float(train_eval_round["timestep_accuracy"]),
                 "preference_train/full_margin_mean": float(train_eval_round["margin_mean"]),
                 "preference_train/full_confidence_mean": float(train_eval_round["confidence_mean"]),
                 "preference_val/ce_loss": float(val_eval_round["loss"]),
                 "preference_val/pair_accuracy": float(val_eval_round["accuracy"]),
+                "preference_val/timestep_ce_loss": float(val_eval_round["timestep_loss"]),
+                "preference_val/timestep_pair_accuracy": float(val_eval_round["timestep_accuracy"]),
                 "preference_val/margin_mean": float(val_eval_round["margin_mean"]),
                 "preference_val/confidence_mean": float(val_eval_round["confidence_mean"]),
             }
             for member_idx, member_loss in enumerate(weighted_loss):
                 wandb_metrics[f"preference_train_member/{member_idx}/batch_ce_loss"] = float(member_loss)
+            for member_idx, member_loss in enumerate(weighted_timestep_loss):
+                wandb_metrics[f"preference_train_member/{member_idx}/batch_timestep_ce_loss"] = float(member_loss)
+            for member_idx, member_loss in enumerate(weighted_total_loss):
+                wandb_metrics[f"preference_train_member/{member_idx}/batch_total_loss"] = float(member_loss)
             for member_idx, member_acc in enumerate(weighted_acc):
                 wandb_metrics[f"preference_train_member/{member_idx}/batch_pair_accuracy"] = float(member_acc)
+            for member_idx, member_acc in enumerate(weighted_timestep_acc):
+                wandb_metrics[f"preference_train_member/{member_idx}/batch_timestep_pair_accuracy"] = float(member_acc)
             for member_idx, member_loss in enumerate(train_eval_round["member_losses"]):
                 wandb_metrics[f"preference_train_member/{member_idx}/full_ce_loss"] = float(member_loss)
+            for member_idx, member_loss in enumerate(train_eval_round["member_timestep_losses"]):
+                wandb_metrics[f"preference_train_member/{member_idx}/full_timestep_ce_loss"] = float(member_loss)
             for member_idx, member_acc in enumerate(train_eval_round["member_accuracies"]):
                 wandb_metrics[f"preference_train_member/{member_idx}/full_pair_accuracy"] = float(member_acc)
+            for member_idx, member_acc in enumerate(train_eval_round["member_timestep_accuracies"]):
+                wandb_metrics[f"preference_train_member/{member_idx}/full_timestep_pair_accuracy"] = float(member_acc)
             for member_idx, member_conf in enumerate(train_eval_round["member_confidences"]):
                 wandb_metrics[f"preference_train_member/{member_idx}/full_confidence_mean"] = float(member_conf)
             for member_idx, member_loss in enumerate(val_eval_round["member_losses"]):
                 wandb_metrics[f"preference_val_member/{member_idx}/ce_loss"] = float(member_loss)
+            for member_idx, member_loss in enumerate(val_eval_round["member_timestep_losses"]):
+                wandb_metrics[f"preference_val_member/{member_idx}/timestep_ce_loss"] = float(member_loss)
             for member_idx, member_acc in enumerate(val_eval_round["member_accuracies"]):
                 wandb_metrics[f"preference_val_member/{member_idx}/pair_accuracy"] = float(member_acc)
+            for member_idx, member_acc in enumerate(val_eval_round["member_timestep_accuracies"]):
+                wandb_metrics[f"preference_val_member/{member_idx}/timestep_pair_accuracy"] = float(member_acc)
             for member_idx, member_conf in enumerate(val_eval_round["member_confidences"]):
                 wandb_metrics[f"preference_val_member/{member_idx}/confidence_mean"] = float(member_conf)
             wandb_logger.log(wandb_metrics, step=(round_idx + 1) * total_train_shards)
@@ -784,10 +905,13 @@ def train_offline_truck_context_reward(
     evaluation_report = {
         "preference_path": str(preference_path),
         "output_dir": str(output_dir),
+        "timestep_loss_weight": timestep_loss_weight,
         "train_indices": train_indices.tolist(),
         "validation_indices": val_indices.tolist(),
         "validation_accuracy": float(val_eval["accuracy"]),
         "validation_loss": float(val_eval["loss"]),
+        "validation_timestep_accuracy": float(val_eval["timestep_accuracy"]),
+        "validation_timestep_loss": float(val_eval["timestep_loss"]),
         "validation_margin_mean": float(val_eval["margin_mean"]),
         "validation_confidence_mean": float(val_eval["confidence_mean"]),
         "validation_count": int(val_eval["count"]),
@@ -816,24 +940,38 @@ def train_offline_truck_context_reward(
         "activation": activation,
         "init_from_dir": str(init_from_dir) if init_from_dir is not None else None,
         "init_checkpoint_stem": init_checkpoint_stem if init_from_dir is not None else None,
+        "timestep_loss_weight": timestep_loss_weight,
         "round_acc": [acc.tolist() for acc in round_acc],
         "round_loss": [loss.tolist() for loss in round_loss],
+        "round_timestep_acc": [acc.tolist() for acc in round_timestep_acc],
+        "round_timestep_loss": [loss.tolist() for loss in round_timestep_loss],
+        "round_total_loss": [loss.tolist() for loss in round_total_loss],
         "round_member_acc": [acc.tolist() for acc in round_member_acc],
         "round_member_loss": [loss.tolist() for loss in round_member_loss],
         "final_train_member_losses": [float(x) for x in train_eval["member_losses"]],
         "final_train_member_accuracies": [float(x) for x in train_eval["member_accuracies"]],
+        "final_train_member_timestep_losses": [float(x) for x in train_eval["member_timestep_losses"]],
+        "final_train_member_timestep_accuracies": [float(x) for x in train_eval["member_timestep_accuracies"]],
         "final_train_member_confidences": [float(x) for x in train_eval["member_confidences"]],
         "final_train_margin_mean": float(train_eval["margin_mean"]),
         "final_train_confidence_mean": float(train_eval["confidence_mean"]),
         "final_train_loss": float(train_eval["loss"]),
         "final_train_acc": float(train_eval["accuracy"]),
+        "final_train_timestep_loss": float(train_eval["timestep_loss"]),
+        "final_train_timestep_acc": float(train_eval["timestep_accuracy"]),
+        "final_train_total_loss": float(train_eval["loss"]) + timestep_loss_weight * float(train_eval["timestep_loss"]),
         "final_validation_member_losses": [float(x) for x in val_eval["member_losses"]],
         "final_validation_member_accuracies": [float(x) for x in val_eval["member_accuracies"]],
+        "final_validation_member_timestep_losses": [float(x) for x in val_eval["member_timestep_losses"]],
+        "final_validation_member_timestep_accuracies": [float(x) for x in val_eval["member_timestep_accuracies"]],
         "final_validation_member_confidences": [float(x) for x in val_eval["member_confidences"]],
         "final_validation_margin_mean": float(val_eval["margin_mean"]),
         "final_validation_confidence_mean": float(val_eval["confidence_mean"]),
         "final_validation_loss": float(val_eval["loss"]),
         "final_validation_acc": float(val_eval["accuracy"]),
+        "final_validation_timestep_loss": float(val_eval["timestep_loss"]),
+        "final_validation_timestep_acc": float(val_eval["timestep_accuracy"]),
+        "final_validation_total_loss": float(val_eval["loss"]) + timestep_loss_weight * float(val_eval["timestep_loss"]),
         "evaluation_report": str(evaluation_path),
     }
     summary_path = output_dir / "offline_truck_context_reward_summary.json"
@@ -849,10 +987,16 @@ def train_offline_truck_context_reward(
             {
                 "preference_final/train_ce_loss": float(summary["final_train_loss"]),
                 "preference_final/train_pair_accuracy": float(summary["final_train_acc"]),
+                "preference_final/train_timestep_ce_loss": float(summary["final_train_timestep_loss"]),
+                "preference_final/train_timestep_pair_accuracy": float(summary["final_train_timestep_acc"]),
+                "preference_final/train_total_loss": float(summary["final_train_total_loss"]),
                 "preference_final/train_margin_mean": float(summary["final_train_margin_mean"]),
                 "preference_final/train_confidence_mean": float(summary["final_train_confidence_mean"]),
                 "preference_final/val_ce_loss": float(summary["final_validation_loss"]),
                 "preference_final/val_pair_accuracy": float(summary["final_validation_acc"]),
+                "preference_final/val_timestep_ce_loss": float(summary["final_validation_timestep_loss"]),
+                "preference_final/val_timestep_pair_accuracy": float(summary["final_validation_timestep_acc"]),
+                "preference_final/val_total_loss": float(summary["final_validation_total_loss"]),
                 "preference_final/val_margin_mean": float(summary["final_validation_margin_mean"]),
                 "preference_final/val_confidence_mean": float(summary["final_validation_confidence_mean"]),
                 **{
@@ -864,12 +1008,28 @@ def train_offline_truck_context_reward(
                     for idx, value in enumerate(summary["final_train_member_accuracies"])
                 },
                 **{
+                    f"preference_final_train_member/{idx}/timestep_ce_loss": float(value)
+                    for idx, value in enumerate(summary["final_train_member_timestep_losses"])
+                },
+                **{
+                    f"preference_final_train_member/{idx}/timestep_pair_accuracy": float(value)
+                    for idx, value in enumerate(summary["final_train_member_timestep_accuracies"])
+                },
+                **{
                     f"preference_final_val_member/{idx}/ce_loss": float(value)
                     for idx, value in enumerate(summary["final_validation_member_losses"])
                 },
                 **{
                     f"preference_final_val_member/{idx}/pair_accuracy": float(value)
                     for idx, value in enumerate(summary["final_validation_member_accuracies"])
+                },
+                **{
+                    f"preference_final_val_member/{idx}/timestep_ce_loss": float(value)
+                    for idx, value in enumerate(summary["final_validation_member_timestep_losses"])
+                },
+                **{
+                    f"preference_final_val_member/{idx}/timestep_pair_accuracy": float(value)
+                    for idx, value in enumerate(summary["final_validation_member_timestep_accuracies"])
                 },
             },
             step=rounds * total_train_shards + 1,
@@ -901,6 +1061,12 @@ def main():
     parser.add_argument("--tag", type=str, default=None)
     parser.add_argument("--init-from-dir", type=Path, default=None)
     parser.add_argument("--init-checkpoint-stem", type=str, default=DEFAULT_INIT_CHECKPOINT_STEM)
+    parser.add_argument(
+        "--timestep-loss-weight",
+        type=float,
+        default=0.0,
+        help="Weight for the auxiliary per-timestep preferred-vs-rejected CE loss. Default preserves old sequence-only training.",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -930,6 +1096,7 @@ def main():
         tag=args.tag,
         init_from_dir=args.init_from_dir,
         init_checkpoint_stem=args.init_checkpoint_stem,
+        timestep_loss_weight=args.timestep_loss_weight,
     )
     print(json.dumps(summary, indent=2))
 

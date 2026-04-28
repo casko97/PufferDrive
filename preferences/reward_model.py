@@ -751,13 +751,20 @@ class RewardModel:
         
         return len(labels)
     
-    def train_reward(self, return_metrics=False):
+    def train_reward(self, return_metrics=False, timestep_loss_weight=0.0):
+        timestep_loss_weight = float(timestep_loss_weight)
+        if timestep_loss_weight < 0:
+            raise ValueError(f"timestep_loss_weight must be non-negative, got {timestep_loss_weight}")
+
         if self.use_lora:
             for member in self.ensemble:
                 lora.mark_only_lora_as_trainable(member)
 
         ensemble_losses = [[] for _ in range(self.de)]
+        ensemble_timestep_losses = [[] for _ in range(self.de)]
+        ensemble_total_losses = [[] for _ in range(self.de)]
         ensemble_acc = np.array([0 for _ in range(self.de)])
+        ensemble_timestep_acc = np.array([0 for _ in range(self.de)])
         
         max_len = self.capacity if self.buffer_full else self.buffer_index
         total_batch_index = []
@@ -788,28 +795,52 @@ class RewardModel:
                     total += labels.size(0)
                 
                 # get logits
-                r_hat1 = self.r_hat_member(sa_t_1, member=member)
-                r_hat2 = self.r_hat_member(sa_t_2, member=member)
-                r_hat1 = r_hat1.sum(axis=1)
-                r_hat2 = r_hat2.sum(axis=1)
+                r_hat1_steps = self.r_hat_member(sa_t_1, member=member)
+                r_hat2_steps = self.r_hat_member(sa_t_2, member=member)
+                r_hat1 = r_hat1_steps.sum(axis=1)
+                r_hat2 = r_hat2_steps.sum(axis=1)
                 r_hat = torch.cat([r_hat1, r_hat2], axis=-1)
 
                 # compute loss
-                curr_loss = self.CEloss(r_hat, labels)
+                sequence_loss = self.CEloss(r_hat, labels)
+                timestep_logits = torch.cat([r_hat1_steps, r_hat2_steps], axis=-1).reshape(-1, 2)
+                timestep_labels = labels[:, None].expand(-1, sa_t_1.shape[1]).reshape(-1)
+                timestep_loss = self.CEloss(timestep_logits, timestep_labels)
+                curr_loss = sequence_loss + timestep_loss_weight * timestep_loss
                 loss += curr_loss
-                ensemble_losses[member].append(curr_loss.item())
+                ensemble_losses[member].append(sequence_loss.item())
+                ensemble_timestep_losses[member].append(timestep_loss.item())
+                ensemble_total_losses[member].append(curr_loss.item())
                 
                 # compute acc
                 _, predicted = torch.max(r_hat.data, 1)
                 correct = (predicted == labels).sum().item()
                 ensemble_acc[member] += correct
+                _, timestep_predicted = torch.max(timestep_logits.data, 1)
+                timestep_correct = (timestep_predicted == timestep_labels).sum().item()
+                ensemble_timestep_acc[member] += timestep_correct
                 
             loss.backward()
             self.opt.step()
         
         ensemble_acc = ensemble_acc / total
+        ensemble_timestep_acc = ensemble_timestep_acc / max(total * self.size_segment, 1)
         ensemble_loss = np.array(
             [float(np.mean(member_losses)) if len(member_losses) > 0 else float("nan") for member_losses in ensemble_losses],
+            dtype=np.float32,
+        )
+        ensemble_timestep_loss = np.array(
+            [
+                float(np.mean(member_losses)) if len(member_losses) > 0 else float("nan")
+                for member_losses in ensemble_timestep_losses
+            ],
+            dtype=np.float32,
+        )
+        ensemble_total_loss = np.array(
+            [
+                float(np.mean(member_losses)) if len(member_losses) > 0 else float("nan")
+                for member_losses in ensemble_total_losses
+            ],
             dtype=np.float32,
         )
 
@@ -817,6 +848,9 @@ class RewardModel:
             return {
                 "acc": ensemble_acc,
                 "loss": ensemble_loss,
+                "timestep_acc": ensemble_timestep_acc,
+                "timestep_loss": ensemble_timestep_loss,
+                "total_loss": ensemble_total_loss,
             }
         return ensemble_acc
     

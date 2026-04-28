@@ -40,6 +40,12 @@ def main():
     parser.add_argument("--lr", type=float, default=3e-4)
     parser.add_argument("--mb-size", type=int, default=32)
     parser.add_argument("--train-batch-size", type=int, default=32)
+    parser.add_argument(
+        "--timestep-loss-weight",
+        type=float,
+        default=0.0,
+        help="Weight for the auxiliary per-timestep reward-model preference loss.",
+    )
     args = parser.parse_args()
 
     run_fit = args.stage in ("fit", "all")
@@ -84,6 +90,7 @@ def main():
             lr=args.lr,
             mb_size=args.mb_size,
             train_batch_size=args.train_batch_size,
+            timestep_loss_weight=args.timestep_loss_weight,
         )
         print(summary["output_dir"])
 

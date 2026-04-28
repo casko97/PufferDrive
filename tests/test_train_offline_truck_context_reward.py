@@ -36,11 +36,16 @@ def test_train_offline_truck_context_reward_smoke(tmp_path):
         train_fraction=0.8,
         split_seed=7,
         eval_examples=2,
+        timestep_loss_weight=0.5,
     )
     assert summary["inserted_windows"] >= 1
     assert summary["train_windows"] >= 1
     assert summary["validation_windows"] >= 1
+    assert summary["timestep_loss_weight"] == 0.5
     assert 0.0 <= summary["final_validation_acc"] <= 1.0
+    assert 0.0 <= summary["final_validation_timestep_acc"] <= 1.0
+    assert len(summary["round_timestep_loss"]) == 1
+    assert len(summary["round_total_loss"]) == 1
     assert (output_dir / "offline_truck_context_reward_summary.json").exists()
     assert (output_dir / "offline_truck_context_reward_eval.json").exists()
 
@@ -61,6 +66,7 @@ def test_reload_trained_reward_model_and_score(tmp_path):
         train_fraction=0.8,
         split_seed=3,
         eval_examples=1,
+        timestep_loss_weight=0.5,
     )
     payload = torch.load(pref_path, map_location="cpu")
     model = load_trained_reward_model(
@@ -77,5 +83,7 @@ def test_reload_trained_reward_model_and_score(tmp_path):
         np.asarray(payload["labels"][:2], dtype=np.float32),
     )
     assert 0.0 <= evaluation["accuracy"] <= 1.0
+    assert 0.0 <= evaluation["timestep_accuracy"] <= 1.0
     assert evaluation["prob_preferred_first"].shape == (2,)
     assert summary["output_dir"] == str(output_dir)
+    assert summary["final_validation_timestep_loss"] >= 0.0
