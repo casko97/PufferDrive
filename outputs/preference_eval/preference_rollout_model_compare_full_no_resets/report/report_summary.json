@@ -1,0 +1,54 @@
+{
+  "normalization": {
+    "mode": "offline_sample",
+    "mean": 0.49274486094581177,
+    "std": 0.5204605360469367,
+    "used_steps": 954,
+    "requested_steps": 5000
+  },
+  "models": {
+    "car-baseline-full-boston": {
+      "rollout_count": 10,
+      "mean_pref_raw": 0.5533913969993591,
+      "mean_pref_shaped": 0.14123348891735077,
+      "mean_pref_std": 0.21086867153644562,
+      "mean_cumulative_pref_shaped": 5.479859399795532,
+      "reward_trace_smoothness": 0.21844647824764252
+    },
+    "truck-baseline-full-boston": {
+      "rollout_count": 10,
+      "mean_pref_raw": 0.4511709213256836,
+      "mean_pref_shaped": 0.0626823753118515,
+      "mean_pref_std": 0.2407173216342926,
+      "mean_cumulative_pref_shaped": 3.5478222727775575,
+      "reward_trace_smoothness": 0.3354083299636841
+    }
+  },
+  "per_bucket": {
+    "turning": {
+      "car-baseline-full-boston": {
+        "rollout_count": 7,
+        "mean_pref_shaped": 0.14672382175922394,
+        "mean_cumulative_pref_shaped": 6.372006177902222
+      },
+      "truck-baseline-full-boston": {
+        "rollout_count": 7,
+        "mean_pref_shaped": 0.05761219188570976,
+        "mean_cumulative_pref_shaped": 3.9587802035467967
+      }
+    },
+    "straight": {
+      "car-baseline-full-boston": {
+        "rollout_count": 3,
+        "mean_pref_shaped": 0.12136370688676834,
+        "mean_cumulative_pref_shaped": 3.398183584213257
+      },
+      "truck-baseline-full-boston": {
+        "rollout_count": 3,
+        "mean_pref_shaped": 0.09137366712093353,
+        "mean_cumulative_pref_shaped": 2.5889204343159995
+      }
+    }
+  },
+  "favored_model_overall": "car-baseline-full-boston"
+}

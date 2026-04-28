@@ -1,0 +1,71 @@
+{
+  "source_map_dir": "/Users/csku6s/Coding/PufferDrive_casko/datasets/nuplanCarBostonAll_training",
+  "threshold_deg": 45.0,
+  "sample_seed": 42,
+  "turning_count": 7,
+  "straight_count": 3,
+  "selected_count": 10,
+  "excluded_invalid_count": 8146,
+  "maps": [
+    {
+      "map_name": "map_11089.bin",
+      "map_path": "/Users/csku6s/Coding/PufferDrive_casko/datasets/nuplanCarBostonAll_training/map_11089.bin",
+      "scenario_type": "straight",
+      "delta_heading_deg": -1.0090477517480787
+    },
+    {
+      "map_name": "map_11239.bin",
+      "map_path": "/Users/csku6s/Coding/PufferDrive_casko/datasets/nuplanCarBostonAll_training/map_11239.bin",
+      "scenario_type": "turning",
+      "delta_heading_deg": -71.41777106552126
+    },
+    {
+      "map_name": "map_13634.bin",
+      "map_path": "/Users/csku6s/Coding/PufferDrive_casko/datasets/nuplanCarBostonAll_training/map_13634.bin",
+      "scenario_type": "turning",
+      "delta_heading_deg": -69.69428808791079
+    },
+    {
+      "map_name": "map_13872.bin",
+      "map_path": "/Users/csku6s/Coding/PufferDrive_casko/datasets/nuplanCarBostonAll_training/map_13872.bin",
+      "scenario_type": "turning",
+      "delta_heading_deg": -89.26652214988884
+    },
+    {
+      "map_name": "map_14822.bin",
+      "map_path": "/Users/csku6s/Coding/PufferDrive_casko/datasets/nuplanCarBostonAll_training/map_14822.bin",
+      "scenario_type": "straight",
+      "delta_heading_deg": -0.0426886823125797
+    },
+    {
+      "map_name": "map_15185.bin",
+      "map_path": "/Users/csku6s/Coding/PufferDrive_casko/datasets/nuplanCarBostonAll_training/map_15185.bin",
+      "scenario_type": "turning",
+      "delta_heading_deg": 76.16768781247593
+    },
+    {
+      "map_name": "map_20434.bin",
+      "map_path": "/Users/csku6s/Coding/PufferDrive_casko/datasets/nuplanCarBostonAll_training/map_20434.bin",
+      "scenario_type": "turning",
+      "delta_heading_deg": -73.10330465832949
+    },
+    {
+      "map_name": "map_21823.bin",
+      "map_path": "/Users/csku6s/Coding/PufferDrive_casko/datasets/nuplanCarBostonAll_training/map_21823.bin",
+      "scenario_type": "turning",
+      "delta_heading_deg": 72.3766527853629
+    },
+    {
+      "map_name": "map_23497.bin",
+      "map_path": "/Users/csku6s/Coding/PufferDrive_casko/datasets/nuplanCarBostonAll_training/map_23497.bin",
+      "scenario_type": "turning",
+      "delta_heading_deg": -67.55789285421636
+    },
+    {
+      "map_name": "map_4685.bin",
+      "map_path": "/Users/csku6s/Coding/PufferDrive_casko/datasets/nuplanCarBostonAll_training/map_4685.bin",
+      "scenario_type": "straight",
+      "delta_heading_deg": -1.0165233937946576
+    }
+  ]
+}

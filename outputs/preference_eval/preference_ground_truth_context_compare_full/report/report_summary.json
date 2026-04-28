@@ -1,0 +1,54 @@
+{
+  "normalization": {
+    "mode": "offline_sample",
+    "mean": -0.2966070280905761,
+    "std": 0.5338841857050892,
+    "used_steps": 1800,
+    "requested_steps": 5000
+  },
+  "models": {
+    "ground-truth-car-fit": {
+      "rollout_count": 10,
+      "mean_pref_raw": -0.2766672968864441,
+      "mean_pref_shaped": -0.03303712233901024,
+      "mean_pref_std": 0.2976610064506531,
+      "mean_cumulative_pref_shaped": -2.9733409881591797,
+      "reward_trace_smoothness": 0.11332473158836365
+    },
+    "ground-truth-truck-context-replay": {
+      "rollout_count": 10,
+      "mean_pref_raw": -0.316546767950058,
+      "mean_pref_shaped": -0.06287329643964767,
+      "mean_pref_std": 0.29944613575935364,
+      "mean_cumulative_pref_shaped": -5.658596611022949,
+      "reward_trace_smoothness": 0.11690402776002884
+    }
+  },
+  "per_bucket": {
+    "turning": {
+      "ground-truth-car-fit": {
+        "rollout_count": 7,
+        "mean_pref_shaped": 0.07352028042078018,
+        "mean_cumulative_pref_shaped": 6.61682483128139
+      },
+      "ground-truth-truck-context-replay": {
+        "rollout_count": 7,
+        "mean_pref_shaped": 0.0465458407998085,
+        "mean_cumulative_pref_shaped": 4.189125333513532
+      }
+    },
+    "straight": {
+      "ground-truth-car-fit": {
+        "rollout_count": 3,
+        "mean_pref_shaped": -0.28167101740837097,
+        "mean_cumulative_pref_shaped": -25.35039456685384
+      },
+      "ground-truth-truck-context-replay": {
+        "rollout_count": 3,
+        "mean_pref_shaped": -0.31818461418151855,
+        "mean_cumulative_pref_shaped": -28.636614481608074
+      }
+    }
+  },
+  "favored_model_overall": "ground-truth-car-fit"
+}

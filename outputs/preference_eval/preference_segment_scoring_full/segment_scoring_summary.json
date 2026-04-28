@@ -1,0 +1,22 @@
+{
+  "total_rows": 20,
+  "ok_rows": 16,
+  "comparisons": {
+    "gt_car_vs_truck_context": {
+      "map_count": 10,
+      "mean_window_margin": 1.3385952413082123,
+      "median_window_margin": 1.3209776878356934,
+      "mean_left_win_fraction": 0.6322033898305085,
+      "mean_pair_probability_left_beats_right": 0.6134254254400731,
+      "mean_top_k_margin": 1.9222002148628234
+    },
+    "policy_car_vs_truck": {
+      "map_count": 6,
+      "mean_window_margin": 3.410893440246582,
+      "median_window_margin": 4.098910649617513,
+      "mean_left_win_fraction": 0.7487076648841354,
+      "mean_pair_probability_left_beats_right": 0.693614254395167,
+      "mean_top_k_margin": 3.3716777165730796
+    }
+  }
+}

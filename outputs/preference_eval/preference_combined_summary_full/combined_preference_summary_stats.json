@@ -1,0 +1,11 @@
+{
+  "map_count": 10,
+  "rollout_car_wins": 6,
+  "rollout_truck_wins": 4,
+  "gt_car_wins": 6,
+  "gt_truck_wins": 4,
+  "agreement_count": 6,
+  "agreement_fraction": 0.6,
+  "mean_rollout_gap_car_minus_truck": 1.9320371270179748,
+  "mean_gt_gap_car_minus_truck": 2.6852556228637696
+}
