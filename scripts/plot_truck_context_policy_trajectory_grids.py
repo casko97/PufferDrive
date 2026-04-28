@@ -130,6 +130,87 @@ def _plot_pair_grid(
     return output_path
 
 
+def _row_by_map(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    return {str(row["map_name"]): row for row in rows}
+
+
+def _score_detail(row: dict[str, Any] | None) -> str:
+    if row is None:
+        return "missing"
+    status = str(row.get("status", "ok"))
+    if status != "ok":
+        return f"{status}"
+    return f"m={float(row['margin']):.1f}, p={float(row['prob_preferred']):.2f}"
+
+
+def _plot_overlay_grid(
+    *,
+    policy_rows: list[dict[str, Any]],
+    gt_rows: list[dict[str, Any]],
+    policy_truck_rollouts: dict[str, dict[str, Any]],
+    policy_car_rollouts: dict[str, dict[str, Any]],
+    gt_truck_rollouts: dict[str, dict[str, Any]],
+    gt_car_rollouts: dict[str, dict[str, Any]],
+    output_path: Path,
+) -> Path:
+    policy_by_map = _row_by_map(policy_rows)
+    gt_by_map = _row_by_map(gt_rows)
+    map_names = sorted(set(gt_by_map) | set(policy_by_map))
+    cols = 4
+    row_count = int(math.ceil(len(map_names) / cols))
+    fig, axes = plt.subplots(row_count, cols, figsize=(18, max(8.8, row_count * 4.25)))
+    axes = np.asarray(axes, dtype=object).reshape(row_count, cols)
+    for ax in axes.flat:
+        ax.axis("off")
+
+    specs = [
+        ("GT truck", gt_truck_rollouts, "tab:blue", "-"),
+        ("GT car", gt_car_rollouts, "tab:orange", "-"),
+        ("policy truck", policy_truck_rollouts, "tab:green", "--"),
+        ("policy car", policy_car_rollouts, "tab:red", "--"),
+    ]
+    for idx, map_name in enumerate(map_names):
+        ax = axes.flat[idx]
+        ax.axis("on")
+        plotted = False
+        for label, rollout_lookup, color, linestyle in specs:
+            rollout = rollout_lookup.get(map_name)
+            if rollout is None:
+                continue
+            x, y = _xy(rollout)
+            if len(x) == 0:
+                continue
+            plotted = True
+            highlight = max(1, min(32, len(x)))
+            ax.plot(x, y, color=color, linestyle=linestyle, linewidth=1.0, alpha=0.28)
+            ax.plot(x[:highlight], y[:highlight], color=color, linestyle=linestyle, linewidth=2.8, label=label)
+            ax.scatter([x[0]], [y[0]], color=color, marker="o", s=18, zorder=3)
+            ax.scatter([x[highlight - 1]], [y[highlight - 1]], color=color, marker="x", s=30, zorder=3)
+
+        if not plotted:
+            ax.text(0.5, 0.5, "missing rollouts", ha="center", va="center")
+        policy_detail = _score_detail(policy_by_map.get(map_name))
+        gt_detail = _score_detail(gt_by_map.get(map_name))
+        ax.set_title(f"{map_name}\nGT {gt_detail} | policy {policy_detail}", fontsize=9)
+        ax.set_aspect("equal", adjustable="box")
+        ax.grid(True, alpha=0.2)
+        if idx == 0:
+            ax.legend(fontsize=8, loc="best")
+
+    note = (
+        "Each subplot overlays all four trajectories for the same map. Solid lines are corrected GT branches; dashed lines are policy rollouts in the shared truck context. "
+        "Blue/green are truck/context; orange/red are car. Thick segments show the first 32 steps used by the deployment score when available; thin lines show the full collected rollout. "
+        "Circle marks rollout start, x marks the end of the highlighted prefix. Title margins are truck/context score minus car score; positive means truck/context is preferred."
+    )
+    fig.suptitle("GT and Policy Trajectories on the Same Maps", fontsize=15)
+    fig.text(0.01, 0.012, note, ha="left", va="bottom", fontsize=10, color="dimgray", wrap=True)
+    fig.tight_layout(rect=(0, 0.07, 1, 0.95))
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output_path, dpi=180)
+    plt.close(fig)
+    return output_path
+
+
 def generate_plots(
     *,
     scored_path: Path,
@@ -142,13 +223,17 @@ def generate_plots(
     rows = _load_rows(scored_path)
     policy_rows = [row for row in rows if row["comparison"] == "policy_truck_vs_car"]
     gt_rows = [row for row in rows if row["comparison"] == "gt_truck_context_vs_car_fit"]
+    policy_truck_rollouts = _load_rollouts(policy_truck)
+    policy_car_rollouts = _load_rollouts(policy_car)
+    gt_truck_rollouts = _load_rollouts(gt_truck)
+    gt_car_rollouts = _load_rollouts(gt_car)
 
     outputs = {
         "policy_grid": str(
             _plot_pair_grid(
                 rows=policy_rows,
-                preferred_rollouts=_load_rollouts(policy_truck),
-                rejected_rollouts=_load_rollouts(policy_car),
+                preferred_rollouts=policy_truck_rollouts,
+                rejected_rollouts=policy_car_rollouts,
                 preferred_label="truck policy in truck context",
                 rejected_label="car policy in truck context",
                 title="Shared Truck-Context Policy Rollouts Scored by Preference Reward",
@@ -158,12 +243,23 @@ def generate_plots(
         "gt_grid": str(
             _plot_pair_grid(
                 rows=gt_rows,
-                preferred_rollouts=_load_rollouts(gt_truck),
-                rejected_rollouts=_load_rollouts(gt_car),
+                preferred_rollouts=gt_truck_rollouts,
+                rejected_rollouts=gt_car_rollouts,
                 preferred_label="GT truck branch",
                 rejected_label="GT car branch",
                 title="Corrected GT Context Rollouts Scored by Preference Reward",
                 output_path=output_dir / "corrected_gt_context_trajectory_grid.png",
+            )
+        ),
+        "gt_policy_overlay_grid": str(
+            _plot_overlay_grid(
+                policy_rows=policy_rows,
+                gt_rows=gt_rows,
+                policy_truck_rollouts=policy_truck_rollouts,
+                policy_car_rollouts=policy_car_rollouts,
+                gt_truck_rollouts=gt_truck_rollouts,
+                gt_car_rollouts=gt_car_rollouts,
+                output_path=output_dir / "gt_policy_overlay_trajectory_grid.png",
             )
         ),
     }
