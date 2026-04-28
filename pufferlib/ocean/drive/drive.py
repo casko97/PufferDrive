@@ -31,6 +31,10 @@ _CLASSIC_ACCELERATION_VALUES = (-6.0, -4.0, -2.0, -1.0, 0.0, 1.0, 2.0, 4.0, 6.0)
 _CLASSIC_STEERING_VALUES = (-1.0, -0.833, -0.667, -0.5, -0.333, -0.167, 0.0, 0.167, 0.333, 0.5, 0.667, 0.833, 1.0)
 _CLASSIC_DISCRETE_ACTIONS = len(_CLASSIC_ACCELERATION_VALUES) * len(_CLASSIC_STEERING_VALUES)
 _BC_INDEX_PROGRESS_INTERVAL = 500
+_BC_PAIRED_FITS_FORMAT_MONOLITHIC = "paired_fits_v1"
+_BC_PAIRED_FITS_FORMAT_SHARDED = "sharded_paired_fits_v1"
+_BC_SOURCE_FORMAT_SHARDS = "shards"
+_BC_SOURCE_FORMAT_PAIRED_OFFLINE_FITS = "paired_offline_fits"
 _NON_KINEMATIC_PARAM_ORDER = [
     "tractor_length",
     "trailer_length",
@@ -50,6 +54,14 @@ _NON_KINEMATIC_PARAM_CACHE = {}
 DEFAULT_SDC_RUNTIME_TRUCK_REF_BIN = (
     "tests/artifacts/drive/traversing_traffic_light_intersection__97be27351e915863__97be27351e915863.bin"
 )
+
+
+@dataclass(frozen=True)
+class _PairedFitSourceRecord:
+    source_map_name: str
+    fit_map_name: str
+    source_path: str
+    split_index: int
 
 
 def _print_mismatch(message):
@@ -690,8 +702,20 @@ def _resolve_bc_train_config(args, dataset_dir=None, output_dir=None):
     bc_train = dict(args.get("bc_train", {}))
     bc = _resolve_bc_config(args)
     train = dict(args.get("train", {}))
+    env = dict(args.get("env", {}))
+    bc_train.setdefault("source_format", _BC_SOURCE_FORMAT_SHARDS)
+    bc_train["source_format"] = _normalize_bc_source_format(bc_train["source_format"])
+    bc_train.setdefault("fit_export", None)
+    bc_train.setdefault("source_map_dir", env.get("map_dir"))
+    bc_train.setdefault("fit_side", "car")
+    bc_train.setdefault("obs_key", "logged_obs_default")
     bc_train.setdefault("dataset_dir", dataset_dir or bc.get("output_dir"))
-    bc_train.setdefault("output_dir", output_dir or os.path.join(bc_train["dataset_dir"], "checkpoints"))
+    if output_dir is not None:
+        bc_train.setdefault("output_dir", output_dir)
+    elif bc_train["source_format"] == _BC_SOURCE_FORMAT_PAIRED_OFFLINE_FITS:
+        bc_train.setdefault("output_dir", os.path.join("experiments_bc", "bc-paired-offline-fits"))
+    else:
+        bc_train.setdefault("output_dir", os.path.join(bc_train["dataset_dir"], "checkpoints"))
     bc_train.setdefault("device", train.get("device", "cuda" if torch.cuda.is_available() else "cpu"))
     bc_train.setdefault("use_embedded_windows", False)
     bc_train.setdefault("epochs", 10)
@@ -704,6 +728,7 @@ def _resolve_bc_train_config(args, dataset_dir=None, output_dir=None):
     bc_train.setdefault("seq_len", train.get("bptt_horizon", 32))
     bc_train.setdefault("sequence_stride", bc_train["seq_len"])
     bc_train.setdefault("max_shards", -1)
+    bc_train.setdefault("max_maps", bc_train["max_shards"])
     bc_train.setdefault("save_best", True)
     bc_train.setdefault("log_interval", 25)
     bc_train.setdefault("early_stopping_patience", 0)
@@ -717,6 +742,20 @@ def _resolve_bc_train_config(args, dataset_dir=None, output_dir=None):
     bc_train.setdefault("window_balance_fraction", 0.0)
     bc_train.setdefault("window_balance_max_multiplier", 10.0)
     return bc_train
+
+
+def _normalize_bc_source_format(value):
+    if value is None:
+        return _BC_SOURCE_FORMAT_SHARDS
+    normalized = str(value).strip().lower().replace("-", "_")
+    if normalized in ("", "none", "shard", "shards", "bc_shards"):
+        return _BC_SOURCE_FORMAT_SHARDS
+    if normalized in ("paired_fit", "paired_fits", "paired_offline_fit", "paired_offline_fits"):
+        return _BC_SOURCE_FORMAT_PAIRED_OFFLINE_FITS
+    raise ValueError(
+        f"bc_train.source_format must be '{_BC_SOURCE_FORMAT_SHARDS}' or "
+        f"'{_BC_SOURCE_FORMAT_PAIRED_OFFLINE_FITS}'. Got: {value!r}"
+    )
 
 
 def _normalize_optional_name(value):
@@ -1090,6 +1129,450 @@ def _split_shards(shard_paths, val_fraction, seed):
     if val_count == 0:
         return shard_paths, []
     return shard_paths[val_count:], shard_paths[:val_count]
+
+
+def _split_source_records(records, val_fraction, seed):
+    records = list(records)
+    rng = random.Random(int(seed))
+    rng.shuffle(records)
+    if not records:
+        return [], []
+    if val_fraction <= 0:
+        return records, []
+    val_count = int(round(len(records) * float(val_fraction)))
+    if len(records) > 1:
+        val_count = max(1, min(len(records) - 1, val_count))
+    else:
+        val_count = 0
+    if val_count == 0:
+        return records, []
+    return records[val_count:], records[:val_count]
+
+
+def _load_paired_fit_manifest(export_path):
+    export_path = Path(export_path)
+    if not export_path.is_file():
+        message = f"Paired offline-fit export not found: {export_path}"
+        _print_mismatch(message)
+        raise FileNotFoundError(message)
+    payload = torch.load(export_path, map_location="cpu")
+    if isinstance(payload, dict) and payload.get("format") == _BC_PAIRED_FITS_FORMAT_SHARDED:
+        return payload
+    if isinstance(payload, dict) and "pairs" in payload and "metadata" in payload:
+        return {
+            "format": _BC_PAIRED_FITS_FORMAT_MONOLITHIC,
+            "metadata": payload["metadata"],
+            "shards": [
+                {
+                    "path": str(export_path),
+                    "map_count": int(len(payload["pairs"])),
+                    "start_index": 0,
+                    "end_index": int(len(payload["pairs"])),
+                }
+            ],
+        }
+    message = f"Unsupported paired offline-fit payload at {export_path}"
+    _print_mismatch(message)
+    raise ValueError(message)
+
+
+def _resolve_paired_fit_shard_path(export_path, shard_info):
+    export_path = Path(export_path)
+    shard_path = Path(shard_info["path"])
+    if shard_path.exists():
+        return shard_path
+    candidate_same_dir = export_path.parent / shard_path.name
+    candidate_sibling_dir = export_path.parent / f"{export_path.stem}_shards" / shard_path.name
+    if candidate_same_dir.exists():
+        return candidate_same_dir
+    if candidate_sibling_dir.exists():
+        return candidate_sibling_dir
+    message = f"Paired offline-fit shard not found: {shard_path}"
+    _print_mismatch(message)
+    raise FileNotFoundError(message)
+
+
+def _paired_fit_manifest_map_names(manifest):
+    metadata = manifest.get("metadata", {}) if isinstance(manifest, dict) else {}
+    shared_maps = metadata.get("shared_maps")
+    if shared_maps is None:
+        return None
+    return [Path(str(map_name)).name for map_name in shared_maps]
+
+
+def _source_fit_map_name(source_map_dir, source_map_name, scenario):
+    for key in ("original_map_name", "source_dataset_map_path"):
+        value = scenario.get(key)
+        if value:
+            return Path(str(value)).name
+    if source_map_name:
+        source_path = Path(source_map_dir) / str(source_map_name)
+        try:
+            if source_path.exists():
+                return source_path.resolve().name
+        except OSError:
+            pass
+        return Path(str(source_map_name)).name
+    return None
+
+
+def _load_paired_fit_source_records(source_map_dir, max_maps=-1):
+    source_map_dir = Path(source_map_dir)
+    if not source_map_dir.is_dir():
+        message = f"Source map directory not found: {source_map_dir}"
+        _print_mismatch(message)
+        raise FileNotFoundError(message)
+
+    manifest_path = source_map_dir / "selection_manifest.json"
+    records = []
+    if manifest_path.is_file():
+        with open(manifest_path, "r", encoding="utf-8") as f:
+            manifest = json.load(f)
+        scenarios = list(manifest.get("scenarios", []))
+
+        def _scenario_sort_key(item):
+            idx, scenario = item
+            split_index = scenario.get("split_index", idx)
+            try:
+                split_index = int(split_index)
+            except (TypeError, ValueError):
+                split_index = idx
+            return split_index
+
+        for fallback_idx, scenario in sorted(enumerate(scenarios), key=_scenario_sort_key):
+            split_index = scenario.get("split_index", fallback_idx)
+            try:
+                split_index = int(split_index)
+            except (TypeError, ValueError):
+                split_index = int(fallback_idx)
+            source_map_name = scenario.get("map_name")
+            if not source_map_name:
+                source_path = scenario.get("source_map_path") or scenario.get("source_dataset_map_path")
+                source_map_name = Path(str(source_path)).name if source_path else f"map_{split_index:03d}.bin"
+            fit_map_name = _source_fit_map_name(source_map_dir, source_map_name, scenario)
+            if not fit_map_name:
+                continue
+            records.append(
+                _PairedFitSourceRecord(
+                    source_map_name=Path(str(source_map_name)).name,
+                    fit_map_name=Path(str(fit_map_name)).name,
+                    source_path=str(source_map_dir / Path(str(source_map_name)).name),
+                    split_index=split_index,
+                )
+            )
+    else:
+        for split_index, source_path in enumerate(sorted(source_map_dir.glob("map_*.bin"))):
+            try:
+                fit_map_name = source_path.resolve().name
+            except OSError:
+                fit_map_name = source_path.name
+            records.append(
+                _PairedFitSourceRecord(
+                    source_map_name=source_path.name,
+                    fit_map_name=Path(str(fit_map_name)).name,
+                    source_path=str(source_path),
+                    split_index=split_index,
+                )
+            )
+
+    if max_maps is not None and int(max_maps) > 0:
+        records = records[: int(max_maps)]
+    if not records:
+        message = f"No source maps found for paired offline-fit BC training in {source_map_dir}"
+        _print_mismatch(message)
+        raise FileNotFoundError(message)
+    return records
+
+
+def _filter_records_to_paired_fit_manifest(records, manifest, *, context):
+    available_maps = _paired_fit_manifest_map_names(manifest)
+    if available_maps is None:
+        return list(records)
+    available = set(available_maps)
+    missing = [record.fit_map_name for record in records if record.fit_map_name not in available]
+    if missing:
+        examples = ", ".join(missing[:5])
+        message = (
+            f"{context} contains {len(missing)} map(s) not covered by the paired offline-fit export; "
+            f"examples: {examples}"
+        )
+        _print_mismatch(message)
+        raise ValueError(message)
+    return list(records)
+
+
+def _build_paired_fit_shard_plans(export_path, manifest, records):
+    records = list(records)
+    if not records:
+        return []
+    requested = {record.fit_map_name for record in records}
+    shared_maps = _paired_fit_manifest_map_names(manifest)
+    plans = []
+    for shard_info in manifest.get("shards", []):
+        shard_path = _resolve_paired_fit_shard_path(export_path, shard_info)
+        shard_maps = None
+        if shared_maps is not None:
+            start_index = int(shard_info.get("start_index", 0))
+            end_index = int(shard_info.get("end_index", start_index + int(shard_info.get("map_count", 0))))
+            shard_maps = shared_maps[start_index:end_index]
+        elif "map_names" in shard_info:
+            shard_maps = [Path(str(map_name)).name for map_name in shard_info["map_names"]]
+
+        if shard_maps is None:
+            selected_maps = sorted(requested)
+        else:
+            selected_maps = [map_name for map_name in shard_maps if map_name in requested]
+        if selected_maps:
+            plans.append({"path": str(shard_path), "map_names": selected_maps})
+    return plans
+
+
+def _validate_paired_fit_side(pair, *, fit_map_name, fit_side, obs_key, obs_dim, action_space_size):
+    if not isinstance(pair, dict):
+        message = f"Paired offline-fit map {fit_map_name} payload must be a dict"
+        _print_mismatch(message)
+        raise ValueError(message)
+    if fit_side not in pair:
+        message = f"Paired offline-fit map {fit_map_name} is missing side {fit_side!r}"
+        _print_mismatch(message)
+        raise ValueError(message)
+    side = pair[fit_side]
+    status = side.get("status")
+    if status != "ok":
+        message = f"Paired offline-fit map {fit_map_name} side {fit_side!r} has status={status!r}"
+        _print_mismatch(message)
+        raise ValueError(message)
+    if obs_key not in side:
+        message = f"Paired offline-fit map {fit_map_name} side {fit_side!r} is missing obs key {obs_key!r}"
+        _print_mismatch(message)
+        raise ValueError(message)
+    if "actions" not in side:
+        message = f"Paired offline-fit map {fit_map_name} side {fit_side!r} is missing actions"
+        _print_mismatch(message)
+        raise ValueError(message)
+
+    obs = torch.as_tensor(side[obs_key], dtype=torch.float32)
+    action = torch.as_tensor(side["actions"], dtype=torch.long)
+    if obs.ndim != 2:
+        message = f"Paired offline-fit map {fit_map_name} obs must be rank-2, got shape {tuple(obs.shape)}"
+        _print_mismatch(message)
+        raise ValueError(message)
+    if int(obs.shape[1]) != int(obs_dim):
+        message = (
+            f"Paired offline-fit map {fit_map_name} observation width mismatch: "
+            f"expected {int(obs_dim)}, got {int(obs.shape[1])}"
+        )
+        _print_mismatch(message)
+        raise ValueError(message)
+    if action.ndim != 1:
+        message = f"Paired offline-fit map {fit_map_name} action must be rank-1, got shape {tuple(action.shape)}"
+        _print_mismatch(message)
+        raise ValueError(message)
+    if int(obs.shape[0]) != int(action.shape[0]):
+        message = (
+            f"Paired offline-fit map {fit_map_name} obs/action timestep count mismatch: "
+            f"{int(obs.shape[0])} vs {int(action.shape[0])}"
+        )
+        _print_mismatch(message)
+        raise ValueError(message)
+    if action.numel() > 0:
+        min_action = int(action.min().item())
+        max_action = int(action.max().item())
+        if min_action < 0 or max_action >= int(action_space_size):
+            message = (
+                f"Paired offline-fit map {fit_map_name} contains invalid action ids "
+                f"[{min_action}, {max_action}] for action space size {int(action_space_size)}"
+            )
+            _print_mismatch(message)
+            raise ValueError(message)
+
+    if "logged_timestep" not in side:
+        message = f"Paired offline-fit map {fit_map_name} side {fit_side!r} is missing logged_timestep"
+        _print_mismatch(message)
+        raise ValueError(message)
+    timestep = np.asarray(side["logged_timestep"], dtype=np.int64)
+    if timestep.ndim != 1 or int(timestep.shape[0]) != int(action.shape[0]):
+        message = f"Paired offline-fit map {fit_map_name} logged_timestep must be rank-1 and match actions"
+        _print_mismatch(message)
+        raise ValueError(message)
+    if timestep.shape[0] > 1 and np.any(np.diff(timestep) != 1):
+        message = f"Paired offline-fit map {fit_map_name} logged_timestep values must be consecutive"
+        _print_mismatch(message)
+        raise ValueError(message)
+    return obs, action
+
+
+class _PairedOfflineFitSequenceDataset(IterableDataset):
+    def __init__(
+        self,
+        fit_export,
+        records,
+        obs_dim,
+        action_space_size,
+        *,
+        seq_len,
+        stride,
+        fit_side,
+        obs_key,
+        shuffle,
+        seed,
+        shard_shuffle_buffer=1,
+    ):
+        super().__init__()
+        self.fit_export = str(fit_export)
+        self.records = list(records)
+        self.obs_dim = int(obs_dim)
+        self.action_space_size = int(action_space_size)
+        self.seq_len = int(seq_len)
+        self.stride = max(1, int(stride))
+        self.fit_side = str(fit_side)
+        self.obs_key = str(obs_key)
+        self.shuffle = bool(shuffle)
+        self.seed = int(seed)
+        self.shard_shuffle_buffer = max(1, int(shard_shuffle_buffer))
+        self.epoch = 0
+        self._manifest = _load_paired_fit_manifest(self.fit_export)
+        self.records = _filter_records_to_paired_fit_manifest(
+            self.records,
+            self._manifest,
+            context="BC source split",
+        )
+        self._shard_plans = _build_paired_fit_shard_plans(self.fit_export, self._manifest, self.records)
+        self.shard_paths = [plan["path"] for plan in self._shard_plans]
+        self._length = None
+        self._window_count_cache = {}
+        self._indexed_maps = 0
+
+    def set_epoch(self, epoch):
+        self.epoch = int(epoch)
+
+    @property
+    def map_count(self):
+        return len(self.records)
+
+    def _iter_worker_plans(self):
+        plans = list(self._shard_plans)
+        if self.shuffle:
+            rng = random.Random(self.seed + self.epoch)
+            rng.shuffle(plans)
+        worker = get_worker_info()
+        if worker is None:
+            return plans
+        return plans[worker.id :: worker.num_workers]
+
+    def _load_pairs(self, plan):
+        payload = torch.load(plan["path"], map_location="cpu")
+        pairs = payload.get("pairs")
+        if not isinstance(pairs, dict):
+            message = f"Paired offline-fit shard {plan['path']} is missing pairs dict"
+            _print_mismatch(message)
+            raise ValueError(message)
+        return pairs
+
+    def _load_pair_tensors(self, pairs, fit_map_name):
+        pair = pairs.get(fit_map_name)
+        if pair is None:
+            message = f"Paired offline-fit shard is missing requested map {fit_map_name}"
+            _print_mismatch(message)
+            raise KeyError(message)
+        return _validate_paired_fit_side(
+            pair,
+            fit_map_name=fit_map_name,
+            fit_side=self.fit_side,
+            obs_key=self.obs_key,
+            obs_dim=self.obs_dim,
+            action_space_size=self.action_space_size,
+        )
+
+    def __len__(self):
+        if self._length is None:
+            self._length = int(self._compute_length())
+        return self._length
+
+    def _compute_length(self):
+        total = 0
+        zero_window_maps = 0
+        total_shards = len(self._shard_plans)
+        start_time = time.time()
+        for shard_idx, plan in enumerate(self._shard_plans, start=1):
+            pairs = self._load_pairs(plan)
+            for fit_map_name in plan["map_names"]:
+                _obs, action = self._load_pair_tensors(pairs, fit_map_name)
+                manifest = _build_sequence_manifest_from_spans(
+                    [(0, 0, int(action.shape[0]))],
+                    self.seq_len,
+                    self.stride,
+                )
+                window_count = int(manifest["window_count"])
+                self._window_count_cache[fit_map_name] = window_count
+                self._indexed_maps += 1
+                total += window_count
+                if window_count <= 0:
+                    zero_window_maps += 1
+            if shard_idx % _BC_INDEX_PROGRESS_INTERVAL == 0 or shard_idx == total_shards:
+                print(
+                    f"[BC] paired-fit indexing progress shards={shard_idx}/{total_shards} "
+                    f"maps={self._indexed_maps}/{len(self.records)} windows={total} "
+                    f"zero_window_maps={zero_window_maps} elapsed={time.time() - start_time:.1f}s",
+                    flush=True,
+                )
+        return total
+
+    def __iter__(self):
+        sample_seed = self.seed + self.epoch * 9973
+        worker_plans = list(self._iter_worker_plans())
+
+        def _plan_samples(plan_idx, plan):
+            pairs = self._load_pairs(plan)
+            samples = []
+            for fit_map_name in plan["map_names"]:
+                obs, action = self._load_pair_tensors(pairs, fit_map_name)
+                manifest = _build_sequence_manifest_from_spans(
+                    [(0, 0, int(action.shape[0]))],
+                    self.seq_len,
+                    self.stride,
+                )
+                samples.extend(_build_sequence_samples_from_manifest({"obs": obs, "action": action}, manifest))
+            if self.shuffle:
+                rng = random.Random(sample_seed + plan_idx)
+                rng.shuffle(samples)
+            return samples
+
+        plan_iter = iter(enumerate(worker_plans))
+        yield from self._iter_mixed_shard_stream(plan_iter, _plan_samples)
+
+    def _iter_mixed_shard_stream(self, shard_iter, shard_sample_fn):
+        active_shards = []
+        sample_rng = random.Random(self.seed + self.epoch * 9973 + 17)
+
+        def _fill_active():
+            while len(active_shards) < self.shard_shuffle_buffer:
+                try:
+                    shard_idx, plan = next(shard_iter)
+                except StopIteration:
+                    break
+                shard_samples = shard_sample_fn(shard_idx, plan)
+                if shard_samples:
+                    active_shards.append(shard_samples)
+
+        _fill_active()
+        while active_shards:
+            shard_choice = sample_rng.randrange(len(active_shards)) if self.shuffle else 0
+            shard_stream = active_shards[shard_choice]
+            yield shard_stream.pop()
+            if shard_stream:
+                continue
+            active_shards.pop(shard_choice)
+            _fill_active()
+
+    def manifest_stats(self):
+        return {
+            "built": 0,
+            "loaded": 0,
+            "cached": int(len(self._window_count_cache)),
+            "weighted": 0,
+            "indexed_maps": int(self._indexed_maps),
+        }
 
 
 def _validate_bc_shard_payload(payload, obs_dim, action_space_size, shard_path):
@@ -1729,11 +2212,21 @@ def train_bc_policy(args=None, dataset_dir=None, output_dir=None, logger=None):
         raise ValueError(message)
 
     bc_train_cfg = _resolve_bc_train_config(args, dataset_dir=dataset_dir, output_dir=output_dir)
+    source_format = bc_train_cfg["source_format"]
     dataset_dir = bc_train_cfg["dataset_dir"]
-    if dataset_dir is None or not os.path.isdir(dataset_dir):
+    if source_format == _BC_SOURCE_FORMAT_SHARDS and (dataset_dir is None or not os.path.isdir(dataset_dir)):
         message = f"BC dataset directory not found: {dataset_dir}"
         _print_mismatch(message)
         raise FileNotFoundError(message)
+    if source_format == _BC_SOURCE_FORMAT_PAIRED_OFFLINE_FITS:
+        if not bc_train_cfg.get("fit_export"):
+            message = "bc_train.fit_export is required when source_format='paired_offline_fits'"
+            _print_mismatch(message)
+            raise ValueError(message)
+        if not bc_train_cfg.get("source_map_dir"):
+            message = "bc_train.source_map_dir is required when source_format='paired_offline_fits'"
+            _print_mismatch(message)
+            raise ValueError(message)
 
     seed = int(args.get("train", {}).get("seed", 0))
     torch.manual_seed(seed)
@@ -1752,7 +2245,7 @@ def train_bc_policy(args=None, dataset_dir=None, output_dir=None, logger=None):
     output_path = Path(bc_train_cfg["output_dir"])
     output_path.mkdir(parents=True, exist_ok=True)
     print(
-        f"[BC] starting training dataset_dir={dataset_dir} output_dir={output_path} "
+        f"[BC] starting training source_format={source_format} dataset_dir={dataset_dir} output_dir={output_path} "
         f"device={device} epochs={int(bc_train_cfg['epochs'])} batch_size={int(bc_train_cfg['batch_size'])}",
         flush=True,
     )
@@ -1761,21 +2254,6 @@ def train_bc_policy(args=None, dataset_dir=None, output_dir=None, logger=None):
     try:
         obs_dim = int(env.single_observation_space.shape[0])
         action_space_size = _get_discrete_action_size(env)
-        shard_paths = _list_bc_shards(dataset_dir, max_shards=bc_train_cfg["max_shards"])
-        if not shard_paths:
-            message = f"No BC shard files found in {dataset_dir}"
-            _print_mismatch(message)
-            raise FileNotFoundError(message)
-
-        train_shards, val_shards = _split_shards(shard_paths, bc_train_cfg["val_fraction"], seed)
-        print(
-            f"[BC] found {len(shard_paths)} shards total: train={len(train_shards)} val={len(val_shards)}",
-            flush=True,
-        )
-        print("[BC] using shard-streamed loading; training starts without full dataset preload", flush=True)
-
-        first_train_payload = _peek_bc_shard(train_shards, obs_dim, action_space_size)
-
         recurrent = _normalize_optional_name(_resolve_base_arg(args, "rnn_name")) is not None
         if recurrent:
             expected_seq_len = int(args.get("train", {}).get("bptt_horizon", bc_train_cfg["seq_len"]))
@@ -1787,55 +2265,131 @@ def train_bc_policy(args=None, dataset_dir=None, output_dir=None, logger=None):
                 )
                 _print_mismatch(message)
                 raise ValueError(message)
-        if recurrent:
-            train_dataset = _SequenceBCDataset(
-                train_shards,
-                obs_dim,
-                action_space_size,
-                seq_len=bc_train_cfg["seq_len"],
-                stride=bc_train_cfg["sequence_stride"],
-                shuffle=True,
-                seed=seed,
-                require_embedded=_as_bool(bc_train_cfg.get("use_embedded_windows", False)),
-                shard_shuffle_buffer=bc_train_cfg["shard_shuffle_buffer"],
-                rebalance_windows=_as_bool(bc_train_cfg.get("rebalance_windows", False)),
-                window_balance_fraction=bc_train_cfg["window_balance_fraction"],
-                window_balance_max_multiplier=bc_train_cfg["window_balance_max_multiplier"],
-            )
-            val_dataset = _SequenceBCDataset(
-                val_shards,
-                obs_dim,
-                action_space_size,
-                seq_len=bc_train_cfg["seq_len"],
-                stride=bc_train_cfg["sequence_stride"],
-                shuffle=False,
-                seed=seed,
-                require_embedded=_as_bool(bc_train_cfg.get("use_embedded_windows", False)),
-                shard_shuffle_buffer=1,
-                rebalance_windows=False,
-            )
-        else:
-            train_dataset = _FlatBCDataset(
-                train_shards,
-                obs_dim,
-                action_space_size,
-                shuffle=True,
-                seed=seed,
-                shard_shuffle_buffer=bc_train_cfg["shard_shuffle_buffer"],
-            )
-            val_dataset = _FlatBCDataset(
-                val_shards,
-                obs_dim,
-                action_space_size,
-                shuffle=False,
-                seed=seed,
-                shard_shuffle_buffer=1,
-            )
 
-        if first_train_payload is None or int(first_train_payload["action"].shape[0]) == 0:
-            message = "BC training dataset is empty after loading selected shards"
-            _print_mismatch(message)
-            raise ValueError(message)
+        train_shards = []
+        val_shards = []
+        train_maps = []
+        val_maps = []
+        if source_format == _BC_SOURCE_FORMAT_PAIRED_OFFLINE_FITS:
+            if not recurrent:
+                message = "paired_offline_fits BC training currently expects a recurrent policy"
+                _print_mismatch(message)
+                raise ValueError(message)
+            fit_export = bc_train_cfg["fit_export"]
+            fit_side = str(bc_train_cfg["fit_side"])
+            obs_key = str(bc_train_cfg["obs_key"])
+            source_records = _load_paired_fit_source_records(
+                bc_train_cfg["source_map_dir"],
+                max_maps=bc_train_cfg["max_maps"],
+            )
+            fit_manifest = _load_paired_fit_manifest(fit_export)
+            source_records = _filter_records_to_paired_fit_manifest(
+                source_records,
+                fit_manifest,
+                context="BC source split",
+            )
+            train_records, val_records = _split_source_records(source_records, bc_train_cfg["val_fraction"], seed)
+            train_maps = [record.fit_map_name for record in train_records]
+            val_maps = [record.fit_map_name for record in val_records]
+            print(
+                f"[BC] found {len(source_records)} paired-fit source maps total: "
+                f"train={len(train_records)} val={len(val_records)} fit_side={fit_side} obs_key={obs_key}",
+                flush=True,
+            )
+            print("[BC] using paired offline-fit streaming; no materialized BC shard dataset is required", flush=True)
+            train_dataset = _PairedOfflineFitSequenceDataset(
+                fit_export,
+                train_records,
+                obs_dim,
+                action_space_size,
+                seq_len=bc_train_cfg["seq_len"],
+                stride=bc_train_cfg["sequence_stride"],
+                fit_side=fit_side,
+                obs_key=obs_key,
+                shuffle=True,
+                seed=seed,
+                shard_shuffle_buffer=bc_train_cfg["shard_shuffle_buffer"],
+            )
+            val_dataset = _PairedOfflineFitSequenceDataset(
+                fit_export,
+                val_records,
+                obs_dim,
+                action_space_size,
+                seq_len=bc_train_cfg["seq_len"],
+                stride=bc_train_cfg["sequence_stride"],
+                fit_side=fit_side,
+                obs_key=obs_key,
+                shuffle=False,
+                seed=seed,
+                shard_shuffle_buffer=1,
+            )
+            train_shards = train_dataset.shard_paths
+            val_shards = val_dataset.shard_paths
+        else:
+            shard_paths = _list_bc_shards(dataset_dir, max_shards=bc_train_cfg["max_shards"])
+            if not shard_paths:
+                message = f"No BC shard files found in {dataset_dir}"
+                _print_mismatch(message)
+                raise FileNotFoundError(message)
+
+            train_shards, val_shards = _split_shards(shard_paths, bc_train_cfg["val_fraction"], seed)
+            print(
+                f"[BC] found {len(shard_paths)} shards total: train={len(train_shards)} val={len(val_shards)}",
+                flush=True,
+            )
+            print("[BC] using shard-streamed loading; training starts without full dataset preload", flush=True)
+
+            first_train_payload = _peek_bc_shard(train_shards, obs_dim, action_space_size)
+            if first_train_payload is None or int(first_train_payload["action"].shape[0]) == 0:
+                message = "BC training dataset is empty after loading selected shards"
+                _print_mismatch(message)
+                raise ValueError(message)
+
+            if recurrent:
+                train_dataset = _SequenceBCDataset(
+                    train_shards,
+                    obs_dim,
+                    action_space_size,
+                    seq_len=bc_train_cfg["seq_len"],
+                    stride=bc_train_cfg["sequence_stride"],
+                    shuffle=True,
+                    seed=seed,
+                    require_embedded=_as_bool(bc_train_cfg.get("use_embedded_windows", False)),
+                    shard_shuffle_buffer=bc_train_cfg["shard_shuffle_buffer"],
+                    rebalance_windows=_as_bool(bc_train_cfg.get("rebalance_windows", False)),
+                    window_balance_fraction=bc_train_cfg["window_balance_fraction"],
+                    window_balance_max_multiplier=bc_train_cfg["window_balance_max_multiplier"],
+                )
+                val_dataset = _SequenceBCDataset(
+                    val_shards,
+                    obs_dim,
+                    action_space_size,
+                    seq_len=bc_train_cfg["seq_len"],
+                    stride=bc_train_cfg["sequence_stride"],
+                    shuffle=False,
+                    seed=seed,
+                    require_embedded=_as_bool(bc_train_cfg.get("use_embedded_windows", False)),
+                    shard_shuffle_buffer=1,
+                    rebalance_windows=False,
+                )
+            else:
+                train_dataset = _FlatBCDataset(
+                    train_shards,
+                    obs_dim,
+                    action_space_size,
+                    shuffle=True,
+                    seed=seed,
+                    shard_shuffle_buffer=bc_train_cfg["shard_shuffle_buffer"],
+                )
+                val_dataset = _FlatBCDataset(
+                    val_shards,
+                    obs_dim,
+                    action_space_size,
+                    shuffle=False,
+                    seed=seed,
+                    shard_shuffle_buffer=1,
+                )
+
         if recurrent:
             print(
                 f"[BC] indexing recurrent train windows seq_len={int(bc_train_cfg['seq_len'])} "
@@ -1874,9 +2428,14 @@ def train_bc_policy(args=None, dataset_dir=None, output_dir=None, logger=None):
         else:
             train_window_count = len(train_dataset)
             val_window_count = len(val_dataset)
+        if train_window_count <= 0:
+            message = "BC training dataset is empty after indexing selected source data"
+            _print_mismatch(message)
+            raise ValueError(message)
         print(
             f"[BC] dataset ready recurrent={recurrent} train_shards={len(train_shards)} "
-            f"val_shards={len(val_shards)} train_items={train_window_count} val_items={val_window_count} "
+            f"val_shards={len(val_shards)} train_maps={len(train_maps)} val_maps={len(val_maps)} "
+            f"train_items={train_window_count} val_items={val_window_count} "
             f"obs_dim={obs_dim} action_space={action_space_size}",
             flush=True,
         )
@@ -2047,9 +2606,12 @@ def train_bc_policy(args=None, dataset_dir=None, output_dir=None, logger=None):
         metadata = {
             "config": args,
             "bc_train": bc_train_cfg,
+            "source_format": source_format,
             "history": history,
             "train_shards": train_shards,
             "val_shards": val_shards,
+            "train_maps": train_maps,
+            "val_maps": val_maps,
             "observation_dim": obs_dim,
             "action_space_size": action_space_size,
             "recurrent": recurrent,
@@ -2075,6 +2637,8 @@ def train_bc_policy(args=None, dataset_dir=None, output_dir=None, logger=None):
             "history": history,
             "train_shards": train_shards,
             "val_shards": val_shards,
+            "train_maps": train_maps,
+            "val_maps": val_maps,
         }
     finally:
         env.close()
