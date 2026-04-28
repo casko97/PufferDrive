@@ -27,6 +27,24 @@ def main() -> None:
     parser.add_argument("--max-val-samples", type=int, default=None, help="Optional validation sample budget override.")
     parser.add_argument("--sample-stride", type=int, default=None, help="Optional stride between sampled timesteps.")
     parser.add_argument(
+        "--turning-sample-stride",
+        type=int,
+        default=None,
+        help="Optional denser stride override for turning training scenarios; disabled when < 1.",
+    )
+    parser.add_argument(
+        "--turning-threshold-deg",
+        type=float,
+        default=None,
+        help="Heading delta threshold for classifying turning scenarios.",
+    )
+    parser.add_argument(
+        "--turning-manifest-path",
+        type=str,
+        default=None,
+        help="Optional scenario_filter_manifest.json path for identifying turning maps.",
+    )
+    parser.add_argument(
         "--sample-start-offset",
         type=int,
         default=None,
@@ -37,6 +55,20 @@ def main() -> None:
         type=int,
         default=None,
         help="Optional number of final timesteps to skip when creating samples.",
+    )
+    full_window_group = parser.add_mutually_exclusive_group()
+    full_window_group.add_argument(
+        "--require-full-windows",
+        dest="require_full_windows",
+        action="store_true",
+        default=None,
+        help="Only train on samples with full valid history and prediction windows.",
+    )
+    full_window_group.add_argument(
+        "--allow-partial-windows",
+        dest="require_full_windows",
+        action="store_false",
+        help="Allow samples with partial history or prediction windows.",
     )
     parser.add_argument("--wandb", action="store_true", help="Enable wandb logging for this run.")
     parser.add_argument("--disable-wandb", action="store_true", help="Disable wandb logging even if config enables it.")
@@ -71,10 +103,18 @@ def main() -> None:
         experiment.train.max_val_samples = args.max_val_samples
     if args.sample_stride is not None:
         experiment.train.sample_stride = args.sample_stride
+    if args.turning_sample_stride is not None:
+        experiment.train.turning_sample_stride = args.turning_sample_stride
+    if args.turning_threshold_deg is not None:
+        experiment.train.turning_threshold_deg = args.turning_threshold_deg
+    if args.turning_manifest_path is not None:
+        experiment.train.turning_manifest_path = args.turning_manifest_path
     if args.sample_start_offset is not None:
         experiment.train.sample_start_offset = args.sample_start_offset
     if args.sample_end_offset is not None:
         experiment.train.sample_end_offset = args.sample_end_offset
+    if args.require_full_windows is not None:
+        experiment.train.require_full_windows = args.require_full_windows
     if args.wandb:
         experiment.train.wandb = True
     if args.disable_wandb:

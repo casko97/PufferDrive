@@ -1,3 +1,4 @@
+import json
 import sys
 from pathlib import Path
 
@@ -10,6 +11,7 @@ torch = pytest.importorskip("torch")
 from pufferlib.ocean.drive.drive import save_map_binary
 from pufferlib.ocean.drive.trajectory_bc import (
     _base_obs_dim,
+    _build_turning_sample_stride_overrides,
     _iter_sample_timesteps,
     _resolve_training_device,
     _trajectory_history_feature_dims,
@@ -18,6 +20,7 @@ from pufferlib.ocean.drive.trajectory_bc import (
     _TRAJECTORY_HORIZON,
     TrajectoryBCEnvConfig,
     TrajectoryBCExperimentConfig,
+    TrajectoryBCIterableDataset,
     TrajectoryBCTrainConfig,
     TrajectoryBCTrainer,
     iter_trajectory_bc_samples,
@@ -34,6 +37,31 @@ def _linear_traj(x0, y0, dx, dy, heading=0.0, length=91):
         "position": [{"x": float(x0 + dx * t), "y": float(y0 + dy * t), "z": 0.0} for t in range(length)],
         "velocity": [{"x": float(dx / 0.1), "y": float(dy / 0.1), "z": 0.0} for _ in range(length)],
         "heading": [float(heading) for _ in range(length)],
+        "valid": [1 for _ in range(length)],
+    }
+
+
+def _turning_traj(radius=20.0, end_heading=np.pi / 2.0, length=91):
+    angles = np.linspace(0.0, end_heading, length)
+    xs = radius * np.sin(angles)
+    ys = radius * (1.0 - np.cos(angles))
+    velocities = []
+    for t in range(length):
+        prev_t = max(t - 1, 0)
+        next_t = min(t + 1, length - 1)
+        scale = 0.1 * max(next_t - prev_t, 1)
+        velocities.append(
+            {
+                "x": float((xs[next_t] - xs[prev_t]) / scale),
+                "y": float((ys[next_t] - ys[prev_t]) / scale),
+                "z": 0.0,
+            }
+        )
+
+    return {
+        "position": [{"x": float(x), "y": float(y), "z": 0.0} for x, y in zip(xs, ys)],
+        "velocity": velocities,
+        "heading": [float(angle) for angle in angles],
         "valid": [1 for _ in range(length)],
     }
 
@@ -134,6 +162,26 @@ def _write_simple_trajectory_map(map_dir: Path):
         ],
     }
     save_map_binary(scenario, str(map_dir / "map_000.bin"), unique_map_id=9)
+    return scenario
+
+
+def _write_single_agent_trajectory_map(map_dir: Path, map_name: str, trajectory: dict, unique_map_id: int):
+    scenario = {
+        "metadata": {"sdc_track_index": 0, "tracks_to_predict": [{"track_index": 0}]},
+        "objects": [
+            {
+                "id": 100,
+                "type": "vehicle",
+                "length": 4.5,
+                "width": 1.9,
+                "height": 1.6,
+                **trajectory,
+                "goalPosition": {"x": 100.0, "y": 0.0, "z": 0.0},
+            },
+        ],
+        "roads": [],
+    }
+    save_map_binary(scenario, str(map_dir / map_name), unique_map_id=unique_map_id)
     return scenario
 
 
@@ -312,6 +360,153 @@ def test_iter_trajectory_bc_samples_preserves_dense_history_with_sparse_stride(t
     ].reshape(_TRAJECTORY_HORIZON, _TRAJECTORY_HISTORY_FEATURES)
 
     assert int((ego_history[:, 5] > 0.5).sum()) >= 10
+
+
+def test_build_turning_stride_overrides_disabled_preserves_base_stride(tmp_path):
+    map_dir = tmp_path / "maps"
+    map_dir.mkdir()
+    _write_single_agent_trajectory_map(map_dir, "map_000.bin", _turning_traj(), unique_map_id=20)
+
+    overrides, summary = _build_turning_sample_stride_overrides(
+        [map_dir / "map_000.bin"],
+        base_sample_stride=10,
+        turning_sample_stride=-1,
+        turning_threshold_deg=45.0,
+        turning_manifest_path=None,
+    )
+
+    assert overrides == {}
+    assert summary["enabled"] is False
+    assert summary["turning_map_count"] == 0
+    assert summary["non_turning_map_count"] == 1
+
+
+def test_build_turning_stride_overrides_classifies_turning_maps(tmp_path):
+    map_dir = tmp_path / "maps"
+    map_dir.mkdir()
+    straight_path = map_dir / "map_000.bin"
+    turning_path = map_dir / "map_001.bin"
+    _write_single_agent_trajectory_map(map_dir, "map_000.bin", _linear_traj(0.0, 0.0, 1.0, 0.0), unique_map_id=21)
+    _write_single_agent_trajectory_map(map_dir, "map_001.bin", _turning_traj(), unique_map_id=22)
+
+    overrides, summary = _build_turning_sample_stride_overrides(
+        [straight_path, turning_path],
+        base_sample_stride=10,
+        turning_sample_stride=1,
+        turning_threshold_deg=45.0,
+        turning_manifest_path=None,
+    )
+
+    assert overrides == {str(turning_path.resolve()): 1}
+    assert summary["source"] == "heading_delta"
+    assert summary["turning_map_count"] == 1
+    assert summary["non_turning_map_count"] == 1
+
+
+def test_build_turning_stride_overrides_supports_manifest_names(tmp_path):
+    map_dir = tmp_path / "maps"
+    map_dir.mkdir()
+    straight_path = map_dir / "map_000.bin"
+    original_name_turn_path = map_dir / "map_001.bin"
+    filtered_name_turn_path = map_dir / "map_002.bin"
+    for idx, path in enumerate((straight_path, original_name_turn_path, filtered_name_turn_path), start=23):
+        _write_single_agent_trajectory_map(map_dir, path.name, _linear_traj(0.0, 0.0, 1.0, 0.0), unique_map_id=idx)
+    manifest_path = tmp_path / "scenario_filter_manifest.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "maps": [
+                    {"filtered_map_name": "does_not_match.bin", "original_map_name": "map_001.bin"},
+                    {"filtered_map_name": "map_002.bin"},
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    overrides, summary = _build_turning_sample_stride_overrides(
+        [straight_path, original_name_turn_path, filtered_name_turn_path],
+        base_sample_stride=10,
+        turning_sample_stride=2,
+        turning_threshold_deg=45.0,
+        turning_manifest_path=str(manifest_path),
+    )
+
+    assert overrides == {
+        str(original_name_turn_path.resolve()): 2,
+        str(filtered_name_turn_path.resolve()): 2,
+    }
+    assert summary["source"] == "manifest"
+    assert summary["turning_map_count"] == 2
+    assert summary["non_turning_map_count"] == 1
+
+
+def test_build_turning_stride_overrides_falls_back_when_manifest_does_not_match(tmp_path):
+    map_dir = tmp_path / "maps"
+    map_dir.mkdir()
+    turning_path = map_dir / "map_001.bin"
+    _write_single_agent_trajectory_map(map_dir, "map_001.bin", _turning_traj(), unique_map_id=24)
+    manifest_path = tmp_path / "scenario_filter_manifest.json"
+    manifest_path.write_text(json.dumps({"maps": [{"filtered_map_name": "map_999.bin"}]}), encoding="utf-8")
+
+    overrides, summary = _build_turning_sample_stride_overrides(
+        [turning_path],
+        base_sample_stride=10,
+        turning_sample_stride=1,
+        turning_threshold_deg=45.0,
+        turning_manifest_path=str(manifest_path),
+    )
+
+    assert overrides == {str(turning_path.resolve()): 1}
+    assert summary["source"] == "heading_delta"
+    assert summary["manifest_match_count"] == 0
+
+
+def test_turning_stride_overrides_make_turning_maps_denser(tmp_path):
+    map_dir = tmp_path / "maps"
+    map_dir.mkdir()
+    straight_path = map_dir / "map_000.bin"
+    turning_path = map_dir / "map_001.bin"
+    _write_single_agent_trajectory_map(map_dir, "map_000.bin", _linear_traj(0.0, 0.0, 1.0, 0.0), unique_map_id=25)
+    _write_single_agent_trajectory_map(map_dir, "map_001.bin", _turning_traj(), unique_map_id=26)
+    overrides, _summary = _build_turning_sample_stride_overrides(
+        [straight_path, turning_path],
+        base_sample_stride=10,
+        turning_sample_stride=1,
+        turning_threshold_deg=45.0,
+        turning_manifest_path=None,
+    )
+
+    straight_samples = list(
+        TrajectoryBCIterableDataset(
+            [straight_path],
+            TrajectoryBCEnvConfig(),
+            shuffle=False,
+            seed=42,
+            sample_stride=10,
+            sample_stride_by_map=overrides,
+            sample_start_offset=31,
+            sample_end_offset=31,
+            require_full_windows=True,
+        )
+    )
+    turning_samples = list(
+        TrajectoryBCIterableDataset(
+            [turning_path],
+            TrajectoryBCEnvConfig(),
+            shuffle=False,
+            seed=42,
+            sample_stride=10,
+            sample_stride_by_map=overrides,
+            sample_start_offset=31,
+            sample_end_offset=31,
+            require_full_windows=True,
+        )
+    )
+
+    assert len(straight_samples) == 3
+    assert len(turning_samples) == 28
+    assert len(turning_samples) > len(straight_samples)
 
 
 def test_resolve_training_device_prefers_mps_when_cuda_missing(monkeypatch):
@@ -555,6 +750,9 @@ def test_trajectory_bc_config_reads_sample_window_fields(tmp_path):
                 "sample_stride = 4",
                 "sample_start_offset = 6",
                 "sample_end_offset = 10",
+                "turning_sample_stride = 1",
+                "turning_threshold_deg = 45.0",
+                f'turning_manifest_path = "{tmp_path / "turning_manifest.json"}"',
             ]
         ),
         encoding="utf-8",
@@ -565,6 +763,9 @@ def test_trajectory_bc_config_reads_sample_window_fields(tmp_path):
     assert experiment.train.sample_stride == 4
     assert experiment.train.sample_start_offset == 6
     assert experiment.train.sample_end_offset == 10
+    assert experiment.train.turning_sample_stride == 1
+    assert experiment.train.turning_threshold_deg == pytest.approx(45.0)
+    assert experiment.train.turning_manifest_path == str(tmp_path / "turning_manifest.json")
 
 
 def test_trajectory_bc_config_reads_explicit_validation_dataset(tmp_path):

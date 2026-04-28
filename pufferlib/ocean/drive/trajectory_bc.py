@@ -6,7 +6,9 @@ import json
 import math
 import os
 import random
+import re
 import shutil
+import struct
 import tempfile
 import time
 from contextlib import contextmanager
@@ -142,6 +144,183 @@ def _select_map_subset(
     if not ordered:
         raise ValueError("No maps available after applying max_maps")
     return ordered
+
+
+def _map_path_key(map_path: str | Path) -> str:
+    return str(Path(map_path).expanduser().resolve())
+
+
+def _map_name_aliases(value: str | Path | None) -> set[str]:
+    if value in {None, ""}:
+        return set()
+    name = Path(str(value)).name
+    if not name:
+        return set()
+
+    aliases = {name}
+    match = re.fullmatch(r"map_(\d+)\.bin", name)
+    if match:
+        number = int(match.group(1))
+        aliases.add(f"map_{number:03d}.bin")
+        aliases.add(f"map_{number:05d}.bin")
+    return aliases
+
+
+def _map_path_aliases(map_path: str | Path) -> set[str]:
+    path = Path(map_path)
+    return _map_name_aliases(path) | _map_name_aliases(path.resolve())
+
+
+def _read_i32(file_obj) -> int:
+    buf = file_obj.read(4)
+    if len(buf) != 4:
+        raise EOFError("unexpected EOF while reading int32")
+    return struct.unpack("<i", buf)[0]
+
+
+def _read_f32_array(file_obj, size: int) -> tuple[float, ...]:
+    buf = file_obj.read(4 * size)
+    if len(buf) != 4 * size:
+        raise EOFError("unexpected EOF while reading float32 array")
+    return struct.unpack(f"<{size}f", buf)
+
+
+def _read_i32_array(file_obj, size: int) -> tuple[int, ...]:
+    buf = file_obj.read(4 * size)
+    if len(buf) != 4 * size:
+        raise EOFError("unexpected EOF while reading int32 array")
+    return struct.unpack(f"<{size}i", buf)
+
+
+def _is_turning_map_by_heading_delta(map_path: str | Path, threshold_deg: float) -> bool:
+    map_path = Path(map_path)
+    with map_path.open("rb") as file_obj:
+        sdc_track_index = _read_i32(file_obj)
+        num_tracks_to_predict = _read_i32(file_obj)
+        file_obj.seek(4 * num_tracks_to_predict, 1)
+        num_objects = _read_i32(file_obj)
+        num_roads = _read_i32(file_obj)
+
+        if not (0 <= sdc_track_index < num_objects):
+            raise ValueError(f"invalid sdc_track_index={sdc_track_index} for {map_path}")
+
+        start_heading = None
+        end_heading = None
+
+        for obj_idx in range(num_objects):
+            _scenario_id = _read_i32(file_obj)
+            _entity_type = _read_i32(file_obj)
+            _entity_id = _read_i32(file_obj)
+            trajectory_length = _read_i32(file_obj)
+
+            file_obj.seek(4 * trajectory_length * 6, 1)  # x,y,z,vx,vy,vz
+            headings = _read_f32_array(file_obj, trajectory_length)
+            valids = _read_i32_array(file_obj, trajectory_length)
+            file_obj.seek((6 * 4) + 4, 1)  # width,length,height,goal xyz,mark_as_expert
+
+            if obj_idx == sdc_track_index:
+                valid_indices = [idx for idx, valid in enumerate(valids) if valid]
+                if not valid_indices:
+                    raise ValueError(f"SDC has no valid timesteps in {map_path}")
+                start_heading = headings[valid_indices[0]]
+                end_heading = headings[valid_indices[-1]]
+
+        for _ in range(num_roads):
+            _scenario_id = _read_i32(file_obj)
+            _entity_type = _read_i32(file_obj)
+            _entity_id = _read_i32(file_obj)
+            array_size = _read_i32(file_obj)
+            file_obj.seek(4 * array_size * 3, 1)  # x,y,z
+            file_obj.seek((6 * 4) + 4, 1)
+
+    if start_heading is None or end_heading is None:
+        raise ValueError(f"Could not read SDC headings from {map_path}")
+    delta_heading_deg = math.degrees(_wrap_to_pi(float(end_heading) - float(start_heading)))
+    return abs(delta_heading_deg) > float(threshold_deg)
+
+
+def _manifest_row_aliases(row: dict[str, Any]) -> set[str]:
+    preferred_aliases: set[str] = set()
+    fallback_aliases: set[str] = set()
+
+    for key in ("original_map_name", "original_map_path", "map_path", "source_dataset_map_path"):
+        preferred_aliases.update(_map_name_aliases(row.get(key)))
+    for key in ("map_name", "filtered_map_name", "relative_path", "path"):
+        fallback_aliases.update(_map_name_aliases(row.get(key)))
+
+    return preferred_aliases or fallback_aliases
+
+
+def _load_turning_manifest_aliases(manifest_path: str | Path) -> set[str]:
+    manifest_path = Path(manifest_path).expanduser().resolve()
+    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    aliases: set[str] = set()
+
+    for name in payload.get("map_names", []):
+        aliases.update(_map_name_aliases(name))
+
+    for section_name in ("maps", "scenarios", "entries"):
+        for row in payload.get(section_name, []):
+            if isinstance(row, dict):
+                aliases.update(_manifest_row_aliases(row))
+            else:
+                aliases.update(_map_name_aliases(row))
+
+    return aliases
+
+
+def _build_turning_sample_stride_overrides(
+    map_paths: list[Path],
+    *,
+    base_sample_stride: int,
+    turning_sample_stride: int,
+    turning_threshold_deg: float,
+    turning_manifest_path: str | None,
+) -> tuple[dict[str, int], dict[str, Any]]:
+    enabled = int(turning_sample_stride) >= 1
+    summary = {
+        "enabled": enabled,
+        "source": "disabled",
+        "base_sample_stride": int(base_sample_stride),
+        "turning_sample_stride": int(turning_sample_stride),
+        "turning_threshold_deg": float(turning_threshold_deg),
+        "turning_manifest_path": turning_manifest_path,
+        "turning_map_count": 0,
+        "non_turning_map_count": len(map_paths),
+    }
+    if not enabled:
+        return {}, summary
+
+    turning_aliases: set[str] | None = None
+    if turning_manifest_path not in {None, "", "none", "None"}:
+        manifest_aliases = _load_turning_manifest_aliases(str(turning_manifest_path))
+        manifest_match_count = sum(1 for path in map_paths if _map_path_aliases(path) & manifest_aliases)
+        summary["manifest_alias_count"] = len(manifest_aliases)
+        summary["manifest_match_count"] = manifest_match_count
+        if manifest_match_count > 0:
+            turning_aliases = manifest_aliases
+            summary["source"] = "manifest"
+        else:
+            summary["source"] = "heading_delta"
+    else:
+        summary["source"] = "heading_delta"
+
+    overrides: dict[str, int] = {}
+    turning_count = 0
+    for map_path in map_paths:
+        is_turning = False
+        if turning_aliases is not None:
+            is_turning = bool(_map_path_aliases(map_path) & turning_aliases)
+        else:
+            is_turning = _is_turning_map_by_heading_delta(map_path, turning_threshold_deg)
+
+        if is_turning:
+            overrides[_map_path_key(map_path)] = int(turning_sample_stride)
+            turning_count += 1
+
+    summary["turning_map_count"] = turning_count
+    summary["non_turning_map_count"] = len(map_paths) - turning_count
+    return overrides, summary
 
 
 def _mps_is_available() -> bool:
@@ -312,6 +491,9 @@ class TrajectoryBCTrainConfig:
     sample_start_offset: int = 0
     sample_end_offset: int = 0
     require_full_windows: bool = True
+    turning_sample_stride: int = -1
+    turning_threshold_deg: float = 45.0
+    turning_manifest_path: str | None = None
     wandb: bool = False
     wandb_project: str = "pufferdrive"
     wandb_group: str = "trajectory_bc"
@@ -375,6 +557,13 @@ class TrajectoryBCExperimentConfig:
             sample_start_offset=int(train_cfg.get("sample_start_offset", 0)),
             sample_end_offset=int(train_cfg.get("sample_end_offset", 0)),
             require_full_windows=bool(train_cfg.get("require_full_windows", True)),
+            turning_sample_stride=int(train_cfg.get("turning_sample_stride", -1)),
+            turning_threshold_deg=float(train_cfg.get("turning_threshold_deg", 45.0)),
+            turning_manifest_path=(
+                None
+                if train_cfg.get("turning_manifest_path") in {None, "none", "None", ""}
+                else str(train_cfg.get("turning_manifest_path"))
+            ),
             wandb=bool(train_cfg.get("wandb", False)),
             wandb_project=str(train_cfg.get("wandb_project", "pufferdrive")),
             wandb_group=str(train_cfg.get("wandb_group", "trajectory_bc")),
@@ -1012,6 +1201,7 @@ class TrajectoryBCIterableDataset(IterableDataset):
         epoch: int = 0,
         max_samples: int = -1,
         sample_stride: int = 1,
+        sample_stride_by_map: dict[str, int] | None = None,
         sample_start_offset: int = 0,
         sample_end_offset: int = 0,
         require_full_windows: bool = True,
@@ -1023,6 +1213,9 @@ class TrajectoryBCIterableDataset(IterableDataset):
         self.epoch = int(epoch)
         self.max_samples = int(max_samples)
         self.sample_stride = int(sample_stride)
+        self.sample_stride_by_map = {
+            _map_path_key(path): int(stride) for path, stride in (sample_stride_by_map or {}).items()
+        }
         self.sample_start_offset = int(sample_start_offset)
         self.sample_end_offset = int(sample_end_offset)
         self.require_full_windows = bool(require_full_windows)
@@ -1036,6 +1229,7 @@ class TrajectoryBCIterableDataset(IterableDataset):
             epoch=epoch,
             max_samples=self.max_samples,
             sample_stride=self.sample_stride,
+            sample_stride_by_map=self.sample_stride_by_map,
             sample_start_offset=self.sample_start_offset,
             sample_end_offset=self.sample_end_offset,
             require_full_windows=self.require_full_windows,
@@ -1058,10 +1252,12 @@ class TrajectoryBCIterableDataset(IterableDataset):
 
         yielded = 0
         for index in indices:
+            map_path = map_paths[index]
+            sample_stride = self.sample_stride_by_map.get(_map_path_key(map_path), self.sample_stride)
             for observation, target in iter_trajectory_bc_samples(
-                map_paths[index],
+                map_path,
                 self.env_config,
-                sample_stride=self.sample_stride,
+                sample_stride=sample_stride,
                 sample_start_offset=self.sample_start_offset,
                 sample_end_offset=self.sample_end_offset,
                 require_full_windows=self.require_full_windows,
@@ -1102,6 +1298,22 @@ class TrajectoryBCTrainer:
                 val_fraction=experiment.train.val_fraction,
                 seed=experiment.train.seed,
                 max_maps=experiment.train.max_maps,
+            )
+        self.train_sample_stride_by_map, self.turning_sampling_summary = _build_turning_sample_stride_overrides(
+            self.train_maps,
+            base_sample_stride=experiment.train.sample_stride,
+            turning_sample_stride=experiment.train.turning_sample_stride,
+            turning_threshold_deg=experiment.train.turning_threshold_deg,
+            turning_manifest_path=experiment.train.turning_manifest_path,
+        )
+        if self.turning_sampling_summary["enabled"]:
+            print(
+                "[trajectory-bc] turning-aware sampling "
+                f"source={self.turning_sampling_summary['source']} "
+                f"turning_maps={self.turning_sampling_summary['turning_map_count']} "
+                f"non_turning_maps={self.turning_sampling_summary['non_turning_map_count']} "
+                f"base_stride={self.turning_sampling_summary['base_sample_stride']} "
+                f"turning_stride={self.turning_sampling_summary['turning_sample_stride']}"
             )
 
         policy_env = _build_policy_env_spec(experiment.env.dynamics_model, experiment.env.observation_mode)
@@ -1144,7 +1356,15 @@ class TrajectoryBCTrainer:
 
         print(f"[trajectory-bc] resumed from checkpoint={checkpoint_path}")
 
-    def _make_loader(self, map_paths: list[Path], *, epoch: int, shuffle: bool, max_samples: int) -> DataLoader:
+    def _make_loader(
+        self,
+        map_paths: list[Path],
+        *,
+        epoch: int,
+        shuffle: bool,
+        max_samples: int,
+        sample_stride_by_map: dict[str, int] | None = None,
+    ) -> DataLoader:
         dataset = TrajectoryBCIterableDataset(
             map_paths=map_paths,
             env_config=self.experiment.env,
@@ -1153,6 +1373,7 @@ class TrajectoryBCTrainer:
             epoch=epoch,
             max_samples=max_samples,
             sample_stride=self.experiment.train.sample_stride,
+            sample_stride_by_map=sample_stride_by_map,
             sample_start_offset=self.experiment.train.sample_start_offset,
             sample_end_offset=self.experiment.train.sample_end_offset,
             require_full_windows=self.experiment.train.require_full_windows,
@@ -1266,6 +1487,7 @@ class TrajectoryBCTrainer:
             "val_dataset_dir": self.experiment.train.val_dataset_dir,
             "output_dir": str(self.output_dir),
             "device": str(self.device),
+            "turning_sampling": dict(self.turning_sampling_summary),
             "history": [],
         }
         if self.wandb_logger is not None:
@@ -1278,6 +1500,7 @@ class TrajectoryBCTrainer:
                     epoch=epoch_idx,
                     shuffle=True,
                     max_samples=self.experiment.train.max_train_samples_per_epoch,
+                    sample_stride_by_map=self.train_sample_stride_by_map,
                 )
                 train_metrics = self._run_epoch(train_loader, train=True, epoch_idx=epoch_idx)
 
@@ -1325,6 +1548,7 @@ class TrajectoryBCTrainer:
                         "train": asdict(self.experiment.train),
                         "env": asdict(self.experiment.env),
                         "policy": dict(self.experiment.policy),
+                        "turning_sampling": dict(self.turning_sampling_summary),
                     },
                     indent=2,
                 ),
