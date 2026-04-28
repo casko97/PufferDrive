@@ -1,0 +1,47 @@
+{
+  "model_name": "turning_all_90_10_30rounds_continue1",
+  "copied_on": "2026-04-07",
+  "source_output_dir": "outputs/reward_model/turning_all_90_10_30rounds_continue1",
+  "preference_dataset_path": "pufferlib/resources/drive/preferences/turning_preferences/nuplan_boston_all_chunk64_turning_preferences.pt",
+  "checkpoint_stem": "offline_truck_context",
+  "checkpoint_files": [
+    "reward_model_offline_truck_context_0.pt",
+    "reward_model_offline_truck_context_1.pt",
+    "reward_model_offline_truck_context_2.pt"
+  ],
+  "warm_start": {
+    "init_from_dir": "outputs/reward_model/turning_all_90_10_30rounds",
+    "init_checkpoint_stem": "offline_truck_context"
+  },
+  "training_config": {
+    "obs_dim": 1120,
+    "action_dim": 91,
+    "size_segment": 32,
+    "observation_mode": "default",
+    "action_encoding": "one_hot",
+    "ensemble_size": 3,
+    "rounds": 20,
+    "train_fraction": 0.9,
+    "split_seed": 42,
+    "activation": null
+  },
+  "results": {
+    "total_windows": 8494,
+    "train_windows": 7644,
+    "validation_windows": 850,
+    "final_train_loss": 0.013916561690118035,
+    "final_train_acc": 0.999869178440607,
+    "final_validation_loss": 0.09551352271102552,
+    "final_validation_acc": 0.9788235294117648,
+    "final_train_margin_mean": 16.59463083513241,
+    "final_validation_margin_mean": 15.60082794862635,
+    "final_train_confidence_mean": 0.9833042027515494,
+    "final_validation_confidence_mean": 0.9359946763515472
+  },
+  "available_artifacts": {
+    "training_summary": "offline_truck_context_reward_summary.json",
+    "evaluation_report": "offline_truck_context_reward_eval.json",
+    "launch_log": null,
+    "diagnostics_dir": "preference_reward_diagnostics"
+  }
+}
