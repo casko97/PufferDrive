@@ -7,6 +7,7 @@ def masked_trajectory_loss(
     valid_threshold=0.5,
     horizon_decay=0.97,
     position_weight=1.0,
+    fde_weight=1.0,
     heading_weight=0.5,
     speed_weight=0.25,
     valid_weight=0.25,
@@ -22,7 +23,18 @@ def masked_trajectory_loss(
     regression_weight = valid_mask * horizon_weights
     regression_norm = regression_weight.sum().clamp_min(1.0)
 
-    position_loss = ((predictions[..., :2] - targets[..., :2]) ** 2).sum(dim=-1)
+    position_error = torch.linalg.norm(predictions[..., :2] - targets[..., :2], dim=-1)
+    ade_loss = (position_error * regression_weight).sum() / regression_norm
+
+    sample_valid = valid_mask.sum(dim=1) > 0
+    valid_indices = valid_mask.long() * torch.arange(targets.shape[1], device=targets.device).view(1, -1)
+    last_valid_idx = valid_indices.max(dim=1).values
+    batch_idx = torch.arange(predictions.shape[0], device=predictions.device)
+    fde_sample_weight = sample_valid.float()
+    fde_loss = (
+        position_error[batch_idx, last_valid_idx] * fde_sample_weight
+    ).sum() / fde_sample_weight.sum().clamp_min(1.0)
+
     heading_loss = (predictions[..., 2] - targets[..., 2]) ** 2
     speed_loss = (predictions[..., 3] - targets[..., 3]) ** 2
     valid_loss = torch.nn.functional.binary_cross_entropy_with_logits(
@@ -30,7 +42,8 @@ def masked_trajectory_loss(
     )
 
     total = 0.0
-    total = total + position_weight * (position_loss * regression_weight).sum() / regression_norm
+    total = total + position_weight * ade_loss
+    total = total + fde_weight * fde_loss
     total = total + heading_weight * (heading_loss * regression_weight).sum() / regression_norm
     total = total + speed_weight * (speed_loss * regression_weight).sum() / regression_norm
     total = total + valid_weight * (valid_loss * horizon_weights).mean()

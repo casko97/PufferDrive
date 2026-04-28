@@ -5,7 +5,7 @@ import os
 import shutil
 from pathlib import Path
 
-from pufferlib.ocean.drive.drive import classify_map_turning
+from scripts.analyze_human_replay_turning_buckets import classify_map_turning
 
 
 def parse_args() -> argparse.Namespace:
