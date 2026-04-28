@@ -3,6 +3,7 @@
 # Distributed example: torchrun --standalone --nnodes=1 --nproc-per-node=6 -m pufferlib.pufferl train puffer_nmmo3
 
 import contextlib
+import copy
 import warnings
 
 warnings.filterwarnings("error", category=RuntimeWarning)
@@ -60,8 +61,100 @@ signal.signal(signal.SIGINT, lambda sig, frame: os._exit(0))
 ADVANTAGE_CUDA = shutil.which("nvcc") is not None
 
 
+def _config_bool(value):
+    if isinstance(value, str):
+        return value.strip().lower() == "true"
+    return bool(value)
+
+
+def _bc_kl_enabled(config):
+    return _config_bool(config and config.get("enabled", False))
+
+
+def _resolve_bc_kl_config(config):
+    config = config or {}
+    resolved = {
+        "enabled": _config_bool(config.get("enabled", False)),
+        "model_path": config.get("model_path"),
+        "coef": float(config.get("coef", 0.01)),
+        "final_coef": float(config.get("final_coef", 0.0)),
+        "anneal_fraction": float(config.get("anneal_fraction", 1.0)),
+        "temperature": float(config.get("temperature", 1.0)),
+    }
+
+    if not resolved["enabled"]:
+        return resolved
+
+    if resolved["model_path"] in (None, ""):
+        raise pufferlib.APIUsageError("bc_kl.enabled=True requires bc_kl.model_path")
+    if resolved["coef"] < 0 or resolved["final_coef"] < 0:
+        raise pufferlib.APIUsageError("bc_kl coef and final_coef must be non-negative")
+    if resolved["anneal_fraction"] < 0:
+        raise pufferlib.APIUsageError("bc_kl anneal_fraction must be non-negative")
+    if resolved["temperature"] <= 0:
+        raise pufferlib.APIUsageError("bc_kl temperature must be > 0")
+
+    return resolved
+
+
+def _bc_kl_coef_at_step(config, global_step, total_timesteps):
+    if not _bc_kl_enabled(config):
+        return 0.0
+
+    anneal_fraction = config["anneal_fraction"]
+    if anneal_fraction == 0:
+        progress = 1.0
+    else:
+        anneal_steps = max(1, int(total_timesteps * anneal_fraction))
+        progress = min(1.0, max(0.0, float(global_step) / anneal_steps))
+
+    return config["coef"] + progress * (config["final_coef"] - config["coef"])
+
+
+def _single_discrete_logits(logits, *, context):
+    if isinstance(logits, torch.distributions.Normal):
+        raise pufferlib.APIUsageError(f"{context} only supports discrete single-head action policies")
+    if isinstance(logits, torch.Tensor):
+        return logits
+    if isinstance(logits, (tuple, list)) and len(logits) == 1 and isinstance(logits[0], torch.Tensor):
+        return logits[0]
+
+    raise pufferlib.APIUsageError(f"{context} only supports discrete single-head action policies")
+
+
+def _bc_teacher_kl_from_logits(student_logits, teacher_logits, temperature=1.0):
+    temperature = float(temperature)
+    if temperature <= 0:
+        raise pufferlib.APIUsageError("bc_kl temperature must be > 0")
+
+    student_logp = torch.log_softmax(student_logits.float() / temperature, dim=-1)
+    teacher_logp = torch.log_softmax(teacher_logits.float() / temperature, dim=-1)
+    teacher_probs = teacher_logp.exp()
+    kl = (teacher_probs * (teacher_logp - student_logp)).sum(dim=-1).mean()
+    teacher_entropy = -(teacher_probs * teacher_logp).sum(dim=-1).mean()
+    return kl, teacher_entropy
+
+
+def _freeze_reference_policy(policy):
+    policy.eval()
+    for param in policy.parameters():
+        param.requires_grad_(False)
+    return policy
+
+
+def _validate_bc_kl_action_space(action_space):
+    if hasattr(action_space, "nvec"):
+        nvec = np.asarray(action_space.nvec).reshape(-1)
+        if len(nvec) == 1:
+            return
+    elif hasattr(action_space, "n"):
+        return
+
+    raise pufferlib.APIUsageError("bc_kl currently supports only discrete single-head action spaces")
+
+
 class PuffeRL:
-    def __init__(self, config, vecenv, policy, logger=None):
+    def __init__(self, config, vecenv, policy, logger=None, bc_kl_policy=None):
         # Backend perf optimization
         torch.set_float32_matmul_precision("high")
         torch.backends.cudnn.deterministic = config["torch_deterministic"]
@@ -79,6 +172,13 @@ class PuffeRL:
         atn_space = vecenv.single_action_space
         total_agents = vecenv.num_agents
         self.total_agents = total_agents
+        self.bc_kl_config = _resolve_bc_kl_config(config.get("bc_kl"))
+        self.bc_kl_policy = None
+        if self.bc_kl_config["enabled"]:
+            _validate_bc_kl_action_space(atn_space)
+            if bc_kl_policy is None:
+                raise pufferlib.APIUsageError("bc_kl.enabled=True requires a loaded BC reference policy")
+            self.bc_kl_policy = _freeze_reference_policy(bc_kl_policy)
 
         # Experience
         if config["batch_size"] == "auto" and config["bptt_horizon"] == "auto":
@@ -232,6 +332,43 @@ class PuffeRL:
         # Dashboard
         self.model_size = sum(p.numel() for p in policy.parameters() if p.requires_grad)
         self.print_dashboard(clear=True)
+
+    def _compute_bc_kl_loss(self, logits, mb_obs):
+        if self.bc_kl_policy is None:
+            return None, None
+
+        student_logits = _single_discrete_logits(logits, context="bc_kl")
+        with torch.no_grad():
+            bc_state = dict(
+                action=None,
+                lstm_h=None,
+                lstm_c=None,
+            )
+            teacher_logits, _ = self.bc_kl_policy(mb_obs, bc_state)
+            teacher_logits = _single_discrete_logits(teacher_logits, context="bc_kl")
+
+        return _bc_teacher_kl_from_logits(
+            student_logits,
+            teacher_logits,
+            temperature=self.bc_kl_config["temperature"],
+        )
+
+    def _compute_bc_kl_term(self, logits, mb_obs):
+        if self.bc_kl_policy is None:
+            return {}
+
+        bc_kl_loss, bc_teacher_entropy = self._compute_bc_kl_loss(logits, mb_obs)
+        bc_kl_coef = _bc_kl_coef_at_step(
+            self.bc_kl_config,
+            self.global_step,
+            self.config["total_timesteps"],
+        )
+        return {
+            "bc_kl": bc_kl_loss,
+            "bc_kl_weighted": bc_kl_loss * bc_kl_coef,
+            "bc_kl_coef": bc_kl_coef,
+            "bc_teacher_entropy": bc_teacher_entropy,
+        }
 
     @property
     def uptime(self):
@@ -460,6 +597,10 @@ class PuffeRL:
             entropy_loss = entropy.mean()
 
             loss = pg_loss + config["vf_coef"] * v_loss - config["ent_coef"] * entropy_loss
+            bc_kl_metrics = self._compute_bc_kl_term(logits, mb_obs)
+            if bc_kl_metrics:
+                loss = loss + bc_kl_metrics["bc_kl_weighted"]
+
             self.amp_context.__enter__()  # TODO: AMP needs some debugging
 
             # This breaks vloss clipping?
@@ -474,6 +615,10 @@ class PuffeRL:
             losses["approx_kl"] += approx_kl.item() / self.total_minibatches
             losses["clipfrac"] += clipfrac.item() / self.total_minibatches
             losses["importance"] += ratio.mean().item() / self.total_minibatches
+            for key, value in bc_kl_metrics.items():
+                if isinstance(value, torch.Tensor):
+                    value = value.item()
+                losses[key] += float(value) / self.total_minibatches
 
             # Learn on accumulated minibatches
             profile("learn", epoch)
@@ -1013,6 +1158,7 @@ def train(env_name, args=None, vecenv=None, policy=None, logger=None):
 
     vecenv = vecenv or load_env(env_name, args)
     policy = policy or load_policy(args, vecenv, env_name)
+    bc_kl_policy = load_bc_kl_reference_policy(args, vecenv, env_name)
 
     if "LOCAL_RANK" in os.environ:
         args["train"]["device"] = torch.cuda.current_device()
@@ -1037,8 +1183,9 @@ def train(env_name, args=None, vecenv=None, policy=None, logger=None):
         eval=args.get("eval", {}),
         env_config=args.get("env", {}),
         preference_reward=args.get("preference_reward", {}),
+        bc_kl=args.get("bc_kl", {}),
     )
-    pufferl = PuffeRL(train_config, vecenv, policy, logger)
+    pufferl = PuffeRL(train_config, vecenv, policy, logger, bc_kl_policy=bc_kl_policy)
 
     all_logs = []
     while pufferl.global_step < train_config["total_timesteps"]:
@@ -1499,6 +1646,26 @@ def load_policy(args, vecenv, env_name=""):
         # pufferl.optimizer.load_state_dict(optim_state)
 
     return policy
+
+
+def load_bc_kl_reference_policy(args, vecenv, env_name=""):
+    bc_kl_config = _resolve_bc_kl_config(args.get("bc_kl"))
+    if not bc_kl_config["enabled"]:
+        return None
+
+    bc_args = copy.deepcopy(args)
+    bc_args["load_id"] = None
+    bc_args["load_model_path"] = bc_kl_config["model_path"]
+
+    try:
+        policy = load_policy(bc_args, vecenv, env_name)
+    except RuntimeError as e:
+        raise RuntimeError(
+            "Failed to load bc_kl.model_path. The BC checkpoint architecture must match "
+            "the PPO policy_name, rnn_name, policy/rnn config, observation space, and action space."
+        ) from e
+
+    return _freeze_reference_policy(policy)
 
 
 def load_config(env_name, config_dir=None):

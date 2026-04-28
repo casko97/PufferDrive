@@ -48,7 +48,19 @@ def _overlay_args(base_args: dict[str, Any], packaged: dict[str, dict[str, Any]]
     for key, value in packaged.get("base", {}).items():
         args[key] = value
 
-    for section in ("vec", "env", "policy", "rnn", "train", "eval", "bc", "bc_train", "sweep", "preference_reward"):
+    for section in (
+        "vec",
+        "env",
+        "policy",
+        "rnn",
+        "train",
+        "eval",
+        "bc",
+        "bc_train",
+        "bc_kl",
+        "sweep",
+        "preference_reward",
+    ):
         if section in packaged:
             args.setdefault(section, {})
             args[section].update(packaged[section])
