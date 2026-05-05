@@ -252,9 +252,10 @@ def test_load_bc_kl_reference_policy_supports_stacked_bc_continuous(monkeypatch)
     sentinel = object()
     captured = {}
 
-    def _fake_loader(path, *, device):
+    def _fake_loader(path, *, device, runtime_env_cfg=None):
         captured["path"] = path
         captured["device"] = device
+        captured["runtime_env_cfg"] = runtime_env_cfg
         return sentinel
 
     monkeypatch.setattr("pufferlib.ocean.drive.drive.load_stacked_bc_reference_policy", _fake_loader)
@@ -262,6 +263,7 @@ def test_load_bc_kl_reference_policy_supports_stacked_bc_continuous(monkeypatch)
     ref = pufferl.load_bc_kl_reference_policy(
         {
             "train": {"device": "cuda"},
+            "env": {"map_dir": "/tmp/new-train", "num_maps": 17},
             "bc_kl": {
                 "enabled": True,
                 "teacher_kind": "stacked_bc_continuous",
@@ -277,4 +279,8 @@ def test_load_bc_kl_reference_policy_supports_stacked_bc_continuous(monkeypatch)
     )
 
     assert ref is sentinel
-    assert captured == {"path": "/tmp/fake-teacher/best.pt", "device": "cuda"}
+    assert captured == {
+        "path": "/tmp/fake-teacher/best.pt",
+        "device": "cuda",
+        "runtime_env_cfg": {"map_dir": "/tmp/new-train", "num_maps": 17},
+    }

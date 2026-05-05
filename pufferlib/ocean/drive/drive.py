@@ -3410,7 +3410,61 @@ def _freeze_policy_module(policy):
     return policy
 
 
-def load_stacked_bc_reference_policy(checkpoint_path, *, device):
+class _BCSchemaOnlyEnv:
+    def __init__(self, env_cfg):
+        self.dynamics_model = _normalize_dynamics_model(env_cfg.get("dynamics_model", "classic"))
+        self.extend_classic_action_space = _as_bool(env_cfg.get("extend_classic_action_space", False))
+        self.type_classes = binding.POLICY_TYPE_CLASS_COUNT
+        self._base_ego_features = {
+            "classic": binding.EGO_FEATURES_CLASSIC,
+            "articulated": binding.EGO_FEATURES_CLASSIC,
+            "jerk": binding.EGO_FEATURES_JERK,
+        }[self.dynamics_model]
+        self._base_partner_features = binding.PARTNER_FEATURES
+        self.max_road_objects = binding.MAX_ROAD_SEGMENT_OBSERVATIONS
+        self.max_partner_objects = binding.MAX_AGENTS - 1
+        self.road_features = binding.ROAD_FEATURES
+
+        observation_mode = _normalize_observation_mode(env_cfg.get("observation_mode", "default"))
+        self.observation_mode_str = observation_mode
+        self.observation_mode = 0 if observation_mode == "default" else 1
+        self.observation_variant = _OBS_VARIANT_DEFAULT
+
+        action_type = str(env_cfg.get("action_type", "discrete"))
+        if action_type == "continuous":
+            self.single_action_space = gymnasium.spaces.Box(low=-1, high=1, shape=(2,), dtype=np.float32)
+        elif self.dynamics_model in ("classic", "articulated"):
+            action_count = _CLASSIC_DISCRETE_ACTIONS if self.extend_classic_action_space else (7 * 13)
+            self.single_action_space = gymnasium.spaces.MultiDiscrete([action_count])
+        else:
+            self.single_action_space = gymnasium.spaces.MultiDiscrete([4 * 3])
+
+        self.single_observation_space = gymnasium.spaces.Box(low=-1, high=1, shape=(1,), dtype=np.float32)
+        self.observation_space = self.single_observation_space
+
+    def close(self):
+        return None
+
+
+def _infer_bc_obs_dim_without_dataset(env_cfg, *, obs_field):
+    env = _BCSchemaOnlyEnv(env_cfg)
+    normalized_obs_field = _normalize_bc_obs_field(obs_field)
+    if normalized_obs_field == _BC_TRAILER_OBS_FIELD:
+        env.observation_variant = _OBS_VARIANT_DEFAULT
+        env.ego_features = env._base_ego_features + 1 + _EGO_TRAILER_STATE_FEATURES
+        env.partner_features = env._base_partner_features + 1
+        env.num_obs = (
+            env.ego_features
+            + env.max_partner_objects * env.partner_features
+            + env.max_road_objects * env.road_features
+        )
+    else:
+        _override_bc_env_obs_schema(env, obs_field=normalized_obs_field, obs_dim=None)
+    _override_bc_env_observation_space(env, env.num_obs)
+    return env
+
+
+def load_stacked_bc_reference_policy(checkpoint_path, *, device, runtime_env_cfg=None):
     checkpoint_path = Path(checkpoint_path)
     if checkpoint_path.is_dir():
         metrics_path = checkpoint_path / "metrics.json"
@@ -3429,38 +3483,27 @@ def load_stacked_bc_reference_policy(checkpoint_path, *, device):
     if not isinstance(args, dict):
         raise ValueError(f"BC metrics file does not contain a config object: {metrics_path}")
     env_cfg = _normalize_env_config(args["env"])
+    if runtime_env_cfg is not None:
+        runtime_env_cfg = _normalize_env_config(runtime_env_cfg)
+        for key in ("map_dir", "scenario_filter", "scenario_filter_manifest_path", "num_maps"):
+            if key in runtime_env_cfg:
+                env_cfg[key] = runtime_env_cfg[key]
     bc_train_cfg = _resolve_bc_train_config(args)
     if str(env_cfg.get("action_type")) != "continuous":
         raise ValueError("BC-KL stacked BC reference loader requires a continuous BC teacher checkpoint")
     if bc_train_cfg.get("mode") != _BC_MODE_STACKED_IID:
         raise ValueError("BC-KL stacked BC reference loader currently supports only stacked_iid BC teachers")
-
-    env = _make_bc_training_env(env_cfg)
-    try:
-        obs_field = _normalize_bc_obs_field(bc_train_cfg.get("obs_field", "obs"))
-        dataset_manifest = _load_bc_dataset_manifest(bc_train_cfg["dataset_dir"])
-        obs_dim = _dataset_manifest_obs_dim(dataset_manifest, obs_field)
-        if obs_dim is None:
-            raise ValueError(
-                f"Unable to resolve observation dim for BC teacher obs_field={obs_field} "
-                f"from dataset manifest under {bc_train_cfg['dataset_dir']}"
-            )
-        _override_bc_env_observation_space(env, obs_dim)
-        _override_bc_env_obs_schema(env, obs_field=obs_field, obs_dim=obs_dim)
-        policy = _build_bc_policy(args, env, device)
-        state_dict = torch.load(checkpoint_path, map_location=device)
-        state_dict = {k.replace("module.", ""): v for k, v in state_dict.items()}
-        policy.load_state_dict(state_dict)
-        wrapper = _StackedBCReferencePolicyWrapper(_freeze_policy_module(policy), stack_len=int(bc_train_cfg["stack_len"]))
-        wrapper.eval()
-        for param in wrapper.parameters():
-            param.requires_grad_(False)
-        return wrapper
-    finally:
-        try:
-            env.close()
-        except Exception:
-            pass
+    obs_field = _normalize_bc_obs_field(bc_train_cfg.get("obs_field", "obs"))
+    env = _infer_bc_obs_dim_without_dataset(env_cfg, obs_field=obs_field)
+    policy = _build_bc_policy(args, env, device)
+    state_dict = torch.load(checkpoint_path, map_location=device)
+    state_dict = {k.replace("module.", ""): v for k, v in state_dict.items()}
+    policy.load_state_dict(state_dict)
+    wrapper = _StackedBCReferencePolicyWrapper(_freeze_policy_module(policy), stack_len=int(bc_train_cfg["stack_len"]))
+    wrapper.eval()
+    for param in wrapper.parameters():
+        param.requires_grad_(False)
+    return wrapper
 
 
 def _run_bc_epoch(

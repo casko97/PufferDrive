@@ -1780,6 +1780,7 @@ def load_bc_kl_reference_policy(args, vecenv, env_name=""):
         return drive_module.load_stacked_bc_reference_policy(
             bc_kl_config["model_path"],
             device=args["train"]["device"],
+            runtime_env_cfg=args.get("env"),
         )
 
     def _load_reference(path, label):
