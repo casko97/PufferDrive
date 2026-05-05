@@ -84,6 +84,8 @@ class Serial:
                 masks=self.masks[ptr:end],
                 actions=self.actions[ptr:end],
             )
+            if hasattr(self, "bc_kl_teacher_ids"):
+                buf_i["bc_kl_teacher_ids"] = self.bc_kl_teacher_ids[ptr:end]
             ptr = end
             seed_i = seed + i if seed is not None else None
             env = env_creators[i](*env_args[i], buf=buf_i, seed=seed_i, **env_kwargs[i])
@@ -164,6 +166,8 @@ class Serial:
 
     def recv(self):
         recv_precheck(self)
+        if hasattr(self, "bc_kl_teacher_ids"):
+            self.batch_bc_kl_teacher_ids = self.bc_kl_teacher_ids.ravel().copy()
         return (
             self.observations,
             self.rewards,
@@ -206,6 +210,7 @@ def _worker_process(
         terminals=np.ndarray(shape, dtype=bool, buffer=shm["terminals"])[worker_idx],
         truncations=np.ndarray(shape, dtype=bool, buffer=shm["truncateds"])[worker_idx],
         masks=np.ndarray(shape, dtype=bool, buffer=shm["masks"])[worker_idx],
+        bc_kl_teacher_ids=np.ndarray(shape, dtype=np.int8, buffer=shm["bc_kl_teacher_ids"])[worker_idx],
         actions=atn_arr,
     )
     buf["masks"][:] = True
@@ -345,6 +350,7 @@ class Multiprocessing:
             terminals=RawArray("b", num_agents),
             truncateds=RawArray("b", num_agents),
             masks=RawArray("b", num_agents),
+            bc_kl_teacher_ids=RawArray("b", num_agents),
             semaphores=RawArray("c", num_workers),
             notify=RawArray("b", num_workers),
         )
@@ -358,6 +364,7 @@ class Multiprocessing:
             terminals=np.ndarray(shape, dtype=bool, buffer=self.shm["terminals"]),
             truncations=np.ndarray(shape, dtype=bool, buffer=self.shm["truncateds"]),
             masks=np.ndarray(shape, dtype=bool, buffer=self.shm["masks"]),
+            bc_kl_teacher_ids=np.ndarray(shape, dtype=np.int8, buffer=self.shm["bc_kl_teacher_ids"]),
             semaphores=np.ndarray(num_workers, dtype=np.uint8, buffer=self.shm["semaphores"]),
             notify=np.ndarray(num_workers, dtype=bool, buffer=self.shm["notify"]),
         )
@@ -491,6 +498,7 @@ class Multiprocessing:
 
         agent_ids = self.agent_ids[w_slice].ravel()
         m = buf["masks"][w_slice].ravel()
+        self.batch_bc_kl_teacher_ids = buf["bc_kl_teacher_ids"][w_slice].ravel().copy()
         self.batch_mask = m
 
         return o, r, d, t, infos, agent_ids, m

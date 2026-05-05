@@ -76,6 +76,9 @@ def _resolve_bc_kl_config(config):
     resolved = {
         "enabled": _config_bool(config.get("enabled", False)),
         "model_path": config.get("model_path"),
+        "car_model_path": config.get("car_model_path"),
+        "truck_model_path": config.get("truck_model_path"),
+        "teacher_kind": str(config.get("teacher_kind", "ppo")).strip().lower(),
         "coef": float(config.get("coef", 0.01)),
         "final_coef": float(config.get("final_coef", 0.0)),
         "anneal_fraction": float(config.get("anneal_fraction", 1.0)),
@@ -85,8 +88,12 @@ def _resolve_bc_kl_config(config):
     if not resolved["enabled"]:
         return resolved
 
-    if resolved["model_path"] in (None, ""):
-        raise pufferlib.APIUsageError("bc_kl.enabled=True requires bc_kl.model_path")
+    has_single = resolved["model_path"] not in (None, "")
+    has_dual = resolved["car_model_path"] not in (None, "") and resolved["truck_model_path"] not in (None, "")
+    if not has_single and not has_dual:
+        raise pufferlib.APIUsageError(
+            "bc_kl.enabled=True requires bc_kl.model_path or both bc_kl.car_model_path and bc_kl.truck_model_path"
+        )
     if resolved["coef"] < 0 or resolved["final_coef"] < 0:
         raise pufferlib.APIUsageError("bc_kl coef and final_coef must be non-negative")
     if resolved["anneal_fraction"] < 0:
@@ -122,7 +129,13 @@ def _single_discrete_logits(logits, *, context):
     raise pufferlib.APIUsageError(f"{context} only supports discrete single-head action policies")
 
 
-def _bc_teacher_kl_from_logits(student_logits, teacher_logits, temperature=1.0):
+def _single_continuous_distribution(logits, *, context):
+    if isinstance(logits, torch.distributions.Normal):
+        return logits
+    raise pufferlib.APIUsageError(f"{context} only supports Normal continuous action policies")
+
+
+def _bc_teacher_kl_from_logits(student_logits, teacher_logits, temperature=1.0, mask=None):
     temperature = float(temperature)
     if temperature <= 0:
         raise pufferlib.APIUsageError("bc_kl temperature must be > 0")
@@ -130,9 +143,29 @@ def _bc_teacher_kl_from_logits(student_logits, teacher_logits, temperature=1.0):
     student_logp = torch.log_softmax(student_logits.float() / temperature, dim=-1)
     teacher_logp = torch.log_softmax(teacher_logits.float() / temperature, dim=-1)
     teacher_probs = teacher_logp.exp()
-    kl = (teacher_probs * (teacher_logp - student_logp)).sum(dim=-1).mean()
-    teacher_entropy = -(teacher_probs * teacher_logp).sum(dim=-1).mean()
-    return kl, teacher_entropy
+    kl_values = (teacher_probs * (teacher_logp - student_logp)).sum(dim=-1).reshape(-1)
+    entropy_values = (-(teacher_probs * teacher_logp).sum(dim=-1)).reshape(-1)
+    if mask is not None:
+        mask = mask.reshape(-1).to(dtype=torch.bool, device=kl_values.device)
+        kl_values = kl_values[mask]
+        entropy_values = entropy_values[mask]
+    if kl_values.numel() == 0:
+        return None, None, 0
+    kl = kl_values.mean()
+    teacher_entropy = entropy_values.mean()
+    return kl, teacher_entropy, int(kl_values.numel())
+
+
+def _bc_teacher_kl_from_normals(student_dist, teacher_dist, mask=None):
+    kl_values = torch.distributions.kl_divergence(teacher_dist, student_dist).sum(dim=-1).reshape(-1)
+    entropy_values = teacher_dist.entropy().sum(dim=-1).reshape(-1)
+    if mask is not None:
+        mask = mask.reshape(-1).to(dtype=torch.bool, device=kl_values.device)
+        kl_values = kl_values[mask]
+        entropy_values = entropy_values[mask]
+    if kl_values.numel() == 0:
+        return None, None, 0
+    return kl_values.mean(), entropy_values.mean(), int(kl_values.numel())
 
 
 def _freeze_reference_policy(policy):
@@ -143,6 +176,8 @@ def _freeze_reference_policy(policy):
 
 
 def _validate_bc_kl_action_space(action_space):
+    if hasattr(action_space, "shape") and tuple(getattr(action_space, "shape", ())) == (2,):
+        return
     if hasattr(action_space, "nvec"):
         nvec = np.asarray(action_space.nvec).reshape(-1)
         if len(nvec) == 1:
@@ -150,7 +185,7 @@ def _validate_bc_kl_action_space(action_space):
     elif hasattr(action_space, "n"):
         return
 
-    raise pufferlib.APIUsageError("bc_kl currently supports only discrete single-head action spaces")
+    raise pufferlib.APIUsageError("bc_kl currently supports only discrete single-head or 2D continuous action spaces")
 
 
 class PuffeRL:
@@ -178,7 +213,10 @@ class PuffeRL:
             _validate_bc_kl_action_space(atn_space)
             if bc_kl_policy is None:
                 raise pufferlib.APIUsageError("bc_kl.enabled=True requires a loaded BC reference policy")
-            self.bc_kl_policy = _freeze_reference_policy(bc_kl_policy)
+            if isinstance(bc_kl_policy, dict):
+                self.bc_kl_policy = {key: _freeze_reference_policy(value) for key, value in bc_kl_policy.items()}
+            else:
+                self.bc_kl_policy = _freeze_reference_policy(bc_kl_policy)
 
         # Experience
         if config["batch_size"] == "auto" and config["bptt_horizon"] == "auto":
@@ -218,6 +256,7 @@ class PuffeRL:
         self.truncations = torch.zeros(segments, horizon, device=device)
         self.ratio = torch.ones(segments, horizon, device=device)
         self.importance = torch.ones(segments, horizon, device=device)
+        self.bc_kl_teacher_ids = torch.full((segments, horizon), -1, device=device, dtype=torch.int64)
         self.ep_lengths = torch.zeros(total_agents, device=device, dtype=torch.int32)
         self.ep_indices = torch.arange(total_agents, device=device, dtype=torch.int32)
         self.free_idx = total_agents
@@ -333,11 +372,78 @@ class PuffeRL:
         self.model_size = sum(p.numel() for p in policy.parameters() if p.requires_grad)
         self.print_dashboard(clear=True)
 
-    def _compute_bc_kl_loss(self, logits, mb_obs):
+    def _compute_bc_kl_loss(self, logits, mb_obs, mb_teacher_ids=None):
         if self.bc_kl_policy is None:
-            return None, None
+            return None, None, {}
+
+        if isinstance(logits, torch.distributions.Normal):
+            if isinstance(self.bc_kl_policy, dict):
+                raise pufferlib.APIUsageError("continuous bc_kl does not support dual car/truck teachers")
+            student_dist = _single_continuous_distribution(logits, context="bc_kl")
+            if hasattr(self.bc_kl_policy, "forward_bc_kl"):
+                with torch.no_grad():
+                    teacher_dist, valid_mask = self.bc_kl_policy.forward_bc_kl(mb_obs)
+            else:
+                with torch.no_grad():
+                    bc_state = dict(action=None, lstm_h=None, lstm_c=None)
+                    teacher_logits, _ = self.bc_kl_policy(mb_obs, bc_state)
+                    teacher_dist = _single_continuous_distribution(teacher_logits, context="bc_kl")
+                    valid_mask = None
+
+            flat_student_loc = student_dist.loc.reshape(-1, student_dist.loc.shape[-1])
+            flat_student_scale = student_dist.scale.reshape(-1, student_dist.scale.shape[-1])
+            if valid_mask is not None:
+                flat_mask = valid_mask.reshape(-1).to(dtype=torch.bool, device=flat_student_loc.device)
+                flat_student_loc = flat_student_loc[flat_mask]
+                flat_student_scale = flat_student_scale[flat_mask]
+            flat_student = torch.distributions.Normal(flat_student_loc, flat_student_scale)
+            kl, entropy, _ = _bc_teacher_kl_from_normals(flat_student, teacher_dist)
+            return kl, entropy, {}
 
         student_logits = _single_discrete_logits(logits, context="bc_kl")
+        if isinstance(self.bc_kl_policy, dict):
+            if mb_teacher_ids is None:
+                raise pufferlib.APIUsageError("dual bc_kl requires per-sample teacher ids")
+            total_count = 0
+            weighted_kl = None
+            weighted_entropy = None
+            counts = {}
+            teacher_specs = (("car", 0, self.bc_kl_policy.get("car")), ("truck", 1, self.bc_kl_policy.get("truck")))
+            for name, teacher_id, teacher_policy in teacher_specs:
+                if teacher_policy is None:
+                    continue
+                mask = mb_teacher_ids == teacher_id
+                count = int(mask.sum().item())
+                counts[f"bc_kl_{name}_count"] = count
+                if count == 0:
+                    continue
+                with torch.no_grad():
+                    bc_state = dict(action=None, lstm_h=None, lstm_c=None)
+                    teacher_logits, _ = teacher_policy(mb_obs, bc_state)
+                    teacher_logits = _single_discrete_logits(teacher_logits, context=f"bc_kl_{name}")
+                kl, entropy, used_count = _bc_teacher_kl_from_logits(
+                    student_logits,
+                    teacher_logits,
+                    temperature=self.bc_kl_config["temperature"],
+                    mask=mask,
+                )
+                if used_count == 0:
+                    continue
+                total_count += used_count
+                if weighted_kl is None:
+                    weighted_kl = kl * used_count
+                    weighted_entropy = entropy * used_count
+                else:
+                    weighted_kl = weighted_kl + kl * used_count
+                    weighted_entropy = weighted_entropy + entropy * used_count
+            unknown_count = int((mb_teacher_ids < 0).sum().item())
+            counts["bc_kl_unknown_count"] = unknown_count
+            if total_count == 0:
+                raise pufferlib.APIUsageError(
+                    "dual bc_kl received no samples with known teacher ids; expected car=0 or truck=1"
+                )
+            return weighted_kl / total_count, weighted_entropy / total_count, counts
+
         with torch.no_grad():
             bc_state = dict(
                 action=None,
@@ -347,28 +453,31 @@ class PuffeRL:
             teacher_logits, _ = self.bc_kl_policy(mb_obs, bc_state)
             teacher_logits = _single_discrete_logits(teacher_logits, context="bc_kl")
 
-        return _bc_teacher_kl_from_logits(
+        kl, entropy, _ = _bc_teacher_kl_from_logits(
             student_logits,
             teacher_logits,
             temperature=self.bc_kl_config["temperature"],
         )
+        return kl, entropy, {}
 
-    def _compute_bc_kl_term(self, logits, mb_obs):
+    def _compute_bc_kl_term(self, logits, mb_obs, mb_teacher_ids=None):
         if self.bc_kl_policy is None:
             return {}
 
-        bc_kl_loss, bc_teacher_entropy = self._compute_bc_kl_loss(logits, mb_obs)
+        bc_kl_loss, bc_teacher_entropy, extra_metrics = self._compute_bc_kl_loss(logits, mb_obs, mb_teacher_ids)
         bc_kl_coef = _bc_kl_coef_at_step(
             self.bc_kl_config,
             self.global_step,
             self.config["total_timesteps"],
         )
-        return {
+        metrics = {
             "bc_kl": bc_kl_loss,
             "bc_kl_weighted": bc_kl_loss * bc_kl_coef,
             "bc_kl_coef": bc_kl_coef,
             "bc_teacher_entropy": bc_teacher_entropy,
         }
+        metrics.update(extra_metrics)
+        return metrics
 
     @property
     def uptime(self):
@@ -459,6 +568,13 @@ class PuffeRL:
                 self.rewards[batch_rows, l] = r
                 self.terminals[batch_rows, l] = d.float()
                 self.values[batch_rows, l] = value.flatten()
+                batch_teacher_ids = getattr(self.vecenv, "batch_bc_kl_teacher_ids", None)
+                if batch_teacher_ids is not None:
+                    self.bc_kl_teacher_ids[batch_rows, l] = torch.as_tensor(
+                        batch_teacher_ids,
+                        device=device,
+                        dtype=torch.int64,
+                    )
 
                 # Note: We are not yet handling masks in this version
                 self.ep_lengths[env_id] += 1
@@ -541,6 +657,7 @@ class PuffeRL:
             mb_truncations = self.truncations[idx]
             mb_ratio = self.ratio[idx]
             mb_values = self.values[idx]
+            mb_teacher_ids = self.bc_kl_teacher_ids[idx]
             mb_returns = advantages[idx] + mb_values
             mb_advantages = advantages[idx]
 
@@ -597,7 +714,7 @@ class PuffeRL:
             entropy_loss = entropy.mean()
 
             loss = pg_loss + config["vf_coef"] * v_loss - config["ent_coef"] * entropy_loss
-            bc_kl_metrics = self._compute_bc_kl_term(logits, mb_obs)
+            bc_kl_metrics = self._compute_bc_kl_term(logits, mb_obs, mb_teacher_ids)
             if bc_kl_metrics:
                 loss = loss + bc_kl_metrics["bc_kl_weighted"]
 
@@ -1653,19 +1770,40 @@ def load_bc_kl_reference_policy(args, vecenv, env_name=""):
     if not bc_kl_config["enabled"]:
         return None
 
-    bc_args = copy.deepcopy(args)
-    bc_args["load_id"] = None
-    bc_args["load_model_path"] = bc_kl_config["model_path"]
+    teacher_kind = str(bc_kl_config.get("teacher_kind", "ppo")).strip().lower()
+    if teacher_kind == "stacked_bc_continuous":
+        if bc_kl_config.get("car_model_path") not in (None, "") or bc_kl_config.get("truck_model_path") not in (None, ""):
+            raise pufferlib.APIUsageError("stacked_bc_continuous bc_kl teacher_kind supports only a single model_path")
+        if bc_kl_config["model_path"] in (None, ""):
+            raise pufferlib.APIUsageError("stacked_bc_continuous bc_kl teacher_kind requires bc_kl.model_path")
+        drive_module = importlib.import_module("pufferlib.ocean.drive.drive")
+        return drive_module.load_stacked_bc_reference_policy(
+            bc_kl_config["model_path"],
+            device=args["train"]["device"],
+        )
 
-    try:
-        policy = load_policy(bc_args, vecenv, env_name)
-    except RuntimeError as e:
-        raise RuntimeError(
-            "Failed to load bc_kl.model_path. The BC checkpoint architecture must match "
-            "the PPO policy_name, rnn_name, policy/rnn config, observation space, and action space."
-        ) from e
+    def _load_reference(path, label):
+        bc_args = copy.deepcopy(args)
+        bc_args["load_id"] = None
+        bc_args["load_model_path"] = path
+        try:
+            policy = load_policy(bc_args, vecenv, env_name)
+        except RuntimeError as e:
+            raise RuntimeError(
+                f"Failed to load {label}. The BC checkpoint architecture must match "
+                "the PPO policy_name, rnn_name, policy/rnn config, observation space, and action space."
+            ) from e
+        return _freeze_reference_policy(policy)
 
-    return _freeze_reference_policy(policy)
+    car_path = bc_kl_config.get("car_model_path")
+    truck_path = bc_kl_config.get("truck_model_path")
+    if car_path not in (None, "") and truck_path not in (None, ""):
+        return {
+            "car": _load_reference(car_path, "bc_kl.car_model_path"),
+            "truck": _load_reference(truck_path, "bc_kl.truck_model_path"),
+        }
+
+    return _load_reference(bc_kl_config["model_path"], "bc_kl.model_path")
 
 
 def load_config(env_name, config_dir=None):

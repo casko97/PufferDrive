@@ -40,6 +40,10 @@ _BC_SOURCE_FORMAT_PAIRED_OFFLINE_FITS = "paired_offline_fits"
 _BC_MODE_RECURRENT = "recurrent"
 _BC_MODE_IID = "iid"
 _BC_MODE_STACKED_IID = "stacked_iid"
+_OBS_VARIANT_DEFAULT = "default"
+_OBS_VARIANT_VELOCITY_XY = "velocity_xy"
+_OBS_VARIANT_MOTION_PREV_CONTROL = "motion_prev_control"
+_OBS_VARIANT_MOTION_PREV_CONTROL_ROAD_CONTROLS = "motion_prev_control_road_controls"
 _BC_EGO_DYNAMICS_OBS_FIELD = "obs_default_plus_ego_dynamics"
 _BC_VELOCITY_XY_OBS_FIELD = "obs_default_vxy_speed25"
 _BC_MOTION_PREV_CONTROL_OBS_FIELD = "obs_default_motion_prev_control"
@@ -76,6 +80,17 @@ _NON_KINEMATIC_PARAM_CACHE = {}
 DEFAULT_SDC_RUNTIME_TRUCK_REF_BIN = (
     "tests/artifacts/drive/traversing_traffic_light_intersection__97be27351e915863__97be27351e915863.bin"
 )
+_BC_PREV_CONTROL_STEER_SCALE = 1.0
+_BC_PREV_CONTROL_ACCEL_SCALE = 4.0
+_BC_VELOCITY_COMPONENT_SCALE = 25.0
+_BC_REL_POSITION_SCALE = 0.02
+_BC_ROAD_CONTROL_RADIUS_METERS = 30.0
+_BC_ROAD_CONTROL_TYPE_TO_NAME = {
+    7: "stop_sign",
+    8: "crosswalk",
+    9: "speed_bump",
+    10: "driveway",
+}
 
 
 @dataclass(frozen=True)
@@ -199,6 +214,62 @@ def _as_bool(value):
     if isinstance(value, str):
         return value.strip().lower() in ("1", "true", "yes", "on")
     return bool(value)
+
+
+def _wrap_angle_delta(delta):
+    wrapped = (np.asarray(delta, dtype=np.float32) + np.pi) % (2.0 * np.pi) - np.pi
+    return wrapped.astype(np.float32, copy=False)
+
+
+def _finite_difference(values, dt):
+    values = np.asarray(values, dtype=np.float32)
+    num_steps = int(values.shape[0])
+    if num_steps == 0:
+        return np.zeros((0,), dtype=np.float32)
+    if num_steps == 1:
+        return np.zeros((1,), dtype=np.float32)
+    dt_safe = max(float(dt), 1e-6)
+    return np.gradient(values, dt_safe).astype(np.float32, copy=False)
+
+
+def _load_special_road_control_points_from_bin(source_path):
+    source_path = Path(source_path)
+    road_points = {name: [] for name in _BC_ROAD_CONTROL_TYPE_TO_NAME.values()}
+    with source_path.open("rb") as handle:
+        _ = struct.unpack("i", handle.read(4))[0]
+        num_tracks_to_predict = struct.unpack("i", handle.read(4))[0]
+        if num_tracks_to_predict > 0:
+            handle.seek(4 * int(num_tracks_to_predict), 1)
+        num_objects = struct.unpack("i", handle.read(4))[0]
+        num_roads = struct.unpack("i", handle.read(4))[0]
+        num_entities = int(num_objects) + int(num_roads)
+        for _ in range(num_entities):
+            _scenario_id, entity_type, _entity_id, array_size = struct.unpack("4i", handle.read(16))
+            array_size = int(array_size)
+            traj_x = np.fromfile(handle, dtype=np.float32, count=array_size)
+            traj_y = np.fromfile(handle, dtype=np.float32, count=array_size)
+            _traj_z = np.fromfile(handle, dtype=np.float32, count=array_size)
+            if int(entity_type) in (1, 2, 3):
+                np.fromfile(handle, dtype=np.float32, count=array_size)
+                np.fromfile(handle, dtype=np.float32, count=array_size)
+                np.fromfile(handle, dtype=np.float32, count=array_size)
+                np.fromfile(handle, dtype=np.float32, count=array_size)
+                np.fromfile(handle, dtype=np.int32, count=array_size)
+            handle.seek(6 * 4 + 4, 1)
+
+            road_name = _BC_ROAD_CONTROL_TYPE_TO_NAME.get(int(entity_type))
+            if road_name is None or traj_x.size == 0 or traj_y.size == 0:
+                continue
+            road_points[road_name].append(np.stack([traj_x, traj_y], axis=1).astype(np.float32, copy=False))
+
+    return {
+        name: (
+            np.concatenate(point_sets, axis=0).astype(np.float32, copy=False)
+            if point_sets
+            else np.zeros((0, 2), dtype=np.float32)
+        )
+        for name, point_sets in road_points.items()
+    }
 
 
 def _normalize_action_type(value):
@@ -796,6 +867,36 @@ def _normalize_bc_obs_field(value):
     return normalized
 
 
+def _normalize_observation_variant(value):
+    if value is None:
+        return _OBS_VARIANT_DEFAULT
+    normalized = str(value).strip().lower()
+    if not normalized:
+        return _OBS_VARIANT_DEFAULT
+    valid = {
+        _OBS_VARIANT_DEFAULT,
+        _OBS_VARIANT_VELOCITY_XY,
+        _OBS_VARIANT_MOTION_PREV_CONTROL,
+        _OBS_VARIANT_MOTION_PREV_CONTROL_ROAD_CONTROLS,
+    }
+    if normalized not in valid:
+        raise ValueError(
+            f"observation_variant must be one of {sorted(valid)}. Got: {value}"
+        )
+    return normalized
+
+
+def _observation_variant_extra_dims(variant):
+    variant = _normalize_observation_variant(variant)
+    if variant == _OBS_VARIANT_VELOCITY_XY:
+        return 1, 1, 0
+    if variant == _OBS_VARIANT_MOTION_PREV_CONTROL:
+        return 6, 0, 0
+    if variant == _OBS_VARIANT_MOTION_PREV_CONTROL_ROAD_CONTROLS:
+        return 18, 0, 0
+    return 0, 0, 0
+
+
 def _infer_bc_obs_dim_from_shard(shard_path, obs_field):
     payload = torch.load(shard_path, map_location="cpu")
     normalized_obs_field = _normalize_bc_obs_field(obs_field)
@@ -840,25 +941,54 @@ def _override_bc_env_observation_space(env, obs_dim):
         env.observation_space = obs_space
 
 
+def _apply_observation_variant_schema(env, *, observation_variant, obs_dim=None):
+    normalized_variant = _normalize_observation_variant(observation_variant)
+    env.observation_variant = normalized_variant
+    base_ego = int(getattr(env, "_base_ego_features", binding.EGO_FEATURES_CLASSIC))
+    base_partner = int(getattr(env, "_base_partner_features", binding.PARTNER_FEATURES))
+    road_features = int(getattr(env, "road_features", binding.ROAD_FEATURES))
+    max_partner_objects = int(getattr(env, "max_partner_objects", binding.MAX_AGENTS - 1))
+    max_road_objects = int(getattr(env, "max_road_objects", binding.MAX_ROAD_SEGMENT_OBSERVATIONS))
+    extra_ego, extra_partner, extra_road = _observation_variant_extra_dims(normalized_variant)
+    env.ego_features = base_ego + int(extra_ego)
+    env.partner_features = base_partner + int(extra_partner)
+    env.road_features = road_features + int(extra_road)
+    if obs_dim is None:
+        env.num_obs = (
+            env.ego_features
+            + max_partner_objects * env.partner_features
+            + max_road_objects * env.road_features
+        )
+    else:
+        env.num_obs = int(obs_dim)
+
+
 def _override_bc_env_obs_schema(env, *, obs_field, obs_dim):
     normalized_obs_field = _normalize_bc_obs_field(obs_field)
     if normalized_obs_field == _BC_VELOCITY_XY_OBS_FIELD:
-        env.observation_variant = "velocity_xy"
-        env.ego_features = binding.EGO_FEATURES_CLASSIC + 1
-        env.partner_features = binding.PARTNER_FEATURES + 1
-        env.num_obs = int(obs_dim)
+        _apply_observation_variant_schema(
+            env,
+            observation_variant=_OBS_VARIANT_VELOCITY_XY,
+            obs_dim=obs_dim,
+        )
     elif normalized_obs_field == _BC_MOTION_PREV_CONTROL_OBS_FIELD:
-        env.observation_variant = "motion_prev_control"
-        env.ego_features = binding.EGO_FEATURES_CLASSIC + 6
-        env.partner_features = binding.PARTNER_FEATURES
-        env.num_obs = int(obs_dim)
+        _apply_observation_variant_schema(
+            env,
+            observation_variant=_OBS_VARIANT_MOTION_PREV_CONTROL,
+            obs_dim=obs_dim,
+        )
     elif normalized_obs_field == _BC_MOTION_PREV_CONTROL_ROAD_CONTROLS_OBS_FIELD:
-        env.observation_variant = "motion_prev_control_road_controls"
-        env.ego_features = binding.EGO_FEATURES_CLASSIC + 18
-        env.partner_features = binding.PARTNER_FEATURES
-        env.num_obs = int(obs_dim)
-    elif hasattr(env, "observation_variant"):
-        env.observation_variant = "default"
+        _apply_observation_variant_schema(
+            env,
+            observation_variant=_OBS_VARIANT_MOTION_PREV_CONTROL_ROAD_CONTROLS,
+            obs_dim=obs_dim,
+        )
+    else:
+        _apply_observation_variant_schema(
+            env,
+            observation_variant=_OBS_VARIANT_DEFAULT,
+            obs_dim=obs_dim,
+        )
 
 
 def _classic_acceleration_values(*, extend_classic_action_space):
@@ -3232,6 +3362,107 @@ class _StackedDriveBCContinuousPolicy(torch.nn.Module):
         return action, value
 
 
+def _build_stacked_teacher_inputs(observations, stack_len):
+    if observations.ndim != 3:
+        raise ValueError(
+            f"Stacked BC teacher expects rank-3 recurrent observations [segments, horizon, obs_dim], got {tuple(observations.shape)}"
+        )
+    segments, horizon, obs_dim = observations.shape
+    valid_mask = torch.zeros((segments, horizon), dtype=torch.bool, device=observations.device)
+    if horizon < int(stack_len):
+        return observations.new_zeros((0, obs_dim * int(stack_len))), valid_mask
+    valid_steps = int(horizon) - int(stack_len) + 1
+    stacked_rows = observations.new_zeros((segments, valid_steps, obs_dim * int(stack_len)))
+    for step_idx in range(int(stack_len) - 1, int(horizon)):
+        history = observations[:, step_idx - int(stack_len) + 1 : step_idx + 1]
+        history = torch.flip(history, dims=(1,))
+        stacked_rows[:, step_idx - int(stack_len) + 1] = history.reshape(segments, obs_dim * int(stack_len))
+        valid_mask[:, step_idx] = True
+    stacked = stacked_rows.reshape(segments * valid_steps, obs_dim * int(stack_len))
+    return stacked, valid_mask
+
+
+class _StackedBCReferencePolicyWrapper(torch.nn.Module):
+    def __init__(self, policy, *, stack_len):
+        super().__init__()
+        self.policy = policy
+        self.stack_len = int(stack_len)
+
+    def forward_bc_kl(self, observations):
+        stacked_obs, valid_mask = _build_stacked_teacher_inputs(observations, self.stack_len)
+        if stacked_obs.numel() == 0:
+            empty = torch.distributions.Normal(
+                torch.zeros((0, 2), dtype=observations.dtype, device=observations.device),
+                torch.ones((0, 2), dtype=observations.dtype, device=observations.device),
+            )
+            return empty, valid_mask
+        dist, _ = self.policy(stacked_obs)
+        dist = _extract_action_logits(dist)
+        if not isinstance(dist, torch.distributions.Normal):
+            raise ValueError("Continuous stacked BC reference policy must return a Normal distribution")
+        return dist, valid_mask
+
+
+def _freeze_policy_module(policy):
+    policy.eval()
+    for param in policy.parameters():
+        param.requires_grad_(False)
+    return policy
+
+
+def load_stacked_bc_reference_policy(checkpoint_path, *, device):
+    checkpoint_path = Path(checkpoint_path)
+    if checkpoint_path.is_dir():
+        metrics_path = checkpoint_path / "metrics.json"
+        candidate_paths = [checkpoint_path / "best.pt", checkpoint_path / "latest.pt"]
+        existing = [path for path in candidate_paths if path.exists()]
+        if not existing:
+            raise FileNotFoundError(f"No checkpoint found under BC run directory: {checkpoint_path}")
+        checkpoint_path = existing[0]
+    else:
+        metrics_path = checkpoint_path.parent / "metrics.json"
+    if not metrics_path.exists():
+        raise FileNotFoundError(f"Missing BC metrics/config metadata next to checkpoint: {metrics_path}")
+
+    payload = json.loads(metrics_path.read_text())
+    args = payload.get("config")
+    if not isinstance(args, dict):
+        raise ValueError(f"BC metrics file does not contain a config object: {metrics_path}")
+    env_cfg = _normalize_env_config(args["env"])
+    bc_train_cfg = _resolve_bc_train_config(args)
+    if str(env_cfg.get("action_type")) != "continuous":
+        raise ValueError("BC-KL stacked BC reference loader requires a continuous BC teacher checkpoint")
+    if bc_train_cfg.get("mode") != _BC_MODE_STACKED_IID:
+        raise ValueError("BC-KL stacked BC reference loader currently supports only stacked_iid BC teachers")
+
+    env = _make_bc_training_env(env_cfg)
+    try:
+        obs_field = _normalize_bc_obs_field(bc_train_cfg.get("obs_field", "obs"))
+        dataset_manifest = _load_bc_dataset_manifest(bc_train_cfg["dataset_dir"])
+        obs_dim = _dataset_manifest_obs_dim(dataset_manifest, obs_field)
+        if obs_dim is None:
+            raise ValueError(
+                f"Unable to resolve observation dim for BC teacher obs_field={obs_field} "
+                f"from dataset manifest under {bc_train_cfg['dataset_dir']}"
+            )
+        _override_bc_env_observation_space(env, obs_dim)
+        _override_bc_env_obs_schema(env, obs_field=obs_field, obs_dim=obs_dim)
+        policy = _build_bc_policy(args, env, device)
+        state_dict = torch.load(checkpoint_path, map_location=device)
+        state_dict = {k.replace("module.", ""): v for k, v in state_dict.items()}
+        policy.load_state_dict(state_dict)
+        wrapper = _StackedBCReferencePolicyWrapper(_freeze_policy_module(policy), stack_len=int(bc_train_cfg["stack_len"]))
+        wrapper.eval()
+        for param in wrapper.parameters():
+            param.requires_grad_(False)
+        return wrapper
+    finally:
+        try:
+            env.close()
+        except Exception:
+            pass
+
+
 def _run_bc_epoch(
     model,
     dataloader,
@@ -4879,6 +5110,7 @@ class Drive(pufferlib.PufferEnv):
         init_mode="create_all_valid",
         control_mode="control_vehicles",
         observation_mode="default",
+        observation_variant="default",
         extend_classic_action_space=False,
         map_dir="resources/drive/binaries/training",
         scenario_filter=None,
@@ -4917,6 +5149,7 @@ class Drive(pufferlib.PufferEnv):
         init_mode = _normalize_init_mode(init_mode)
         control_mode = _normalize_control_mode(control_mode)
         observation_mode = _normalize_observation_mode(observation_mode)
+        observation_variant = _normalize_observation_variant(observation_variant)
         self.type_classes = binding.POLICY_TYPE_CLASS_COUNT
 
         # Observation space calculation
@@ -4943,6 +5176,7 @@ class Drive(pufferlib.PufferEnv):
         self.init_mode_str = init_mode
         self.control_mode_str = control_mode
         self.observation_mode_str = observation_mode
+        self.observation_variant = observation_variant
         self.extend_classic_action_space = _as_bool(extend_classic_action_space)
         self.map_dir = map_dir
         self.scenario_filter = scenario_filter
@@ -5004,16 +5238,19 @@ class Drive(pufferlib.PufferEnv):
             _print_mismatch(message)
             raise ValueError(message)
         if self.observation_mode == 0:
-            self.ego_features = self._base_ego_features
-            self.partner_features = self._base_partner_features
+            _apply_observation_variant_schema(self, observation_variant=self.observation_variant)
         else:
+            if self.observation_variant != _OBS_VARIANT_DEFAULT:
+                raise ValueError(
+                    "observation_variant is only supported with observation_mode='default' in live PPO runtime"
+                )
             self.ego_features = self._base_ego_features + 1 + _EGO_TRAILER_STATE_FEATURES
             self.partner_features = self._base_partner_features + 1
-        self.num_obs = (
-            self.ego_features
-            + self.max_partner_objects * self.partner_features
-            + self.max_road_objects * self.road_features
-        )
+            self.num_obs = (
+                self.ego_features
+                + self.max_partner_objects * self.partner_features
+                + self.max_road_objects * self.road_features
+            )
         self.single_observation_space = gymnasium.spaces.Box(low=-1, high=1, shape=(self.num_obs,), dtype=np.float32)
         if self.init_mode_str == "create_all_valid":
             self.init_mode = 0
@@ -5101,8 +5338,14 @@ class Drive(pufferlib.PufferEnv):
             self.bc_kl_teacher_ids = buf["bc_kl_teacher_ids"]
         self._update_bc_kl_teacher_ids()
         self._sim_observations = self.observations
-        if self.observation_mode == 1:
+        if self.observation_mode == 1 or self.observation_variant != _OBS_VARIANT_DEFAULT:
             self._sim_observations = np.zeros((self.num_agents, self._sim_num_obs), dtype=np.float32)
+        self._prev_global_x = np.zeros(self.num_agents, dtype=np.float32)
+        self._prev_global_y = np.zeros(self.num_agents, dtype=np.float32)
+        self._prev_heading = np.zeros(self.num_agents, dtype=np.float32)
+        self._runtime_obs_state_initialized = False
+        self._road_control_points_by_map_path = {}
+        self._refresh_live_map_runtime_metadata()
         self.c_envs = self._build_vector_env(self._live_map_entries, self.agent_offsets, seed)
 
     def _resample_vector_envs(self, seed):
@@ -5120,6 +5363,8 @@ class Drive(pufferlib.PufferEnv):
         self.num_envs = num_envs
         self._live_map_entries = [entry for entry, _ in selected_entries]
         self._update_bc_kl_teacher_ids()
+        self._refresh_live_map_runtime_metadata()
+        self._runtime_obs_state_initialized = False
         self.c_envs = self._build_vector_env(self._live_map_entries, self.agent_offsets, seed)
         binding.vec_reset(self.c_envs, seed)
 
@@ -5146,6 +5391,17 @@ class Drive(pufferlib.PufferEnv):
             cur = self.agent_offsets[i]
             nxt = self.agent_offsets[i + 1]
             self.bc_kl_teacher_ids[cur:nxt] = self._bc_kl_teacher_id_for_entry(entry)
+
+    def _refresh_live_map_runtime_metadata(self):
+        if self.observation_variant != _OBS_VARIANT_MOTION_PREV_CONTROL_ROAD_CONTROLS:
+            self._road_control_points_by_map_path = {}
+            return
+        cache = {}
+        for entry in self._live_map_entries:
+            if entry.map_path in cache:
+                continue
+            cache[entry.map_path] = _load_special_road_control_points_from_bin(entry.map_path)
+        self._road_control_points_by_map_path = cache
 
     def _inspect_map_entry(self, entry: MapDatasetEntry) -> dict[str, Any]:
         cached = self._map_validation_cache.get(entry.map_path)
@@ -5275,6 +5531,7 @@ class Drive(pufferlib.PufferEnv):
             self._resample_vector_envs(np.random.randint(0, 2**32 - 1))
         self.tick = 0
         self._postprocess_observations()
+        self._reset_runtime_observation_state()
         return self.observations, []
 
     def step(self, actions):
@@ -5387,8 +5644,160 @@ class Drive(pufferlib.PufferEnv):
         )
         return trailer_features
 
+    def _reset_runtime_observation_state(self):
+        state = self.get_global_agent_state()
+        self._prev_global_x[:] = state["x"]
+        self._prev_global_y[:] = state["y"]
+        self._prev_heading[:] = state["heading"]
+        self._runtime_obs_state_initialized = True
+        if self.actions is not None:
+            self.actions[:] = 0
+
+    def _augment_runtime_observations(self):
+        if self.observation_variant == _OBS_VARIANT_DEFAULT:
+            return
+
+        state = self.get_global_agent_state()
+        x = state["x"].astype(np.float32, copy=False)
+        y = state["y"].astype(np.float32, copy=False)
+        heading = state["heading"].astype(np.float32, copy=False)
+        if not self._runtime_obs_state_initialized:
+            self._prev_global_x[:] = x
+            self._prev_global_y[:] = y
+            self._prev_heading[:] = heading
+            self._runtime_obs_state_initialized = True
+        cos_heading = np.cos(heading).astype(np.float32, copy=False)
+        sin_heading = np.sin(heading).astype(np.float32, copy=False)
+        dt_safe = max(float(self.dt), 1e-6)
+        vx_global = ((x - self._prev_global_x) / dt_safe).astype(np.float32, copy=False)
+        vy_global = ((y - self._prev_global_y) / dt_safe).astype(np.float32, copy=False)
+        ego_vx_local = np.clip(
+            (cos_heading * vx_global + sin_heading * vy_global) / _BC_VELOCITY_COMPONENT_SCALE,
+            -1.0,
+            1.0,
+        ).astype(np.float32, copy=False)
+        ego_vy_local = np.clip(
+            (-sin_heading * vx_global + cos_heading * vy_global) / _BC_VELOCITY_COMPONENT_SCALE,
+            -1.0,
+            1.0,
+        ).astype(np.float32, copy=False)
+
+        base_ego = self._base_ego_features
+        base_partner = self._base_partner_features
+        base_road = binding.ROAD_FEATURES
+        partner_count = self.max_partner_objects
+        road_count = self.max_road_objects
+        partner_block_width = partner_count * base_partner
+        road_block_width = road_count * base_road
+        ego_core = self._sim_observations[:, :base_ego]
+        partner_block = self._sim_observations[:, base_ego : base_ego + partner_block_width]
+        road_block = self._sim_observations[
+            :, base_ego + partner_block_width : base_ego + partner_block_width + road_block_width
+        ]
+
+        if self.observation_variant == _OBS_VARIANT_VELOCITY_XY:
+            partner_objects = partner_block.reshape(self.num_agents, partner_count, base_partner)
+            partner_signed_speed = partner_objects[..., 6] * _MAX_SPEED_MPS
+            partner_vx_local = np.clip(
+                (partner_signed_speed * partner_objects[..., 4]) / _BC_VELOCITY_COMPONENT_SCALE,
+                -1.0,
+                1.0,
+            )
+            partner_vy_local = np.clip(
+                (partner_signed_speed * partner_objects[..., 5]) / _BC_VELOCITY_COMPONENT_SCALE,
+                -1.0,
+                1.0,
+            )
+            ego_block = np.stack(
+                [
+                    ego_core[:, 0],
+                    ego_core[:, 1],
+                    ego_vx_local,
+                    ego_vy_local,
+                    ego_core[:, 3],
+                    ego_core[:, 4],
+                    ego_core[:, 5],
+                    ego_core[:, 6],
+                ],
+                axis=1,
+            ).astype(np.float32, copy=False)
+            partner_aug = np.concatenate(
+                [
+                    partner_objects[..., :6],
+                    partner_vx_local[..., None].astype(np.float32, copy=False),
+                    partner_vy_local[..., None].astype(np.float32, copy=False),
+                ],
+                axis=2,
+            ).reshape(self.num_agents, -1)
+            self.observations[:] = np.concatenate([ego_block, partner_aug, road_block], axis=1).astype(
+                np.float32, copy=False
+            )
+        else:
+            prev_steer = np.clip(self.actions[:, 1] / _BC_PREV_CONTROL_STEER_SCALE, -1.0, 1.0).astype(
+                np.float32, copy=False
+            )
+            prev_accel = np.clip(self.actions[:, 0] / _BC_PREV_CONTROL_ACCEL_SCALE, -1.0, 1.0).astype(
+                np.float32, copy=False
+            )
+            tail_blocks = [
+                np.stack(
+                    [
+                        cos_heading,
+                        sin_heading,
+                        ego_vx_local,
+                        ego_vy_local,
+                        prev_steer,
+                        prev_accel,
+                    ],
+                    axis=1,
+                ).astype(np.float32, copy=False)
+            ]
+            if self.observation_variant == _OBS_VARIANT_MOTION_PREV_CONTROL_ROAD_CONTROLS:
+                road_rows = []
+                radius_sq = float(_BC_ROAD_CONTROL_RADIUS_METERS) ** 2
+                for env_idx, entry in enumerate(self._live_map_entries):
+                    cur = self.agent_offsets[env_idx]
+                    nxt = self.agent_offsets[env_idx + 1]
+                    points_by_type = self._road_control_points_by_map_path.get(entry.map_path, {})
+                    for agent_idx in range(cur, nxt):
+                        row = []
+                        ego_x = float(x[agent_idx])
+                        ego_y = float(y[agent_idx])
+                        for road_name in ("stop_sign", "crosswalk", "speed_bump", "driveway"):
+                            points = points_by_type.get(road_name)
+                            if points is None or int(points.shape[0]) == 0:
+                                row.extend((0.0, 0.0, 0.0))
+                                continue
+                            dx = points[:, 0] - ego_x
+                            dy = points[:, 1] - ego_y
+                            dist_sq = dx * dx + dy * dy
+                            best_idx = int(np.argmin(dist_sq))
+                            best_dist_sq = float(dist_sq[best_idx])
+                            if not np.isfinite(best_dist_sq) or best_dist_sq > radius_sq:
+                                row.extend((0.0, 0.0, 0.0))
+                                continue
+                            rel_x = dx[best_idx] * cos_heading[agent_idx] + dy[best_idx] * sin_heading[agent_idx]
+                            rel_y = -dx[best_idx] * sin_heading[agent_idx] + dy[best_idx] * cos_heading[agent_idx]
+                            row.extend(
+                                (
+                                    1.0,
+                                    float(np.clip(rel_x * _BC_REL_POSITION_SCALE, -1.0, 1.0)),
+                                    float(np.clip(rel_y * _BC_REL_POSITION_SCALE, -1.0, 1.0)),
+                                )
+                            )
+                        road_rows.append(row)
+                tail_blocks.append(np.asarray(road_rows, dtype=np.float32))
+            tail = np.concatenate(tail_blocks, axis=1).astype(np.float32, copy=False)
+            self.observations[:] = np.concatenate([self._sim_observations, tail], axis=1).astype(np.float32, copy=False)
+
+        self._prev_global_x[:] = x
+        self._prev_global_y[:] = y
+        self._prev_heading[:] = heading
+
     def _postprocess_observations(self):
         if getattr(self, "observation_mode", 0) != 1:
+            if self.observation_variant != _OBS_VARIANT_DEFAULT:
+                self._augment_runtime_observations()
             return
 
         base_ego = self._base_ego_features
@@ -5417,6 +5826,8 @@ class Drive(pufferlib.PufferEnv):
             partner_types,
             ego_trailer_features,
         )
+        if self.observation_variant != _OBS_VARIANT_DEFAULT:
+            self._augment_runtime_observations()
 
     def get_ground_truth_trajectories(self):
         """Get ground truth trajectories for all active agents.
