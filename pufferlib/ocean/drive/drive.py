@@ -3449,7 +3449,7 @@ class _BCSchemaOnlyEnv:
 def _infer_bc_obs_dim_without_dataset(env_cfg, *, obs_field):
     env = _BCSchemaOnlyEnv(env_cfg)
     normalized_obs_field = _normalize_bc_obs_field(obs_field)
-    if normalized_obs_field == _BC_TRAILER_OBS_FIELD:
+    if normalized_obs_field == "obs_sdc_only_with_trailer":
         env.observation_variant = _OBS_VARIANT_DEFAULT
         env.ego_features = env._base_ego_features + 1 + _EGO_TRAILER_STATE_FEATURES
         env.partner_features = env._base_partner_features + 1
