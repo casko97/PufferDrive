@@ -58,6 +58,7 @@ fit_side = "car"
 obs_key = "logged_obs_default"
 seq_len = 32
 sequence_stride = 10
+index_log_interval = 50
 ```
 
 ## Smoke Tests Run
@@ -143,4 +144,4 @@ tmux capture-pane -pt bc_car_fit_gpu
 
 During indexing, GPU usage stays low because the process is scanning source-fit shards on CPU. GPU memory and utilization should rise when epoch 1 starts.
 
-The current indexing progress logger prints every 500 source-fit shards. If more detailed visibility is needed, lower `_BC_INDEX_PROGRESS_INTERVAL` in `pufferlib/ocean/drive/drive.py` before relaunching.
+The current indexing progress logger prints every `bc_train.index_log_interval` source-fit shards. The paired offline-fit car config defaults this to `50`, which gives regular progress updates during the long pre-training scan.

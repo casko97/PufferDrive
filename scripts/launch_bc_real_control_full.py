@@ -1,0 +1,95 @@
+from pathlib import Path
+
+from pufferlib.ocean.drive import drive as drive_module
+
+
+OUTPUT_DIR = Path("/home/casko/phd-code/PufferDrive/experiments_bc/bc-car-real-control-shards-full-20260501_1912")
+
+
+def main():
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    args = {
+        "package": "ocean",
+        "env_name": "puffer_drive",
+        "policy_name": "Drive",
+        "rnn_name": "Recurrent",
+        "policy": {
+            "input_size": 64,
+            "hidden_size": 256,
+        },
+        "rnn": {
+            "input_size": 256,
+            "hidden_size": 256,
+        },
+        "train": {
+            "device": "cuda",
+            "seed": 42,
+            "learning_rate": 0.003,
+            "bptt_horizon": 32,
+            "use_rnn": True,
+        },
+        "env": {
+            "num_agents": 1,
+            "action_type": "discrete",
+            "dynamics_model": "articulated",
+            "extend_classic_action_space": False,
+            "observation_mode": "default",
+            "reward_vehicle_collision": -0.5,
+            "reward_offroad_collision": -0.5,
+            "dt": 0.1,
+            "reward_goal": 1.0,
+            "reward_goal_post_respawn": 0.25,
+            "goal_radius": 2.0,
+            "goal_speed": 100.0,
+            "goal_behavior": 2,
+            "goal_target_distance": 30.0,
+            "collision_behavior": 1,
+            "offroad_behavior": 1,
+            "episode_length": 91,
+            "resample_frequency": 910,
+            "termination_mode": 1,
+            "map_dir": "/home/casko/phd-code/pufferdrive-kth/datasets/nuplanCarBostonAll_training",
+            "num_maps": 37565,
+            "scenario_filter": "all",
+            "scenario_filter_threshold_deg": 45.0,
+            "scenario_filter_manifest_path": None,
+            "init_steps": 0,
+            "control_mode": "control_sdc_only",
+            "sdc_runtime_truck_override": False,
+            "init_mode": "create_all_valid",
+        },
+        "bc_train": {
+            "source_format": "shards",
+            "mode": "recurrent",
+            "dataset_dir": "/home/casko/phd-code/PufferDrive/outputs/bc_datasets/car_real_control_bc_train",
+            "obs_field": "obs",
+            "output_dir": str(OUTPUT_DIR),
+            "device": "cuda",
+            "epochs": 10,
+            "batch_size": 256,
+            "learning_rate": 0.003,
+            "weight_decay": 0.0,
+            "num_workers": 0,
+            "shard_shuffle_buffer": 4,
+            "val_fraction": 0.1,
+            "seq_len": 32,
+            "sequence_stride": 10,
+            "max_shards": -1,
+            "max_maps": -1,
+            "save_best": True,
+            "log_interval": 25,
+            "index_log_interval": 50,
+            "early_stopping_patience": 0,
+            "early_stopping_min_delta": 0.0,
+            "lr_scheduler": None,
+            "lr_scheduler_factor": 0.5,
+            "lr_scheduler_patience": 2,
+            "lr_scheduler_threshold": 1e-4,
+            "min_learning_rate": 0.0,
+        },
+    }
+    drive_module.train_bc_policy(args)
+
+
+if __name__ == "__main__":
+    main()

@@ -27,14 +27,36 @@ _EGO_TRAILER_STATE_FEATURES = 4
 _DYNAMICS_MODEL_IDS = {"classic": 0, "jerk": 1, "articulated": 2}
 _EGO_SPEED_OBS_INDEX = 2
 _MAX_SPEED_MPS = 100.0
-_CLASSIC_ACCELERATION_VALUES = (-6.0, -4.0, -2.0, -1.0, 0.0, 1.0, 2.0, 4.0, 6.0)
+_CLASSIC_ACCELERATION_VALUES_LEGACY = (-4.0, -2.667, -1.333, 0.0, 1.333, 2.667, 4.0)
+_CLASSIC_ACCELERATION_VALUES_EXTENDED = (-6.0, -4.0, -2.0, -1.0, 0.0, 1.0, 2.0, 4.0, 6.0)
+_CLASSIC_ACCELERATION_VALUES = _CLASSIC_ACCELERATION_VALUES_EXTENDED
 _CLASSIC_STEERING_VALUES = (-1.0, -0.833, -0.667, -0.5, -0.333, -0.167, 0.0, 0.167, 0.333, 0.5, 0.667, 0.833, 1.0)
 _CLASSIC_DISCRETE_ACTIONS = len(_CLASSIC_ACCELERATION_VALUES) * len(_CLASSIC_STEERING_VALUES)
-_BC_INDEX_PROGRESS_INTERVAL = 500
+_BC_INDEX_PROGRESS_INTERVAL = 50
 _BC_PAIRED_FITS_FORMAT_MONOLITHIC = "paired_fits_v1"
 _BC_PAIRED_FITS_FORMAT_SHARDED = "sharded_paired_fits_v1"
 _BC_SOURCE_FORMAT_SHARDS = "shards"
 _BC_SOURCE_FORMAT_PAIRED_OFFLINE_FITS = "paired_offline_fits"
+_BC_MODE_RECURRENT = "recurrent"
+_BC_MODE_IID = "iid"
+_BC_MODE_STACKED_IID = "stacked_iid"
+_BC_EGO_DYNAMICS_OBS_FIELD = "obs_default_plus_ego_dynamics"
+_BC_VELOCITY_XY_OBS_FIELD = "obs_default_vxy_speed25"
+_BC_MOTION_PREV_CONTROL_OBS_FIELD = "obs_default_motion_prev_control"
+_BC_MOTION_PREV_CONTROL_ROAD_CONTROLS_OBS_FIELD = "obs_default_motion_prev_control_road_controls"
+_BC_SHARD_OBS_FIELDS = frozenset(
+    (
+        "obs",
+        "obs_default",
+        _BC_EGO_DYNAMICS_OBS_FIELD,
+        _BC_VELOCITY_XY_OBS_FIELD,
+        _BC_MOTION_PREV_CONTROL_OBS_FIELD,
+        _BC_MOTION_PREV_CONTROL_ROAD_CONTROLS_OBS_FIELD,
+        "obs_sdc_only_with_trailer",
+    )
+)
+_BC_CONTINUOUS_ACCEL_FIELD = "trajectory_ref_accel"
+_BC_CONTINUOUS_STEER_FIELD = "trajectory_ref_steer"
 _NON_KINEMATIC_PARAM_ORDER = [
     "tractor_length",
     "trailer_length",
@@ -363,6 +385,7 @@ class MapDatasetEntry:
     map_path: str
     relative_path: str
     source_name: str | None = None
+    source_dataset: str | None = None
 
 
 class MapDatasetCatalog:
@@ -398,6 +421,7 @@ class MapDatasetCatalog:
                         map_path=str(map_path),
                         relative_path=str(Path(relative_path)),
                         source_name=row.get("source_name"),
+                        source_dataset=row.get("source_dataset"),
                     )
                 )
             return cls(str(dataset_root), entries, manifest_path=str(manifest_path))
@@ -410,6 +434,7 @@ class MapDatasetCatalog:
                     map_path=str(map_path.resolve()),
                     relative_path=map_path.name,
                     source_name=map_path.name,
+                    source_dataset=None,
                 )
             )
         return cls(str(dataset_root), entries, manifest_path=None)
@@ -709,6 +734,12 @@ def _resolve_bc_train_config(args, dataset_dir=None, output_dir=None):
     bc_train.setdefault("source_map_dir", env.get("map_dir"))
     bc_train.setdefault("fit_side", "car")
     bc_train.setdefault("obs_key", "logged_obs_default")
+    bc_train.setdefault("obs_field", "obs")
+    bc_train["obs_field"] = _normalize_bc_obs_field(bc_train["obs_field"])
+    bc_train.setdefault("continuous_accel_field", _BC_CONTINUOUS_ACCEL_FIELD)
+    bc_train.setdefault("continuous_steer_field", _BC_CONTINUOUS_STEER_FIELD)
+    bc_train.setdefault("mode", _infer_bc_mode(args))
+    bc_train["mode"] = _normalize_bc_mode(bc_train["mode"])
     bc_train.setdefault("dataset_dir", dataset_dir or bc.get("output_dir"))
     if output_dir is not None:
         bc_train.setdefault("output_dir", output_dir)
@@ -727,10 +758,13 @@ def _resolve_bc_train_config(args, dataset_dir=None, output_dir=None):
     bc_train.setdefault("val_fraction", 0.1)
     bc_train.setdefault("seq_len", train.get("bptt_horizon", 32))
     bc_train.setdefault("sequence_stride", bc_train["seq_len"])
+    bc_train.setdefault("stack_len", 5)
+    bc_train.setdefault("action_horizon", 1)
     bc_train.setdefault("max_shards", -1)
     bc_train.setdefault("max_maps", bc_train["max_shards"])
     bc_train.setdefault("save_best", True)
     bc_train.setdefault("log_interval", 25)
+    bc_train.setdefault("index_log_interval", _BC_INDEX_PROGRESS_INTERVAL)
     bc_train.setdefault("early_stopping_patience", 0)
     bc_train.setdefault("early_stopping_min_delta", 0.0)
     bc_train.setdefault("lr_scheduler", None)
@@ -744,6 +778,115 @@ def _resolve_bc_train_config(args, dataset_dir=None, output_dir=None):
     return bc_train
 
 
+def _infer_bc_mode(args):
+    train = dict(args.get("train", {}))
+    rnn_name = _normalize_optional_name(_resolve_base_arg(args, "rnn_name"))
+    default_use_rnn = rnn_name is not None
+    if _as_bool(train.get("use_rnn", default_use_rnn)):
+        return _BC_MODE_RECURRENT
+    return _BC_MODE_IID
+
+
+def _normalize_bc_obs_field(value):
+    if value is None:
+        return "obs"
+    normalized = str(value).strip()
+    if not normalized:
+        return "obs"
+    return normalized
+
+
+def _infer_bc_obs_dim_from_shard(shard_path, obs_field):
+    payload = torch.load(shard_path, map_location="cpu")
+    normalized_obs_field = _normalize_bc_obs_field(obs_field)
+    if normalized_obs_field not in payload:
+        available_obs_fields = sorted(key for key in payload.keys() if str(key).startswith("obs"))
+        message = (
+            f"BC shard {shard_path} does not contain requested obs_field='{normalized_obs_field}'. "
+            f"Available observation keys: {available_obs_fields}"
+        )
+        _print_mismatch(message)
+        raise ValueError(message)
+    obs = payload[normalized_obs_field]
+    if obs.ndim != 2:
+        message = f"BC shard {shard_path} obs must be rank-2, got shape {tuple(obs.shape)}"
+        _print_mismatch(message)
+        raise ValueError(message)
+    return int(obs.shape[1])
+
+
+def _dataset_manifest_obs_dim(dataset_manifest, obs_field):
+    if dataset_manifest is None:
+        return None
+    normalized_obs_field = _normalize_bc_obs_field(obs_field)
+    dim = dataset_manifest.get(f"{normalized_obs_field}_dim")
+    if dim is None and normalized_obs_field == "obs":
+        dim = dataset_manifest.get("obs_dim")
+    if dim is None:
+        return None
+    return int(dim)
+
+
+def _override_bc_env_observation_space(env, obs_dim):
+    obs_dim = int(obs_dim)
+    obs_space = gymnasium.spaces.Box(
+        low=-np.inf,
+        high=np.inf,
+        shape=(obs_dim,),
+        dtype=np.float32,
+    )
+    env.single_observation_space = obs_space
+    if hasattr(env, "observation_space"):
+        env.observation_space = obs_space
+
+
+def _override_bc_env_obs_schema(env, *, obs_field, obs_dim):
+    normalized_obs_field = _normalize_bc_obs_field(obs_field)
+    if normalized_obs_field == _BC_VELOCITY_XY_OBS_FIELD:
+        env.observation_variant = "velocity_xy"
+        env.ego_features = binding.EGO_FEATURES_CLASSIC + 1
+        env.partner_features = binding.PARTNER_FEATURES + 1
+        env.num_obs = int(obs_dim)
+    elif normalized_obs_field == _BC_MOTION_PREV_CONTROL_OBS_FIELD:
+        env.observation_variant = "motion_prev_control"
+        env.ego_features = binding.EGO_FEATURES_CLASSIC + 6
+        env.partner_features = binding.PARTNER_FEATURES
+        env.num_obs = int(obs_dim)
+    elif normalized_obs_field == _BC_MOTION_PREV_CONTROL_ROAD_CONTROLS_OBS_FIELD:
+        env.observation_variant = "motion_prev_control_road_controls"
+        env.ego_features = binding.EGO_FEATURES_CLASSIC + 18
+        env.partner_features = binding.PARTNER_FEATURES
+        env.num_obs = int(obs_dim)
+    elif hasattr(env, "observation_variant"):
+        env.observation_variant = "default"
+
+
+def _classic_acceleration_values(*, extend_classic_action_space):
+    if _as_bool(extend_classic_action_space):
+        return _CLASSIC_ACCELERATION_VALUES_EXTENDED
+    return _CLASSIC_ACCELERATION_VALUES_LEGACY
+
+
+def _factorize_classic_joint_action(action, *, extend_classic_action_space):
+    num_steer = len(_CLASSIC_STEERING_VALUES)
+    accel_values = _classic_acceleration_values(extend_classic_action_space=extend_classic_action_space)
+    action_tensor = torch.as_tensor(action, dtype=torch.long)
+    accel_idx = torch.div(action_tensor, num_steer, rounding_mode="floor")
+    steer_idx = torch.remainder(action_tensor, num_steer)
+    if action_tensor.numel() > 0:
+        if int(accel_idx.min().item()) < 0 or int(accel_idx.max().item()) >= len(accel_values):
+            raise ValueError(
+                "Classic joint action contains invalid acceleration index for configured action space: "
+                f"[{int(accel_idx.min().item())}, {int(accel_idx.max().item())}] vs accel_bins={len(accel_values)}"
+            )
+        if int(steer_idx.min().item()) < 0 or int(steer_idx.max().item()) >= num_steer:
+            raise ValueError(
+                "Classic joint action contains invalid steering index for configured action space: "
+                f"[{int(steer_idx.min().item())}, {int(steer_idx.max().item())}] vs steer_bins={num_steer}"
+            )
+    return accel_idx.to(torch.long), steer_idx.to(torch.long)
+
+
 def _normalize_bc_source_format(value):
     if value is None:
         return _BC_SOURCE_FORMAT_SHARDS
@@ -755,6 +898,22 @@ def _normalize_bc_source_format(value):
     raise ValueError(
         f"bc_train.source_format must be '{_BC_SOURCE_FORMAT_SHARDS}' or "
         f"'{_BC_SOURCE_FORMAT_PAIRED_OFFLINE_FITS}'. Got: {value!r}"
+    )
+
+
+def _normalize_bc_mode(value):
+    if value is None:
+        return _BC_MODE_RECURRENT
+    normalized = str(value).strip().lower().replace("-", "_")
+    if normalized in ("", "recurrent", "rnn", "sequence", "sequential"):
+        return _BC_MODE_RECURRENT
+    if normalized in ("iid", "flat", "feedforward", "single_step", "single"):
+        return _BC_MODE_IID
+    if normalized in ("stacked_iid", "stacked_feedforward", "stacked_single_step", "stacked"):
+        return _BC_MODE_STACKED_IID
+    raise ValueError(
+        f"bc_train.mode must be '{_BC_MODE_RECURRENT}', '{_BC_MODE_IID}', or '{_BC_MODE_STACKED_IID}'. "
+        f"Got: {value!r}"
     )
 
 
@@ -775,15 +934,61 @@ def _get_discrete_action_size(env):
     return int(action_space.nvec[0])
 
 
+def _get_continuous_action_dim(env):
+    action_space = env.single_action_space
+    if not isinstance(action_space, gymnasium.spaces.Box) or int(np.prod(action_space.shape)) != 2:
+        message = "Offline BC continuous trainer currently supports only 2D Box action spaces"
+        _print_mismatch(message)
+        raise ValueError(message)
+    return int(np.prod(action_space.shape))
+
+
+def _get_bc_discrete_label_space_size(env_cfg):
+    dynamics_model = str(env_cfg.get("dynamics_model"))
+    if dynamics_model not in ("classic", "articulated"):
+        message = (
+            "Continuous offline BC currently supports only classic/articulated dynamics "
+            "for real-control shard labels"
+        )
+        _print_mismatch(message)
+        raise ValueError(message)
+    accel_values = _classic_acceleration_values(
+        extend_classic_action_space=_as_bool(env_cfg.get("extend_classic_action_space", False))
+    )
+    return int(len(accel_values) * len(_CLASSIC_STEERING_VALUES))
+
+
+def _continuous_action_normalization_scales(env_cfg):
+    accel_values = _classic_acceleration_values(
+        extend_classic_action_space=_as_bool(env_cfg.get("extend_classic_action_space", False))
+    )
+    accel_scale = float(max(abs(float(accel_values[0])), abs(float(accel_values[-1]))))
+    steer_scale = float(max(abs(float(_CLASSIC_STEERING_VALUES[0])), abs(float(_CLASSIC_STEERING_VALUES[-1]))))
+    return accel_scale, steer_scale
+
+
 class _StreamingBCIterableDataset(IterableDataset):
-    def __init__(self, shard_paths, obs_dim, action_space_size, *, shuffle, seed, shard_shuffle_buffer=1):
+    def __init__(
+        self,
+        shard_paths,
+        obs_dim,
+        action_space_size,
+        *,
+        shuffle,
+        seed,
+        obs_field="obs",
+        shard_shuffle_buffer=1,
+        index_log_interval=_BC_INDEX_PROGRESS_INTERVAL,
+    ):
         super().__init__()
         self.shard_paths = list(shard_paths)
         self.obs_dim = int(obs_dim)
         self.action_space_size = int(action_space_size)
         self.shuffle = bool(shuffle)
         self.seed = int(seed)
+        self.obs_field = _normalize_bc_obs_field(obs_field)
         self.shard_shuffle_buffer = max(1, int(shard_shuffle_buffer))
+        self.index_log_interval = max(1, int(index_log_interval))
         self.epoch = 0
         self._length = None
 
@@ -802,7 +1007,13 @@ class _StreamingBCIterableDataset(IterableDataset):
 
     def _load_shard(self, shard_path):
         payload = torch.load(shard_path, map_location="cpu")
-        _validate_bc_shard_payload(payload, self.obs_dim, self.action_space_size, shard_path)
+        _validate_bc_shard_payload(
+            payload,
+            self.obs_dim,
+            self.action_space_size,
+            shard_path,
+            obs_field=self.obs_field,
+        )
         return payload
 
     def __len__(self):
@@ -841,9 +1052,17 @@ class _StreamingBCIterableDataset(IterableDataset):
 class _FlatBCDataset(_StreamingBCIterableDataset):
     def _compute_length(self):
         total = 0
-        for shard_path in self.shard_paths:
+        total_shards = len(self.shard_paths)
+        start_time = time.time()
+        for shard_idx, shard_path in enumerate(self.shard_paths, start=1):
             payload = self._load_shard(shard_path)
             total += int(payload["action"].shape[0])
+            if shard_idx % self.index_log_interval == 0 or shard_idx == total_shards:
+                print(
+                    f"[BC] indexing flat windows progress shards={shard_idx}/{total_shards} "
+                    f"rows={total} elapsed={time.time() - start_time:.1f}s",
+                    flush=True,
+                )
         return total
 
     def __iter__(self):
@@ -856,9 +1075,102 @@ class _FlatBCDataset(_StreamingBCIterableDataset):
             if self.shuffle:
                 rng = random.Random(row_seed + shard_idx)
                 rng.shuffle(row_indices)
-            obs = payload["obs"].float()
+            obs = payload[self.obs_field].float()
             action = payload["action"].long()
             return [(obs[row_idx], action[row_idx]) for row_idx in row_indices]
+
+        shard_iter = iter(enumerate(worker_shards))
+        yield from self._iter_mixed_shard_stream(shard_iter, _shard_samples)
+
+
+class _StackedIIDBCDataset(_StreamingBCIterableDataset):
+    def __init__(
+        self,
+        shard_paths,
+        obs_dim,
+        action_space_size,
+        *,
+        stack_len,
+        action_horizon,
+        shuffle,
+        seed,
+        obs_field="obs",
+        extend_classic_action_space,
+        shard_shuffle_buffer=1,
+        index_log_interval=_BC_INDEX_PROGRESS_INTERVAL,
+    ):
+        super().__init__(
+            shard_paths,
+            obs_dim,
+            action_space_size,
+            shuffle=shuffle,
+            seed=seed,
+            obs_field=obs_field,
+            shard_shuffle_buffer=shard_shuffle_buffer,
+            index_log_interval=index_log_interval,
+        )
+        self.stack_len = max(1, int(stack_len))
+        self.action_horizon = max(1, int(action_horizon))
+        self.extend_classic_action_space = _as_bool(extend_classic_action_space)
+        self.accel_values = _classic_acceleration_values(
+            extend_classic_action_space=self.extend_classic_action_space
+        )
+        expected_action_space = len(self.accel_values) * len(_CLASSIC_STEERING_VALUES)
+        if int(self.action_space_size) != int(expected_action_space):
+            raise ValueError(
+                "Stacked IID BC mode expects classic joint discrete action ids that factor into "
+                f"{len(self.accel_values)} accel bins x {len(_CLASSIC_STEERING_VALUES)} steer bins, "
+                f"but action_space_size={self.action_space_size}"
+            )
+
+    def _compute_length(self):
+        total = 0
+        total_shards = len(self.shard_paths)
+        start_time = time.time()
+        for shard_idx, shard_path in enumerate(self.shard_paths, start=1):
+            payload = self._load_shard(shard_path)
+            total += len(
+                _stacked_iid_row_indices_from_payload(
+                    payload,
+                    stack_len=self.stack_len,
+                    action_horizon=self.action_horizon,
+                )
+            )
+            if shard_idx % self.index_log_interval == 0 or shard_idx == total_shards:
+                print(
+                    f"[BC] indexing stacked samples progress shards={shard_idx}/{total_shards} "
+                    f"samples={total} stack_len={self.stack_len} "
+                    f"action_horizon={self.action_horizon} elapsed={time.time() - start_time:.1f}s",
+                    flush=True,
+                )
+        return total
+
+    def __iter__(self):
+        row_seed = self.seed + self.epoch * 9973
+        worker_shards = list(self._iter_worker_shards())
+
+        def _shard_samples(shard_idx, shard_path):
+            payload = self._load_shard(shard_path)
+            row_indices = _stacked_iid_row_indices_from_payload(
+                payload,
+                stack_len=self.stack_len,
+                action_horizon=self.action_horizon,
+            )
+            if self.shuffle:
+                rng = random.Random(row_seed + shard_idx)
+                rng.shuffle(row_indices)
+            samples = []
+            for row_idx in row_indices:
+                stacked_obs, accel_idx, steer_idx = _build_stacked_iid_sample_from_payload(
+                    payload,
+                    row_idx,
+                    stack_len=self.stack_len,
+                    action_horizon=self.action_horizon,
+                    obs_field=self.obs_field,
+                    extend_classic_action_space=self.extend_classic_action_space,
+                )
+                samples.append((stacked_obs, accel_idx, steer_idx))
+            return samples
 
         shard_iter = iter(enumerate(worker_shards))
         yield from self._iter_mixed_shard_stream(shard_iter, _shard_samples)
@@ -875,8 +1187,10 @@ class _SequenceBCDataset(_StreamingBCIterableDataset):
         stride,
         shuffle,
         seed,
+        obs_field="obs",
         require_embedded,
         shard_shuffle_buffer=1,
+        index_log_interval=_BC_INDEX_PROGRESS_INTERVAL,
         rebalance_windows=False,
         window_balance_fraction=0.0,
         window_balance_max_multiplier=10.0,
@@ -887,7 +1201,9 @@ class _SequenceBCDataset(_StreamingBCIterableDataset):
             action_space_size,
             shuffle=shuffle,
             seed=seed,
+            obs_field=obs_field,
             shard_shuffle_buffer=shard_shuffle_buffer,
+            index_log_interval=index_log_interval,
         )
         self.seq_len = int(seq_len)
         self.stride = max(1, int(stride))
@@ -907,7 +1223,9 @@ class _SequenceBCDataset(_StreamingBCIterableDataset):
                 self.action_space_size,
                 seq_len=self.seq_len,
                 stride=self.stride,
+                obs_field=self.obs_field,
                 require_embedded=self.require_embedded,
+                index_log_interval=self.index_log_interval,
                 max_multiplier=self.window_balance_max_multiplier,
             )
 
@@ -922,7 +1240,7 @@ class _SequenceBCDataset(_StreamingBCIterableDataset):
             total += window_count
             if window_count <= 0:
                 zero_window_shards += 1
-            if shard_idx % _BC_INDEX_PROGRESS_INTERVAL == 0 or shard_idx == total_shards:
+            if shard_idx % self.index_log_interval == 0 or shard_idx == total_shards:
                 avg_windows = float(total) / float(shard_idx) if shard_idx > 0 else 0.0
                 print(
                     f"[BC] indexing windows progress shards={shard_idx}/{total_shards} "
@@ -939,7 +1257,7 @@ class _SequenceBCDataset(_StreamingBCIterableDataset):
         def _shard_samples(shard_idx, shard_path):
             payload = self._load_shard(shard_path)
             manifest = self._load_sequence_manifest(shard_path)
-            samples = _build_sequence_samples_from_manifest(payload, manifest)
+            samples = _build_sequence_samples_from_manifest(payload, manifest, obs_field=self.obs_field)
             if self.shuffle:
                 if self.rebalance_windows:
                     weights = self._load_window_weights(shard_path, payload, manifest)
@@ -966,6 +1284,7 @@ class _SequenceBCDataset(_StreamingBCIterableDataset):
                 self.action_space_size,
                 seq_len=self.seq_len,
                 stride=self.stride,
+                obs_field=self.obs_field,
                 require_embedded=self.require_embedded,
                 return_status=True,
             )
@@ -995,6 +1314,182 @@ class _SequenceBCDataset(_StreamingBCIterableDataset):
             "cached": int(len(self._manifest_cache)),
             "weighted": int(self.rebalance_windows),
         }
+
+
+class _ContinuousSequenceBCDataset(_SequenceBCDataset):
+    def __init__(
+        self,
+        shard_paths,
+        obs_dim,
+        action_space_size,
+        *,
+        seq_len,
+        stride,
+        shuffle,
+        seed,
+        obs_field="obs",
+        require_embedded,
+        continuous_accel_field,
+        continuous_steer_field,
+        accel_scale,
+        steer_scale,
+        shard_shuffle_buffer=1,
+        index_log_interval=_BC_INDEX_PROGRESS_INTERVAL,
+    ):
+        super().__init__(
+            shard_paths,
+            obs_dim,
+            action_space_size,
+            seq_len=seq_len,
+            stride=stride,
+            shuffle=shuffle,
+            seed=seed,
+            obs_field=obs_field,
+            require_embedded=require_embedded,
+            shard_shuffle_buffer=shard_shuffle_buffer,
+            index_log_interval=index_log_interval,
+            rebalance_windows=False,
+        )
+        self.continuous_accel_field = str(continuous_accel_field)
+        self.continuous_steer_field = str(continuous_steer_field)
+        self.accel_scale = float(accel_scale)
+        self.steer_scale = float(steer_scale)
+
+    def _load_shard(self, shard_path):
+        payload = super()._load_shard(shard_path)
+        _validate_bc_continuous_targets_payload(
+            payload,
+            shard_path,
+            accel_field=self.continuous_accel_field,
+            steer_field=self.continuous_steer_field,
+        )
+        return payload
+
+    def __iter__(self):
+        sample_seed = self.seed + self.epoch * 9973
+        worker_shards = list(self._iter_worker_shards())
+
+        def _shard_samples(shard_idx, shard_path):
+            payload = self._load_shard(shard_path)
+            manifest = self._load_sequence_manifest(shard_path)
+            samples = _build_continuous_sequence_samples_from_manifest(
+                payload,
+                manifest,
+                obs_field=self.obs_field,
+                accel_field=self.continuous_accel_field,
+                steer_field=self.continuous_steer_field,
+                accel_scale=self.accel_scale,
+                steer_scale=self.steer_scale,
+            )
+            if self.shuffle:
+                rng = random.Random(sample_seed + shard_idx)
+                rng.shuffle(samples)
+            return samples
+
+        shard_iter = iter(enumerate(worker_shards))
+        yield from self._iter_mixed_shard_stream(shard_iter, _shard_samples)
+
+
+class _ContinuousStackedIIDBCDataset(_StreamingBCIterableDataset):
+    def __init__(
+        self,
+        shard_paths,
+        obs_dim,
+        action_space_size,
+        *,
+        stack_len,
+        action_horizon,
+        shuffle,
+        seed,
+        obs_field="obs",
+        continuous_accel_field,
+        continuous_steer_field,
+        accel_scale,
+        steer_scale,
+        shard_shuffle_buffer=1,
+        index_log_interval=_BC_INDEX_PROGRESS_INTERVAL,
+    ):
+        super().__init__(
+            shard_paths,
+            obs_dim,
+            action_space_size,
+            shuffle=shuffle,
+            seed=seed,
+            obs_field=obs_field,
+            shard_shuffle_buffer=shard_shuffle_buffer,
+            index_log_interval=index_log_interval,
+        )
+        self.stack_len = max(1, int(stack_len))
+        self.action_horizon = max(1, int(action_horizon))
+        self.continuous_accel_field = str(continuous_accel_field)
+        self.continuous_steer_field = str(continuous_steer_field)
+        self.accel_scale = float(accel_scale)
+        self.steer_scale = float(steer_scale)
+
+    def _load_shard(self, shard_path):
+        payload = super()._load_shard(shard_path)
+        _validate_bc_continuous_targets_payload(
+            payload,
+            shard_path,
+            accel_field=self.continuous_accel_field,
+            steer_field=self.continuous_steer_field,
+        )
+        return payload
+
+    def _compute_length(self):
+        total = 0
+        total_shards = len(self.shard_paths)
+        start_time = time.time()
+        for shard_idx, shard_path in enumerate(self.shard_paths, start=1):
+            payload = self._load_shard(shard_path)
+            sample_count = len(
+                _stacked_iid_row_indices_from_payload(
+                    payload,
+                    stack_len=self.stack_len,
+                    action_horizon=self.action_horizon,
+                )
+            )
+            total += sample_count
+            if shard_idx % self.index_log_interval == 0 or shard_idx == total_shards:
+                print(
+                    f"[BC] indexing stacked continuous samples progress shards={shard_idx}/{total_shards} "
+                    f"samples={total} stack_len={self.stack_len} action_horizon={self.action_horizon} "
+                    f"elapsed={time.time() - start_time:.1f}s",
+                    flush=True,
+                )
+        return total
+
+    def __iter__(self):
+        row_seed = self.seed + self.epoch * 9973
+        worker_shards = list(self._iter_worker_shards())
+
+        def _shard_samples(shard_idx, shard_path):
+            payload = self._load_shard(shard_path)
+            row_indices = _stacked_iid_row_indices_from_payload(
+                payload,
+                stack_len=self.stack_len,
+                action_horizon=self.action_horizon,
+            )
+            if self.shuffle:
+                rng = random.Random(row_seed + shard_idx)
+                rng.shuffle(row_indices)
+            return [
+                _build_continuous_stacked_iid_sample_from_payload(
+                    payload,
+                    row_idx,
+                    stack_len=self.stack_len,
+                    action_horizon=self.action_horizon,
+                    obs_field=self.obs_field,
+                    accel_field=self.continuous_accel_field,
+                    steer_field=self.continuous_steer_field,
+                    accel_scale=self.accel_scale,
+                    steer_scale=self.steer_scale,
+                )
+                for row_idx in row_indices
+            ]
+
+        shard_iter = iter(enumerate(worker_shards))
+        yield from self._iter_mixed_shard_stream(shard_iter, _shard_samples)
 
 
 def _window_action_counts_from_payload(payload, manifest):
@@ -1036,7 +1531,9 @@ def _compute_window_action_rarity_weights(
     *,
     seq_len,
     stride,
+    obs_field="obs",
     require_embedded,
+    index_log_interval=_BC_INDEX_PROGRESS_INTERVAL,
     max_multiplier,
 ):
     global_counts = np.zeros((_CLASSIC_DISCRETE_ACTIONS,), dtype=np.int64)
@@ -1045,20 +1542,27 @@ def _compute_window_action_rarity_weights(
     total_shards = len(shard_paths)
     for shard_idx, shard_path in enumerate(shard_paths, start=1):
         payload = torch.load(shard_path, map_location="cpu")
-        _validate_bc_shard_payload(payload, obs_dim, action_space_size, str(shard_path))
+        _validate_bc_shard_payload(
+            payload,
+            obs_dim,
+            action_space_size,
+            str(shard_path),
+            obs_field=obs_field,
+        )
         manifest = _load_or_build_sequence_manifest(
             shard_path,
             obs_dim,
             action_space_size,
             seq_len=seq_len,
             stride=stride,
+            obs_field=obs_field,
             require_embedded=require_embedded,
         )
         if int(manifest["window_count"]) <= 0:
             zero_window_shards += 1
         window_counts = _window_action_counts_from_payload(payload, manifest)
         global_counts += window_counts.sum(axis=0, dtype=np.int64)
-        if shard_idx % _BC_INDEX_PROGRESS_INTERVAL == 0 or shard_idx == total_shards:
+        if shard_idx % max(1, int(index_log_interval)) == 0 or shard_idx == total_shards:
             positive_counts = global_counts[global_counts > 0]
             mean_positive = float(positive_counts.mean()) if positive_counts.size > 0 else 0.0
             print(
@@ -1327,7 +1831,7 @@ def _build_paired_fit_shard_plans(export_path, manifest, records):
     return plans
 
 
-def _validate_paired_fit_side(pair, *, fit_map_name, fit_side, obs_key, obs_dim, action_space_size):
+def _validate_paired_fit_side_with_timestep(pair, *, fit_map_name, fit_side, obs_key, obs_dim, action_space_size):
     if not isinstance(pair, dict):
         message = f"Paired offline-fit map {fit_map_name} payload must be a dict"
         _print_mismatch(message)
@@ -1399,6 +1903,18 @@ def _validate_paired_fit_side(pair, *, fit_map_name, fit_side, obs_key, obs_dim,
         message = f"Paired offline-fit map {fit_map_name} logged_timestep values must be consecutive"
         _print_mismatch(message)
         raise ValueError(message)
+    return obs, action, torch.as_tensor(timestep, dtype=torch.long)
+
+
+def _validate_paired_fit_side(pair, *, fit_map_name, fit_side, obs_key, obs_dim, action_space_size):
+    obs, action, _timestep = _validate_paired_fit_side_with_timestep(
+        pair,
+        fit_map_name=fit_map_name,
+        fit_side=fit_side,
+        obs_key=obs_key,
+        obs_dim=obs_dim,
+        action_space_size=action_space_size,
+    )
     return obs, action
 
 
@@ -1417,6 +1933,7 @@ class _PairedOfflineFitSequenceDataset(IterableDataset):
         shuffle,
         seed,
         shard_shuffle_buffer=1,
+        index_log_interval=_BC_INDEX_PROGRESS_INTERVAL,
     ):
         super().__init__()
         self.fit_export = str(fit_export)
@@ -1430,6 +1947,7 @@ class _PairedOfflineFitSequenceDataset(IterableDataset):
         self.shuffle = bool(shuffle)
         self.seed = int(seed)
         self.shard_shuffle_buffer = max(1, int(shard_shuffle_buffer))
+        self.index_log_interval = max(1, int(index_log_interval))
         self.epoch = 0
         self._manifest = _load_paired_fit_manifest(self.fit_export)
         self.records = _filter_records_to_paired_fit_manifest(
@@ -1509,7 +2027,7 @@ class _PairedOfflineFitSequenceDataset(IterableDataset):
                 total += window_count
                 if window_count <= 0:
                     zero_window_maps += 1
-            if shard_idx % _BC_INDEX_PROGRESS_INTERVAL == 0 or shard_idx == total_shards:
+            if shard_idx % self.index_log_interval == 0 or shard_idx == total_shards:
                 print(
                     f"[BC] paired-fit indexing progress shards={shard_idx}/{total_shards} "
                     f"maps={self._indexed_maps}/{len(self.records)} windows={total} "
@@ -1575,15 +2093,385 @@ class _PairedOfflineFitSequenceDataset(IterableDataset):
         }
 
 
-def _validate_bc_shard_payload(payload, obs_dim, action_space_size, shard_path):
-    required = {"obs", "action", "map_id", "timestep", "sequence_id"}
+class _PairedOfflineFitFlatDataset(IterableDataset):
+    def __init__(
+        self,
+        fit_export,
+        records,
+        obs_dim,
+        action_space_size,
+        *,
+        fit_side,
+        obs_key,
+        shuffle,
+        seed,
+        shard_shuffle_buffer=1,
+        index_log_interval=_BC_INDEX_PROGRESS_INTERVAL,
+    ):
+        super().__init__()
+        self.fit_export = str(fit_export)
+        self.records = list(records)
+        self.obs_dim = int(obs_dim)
+        self.action_space_size = int(action_space_size)
+        self.fit_side = str(fit_side)
+        self.obs_key = str(obs_key)
+        self.shuffle = bool(shuffle)
+        self.seed = int(seed)
+        self.shard_shuffle_buffer = max(1, int(shard_shuffle_buffer))
+        self.index_log_interval = max(1, int(index_log_interval))
+        self.epoch = 0
+        self._manifest = _load_paired_fit_manifest(self.fit_export)
+        self.records = _filter_records_to_paired_fit_manifest(
+            self.records,
+            self._manifest,
+            context="BC source split",
+        )
+        self._shard_plans = _build_paired_fit_shard_plans(self.fit_export, self._manifest, self.records)
+        self.shard_paths = [plan["path"] for plan in self._shard_plans]
+        self._length = None
+        self._sample_count_cache = {}
+        self._indexed_maps = 0
+
+    def set_epoch(self, epoch):
+        self.epoch = int(epoch)
+
+    @property
+    def map_count(self):
+        return len(self.records)
+
+    def _iter_worker_plans(self):
+        plans = list(self._shard_plans)
+        if self.shuffle:
+            rng = random.Random(self.seed + self.epoch)
+            rng.shuffle(plans)
+        worker = get_worker_info()
+        if worker is None:
+            return plans
+        return plans[worker.id :: worker.num_workers]
+
+    def _load_pairs(self, plan):
+        payload = torch.load(plan["path"], map_location="cpu")
+        pairs = payload.get("pairs")
+        if not isinstance(pairs, dict):
+            message = f"Paired offline-fit shard {plan['path']} is missing pairs dict"
+            _print_mismatch(message)
+            raise ValueError(message)
+        return pairs
+
+    def _load_pair_tensors(self, pairs, fit_map_name):
+        pair = pairs.get(fit_map_name)
+        if pair is None:
+            message = f"Paired offline-fit shard is missing requested map {fit_map_name}"
+            _print_mismatch(message)
+            raise KeyError(message)
+        return _validate_paired_fit_side(
+            pair,
+            fit_map_name=fit_map_name,
+            fit_side=self.fit_side,
+            obs_key=self.obs_key,
+            obs_dim=self.obs_dim,
+            action_space_size=self.action_space_size,
+        )
+
+    def __len__(self):
+        if self._length is None:
+            self._length = int(self._compute_length())
+        return self._length
+
+    def _compute_length(self):
+        total = 0
+        total_shards = len(self._shard_plans)
+        start_time = time.time()
+        for shard_idx, plan in enumerate(self._shard_plans, start=1):
+            pairs = self._load_pairs(plan)
+            for fit_map_name in plan["map_names"]:
+                _obs, action = self._load_pair_tensors(pairs, fit_map_name)
+                sample_count = int(action.shape[0])
+                self._sample_count_cache[fit_map_name] = sample_count
+                self._indexed_maps += 1
+                total += sample_count
+            if shard_idx % self.index_log_interval == 0 or shard_idx == total_shards:
+                print(
+                    f"[BC] paired-fit indexing progress shards={shard_idx}/{total_shards} "
+                    f"maps={self._indexed_maps}/{len(self.records)} samples={total} "
+                    f"elapsed={time.time() - start_time:.1f}s",
+                    flush=True,
+                )
+        return total
+
+    def __iter__(self):
+        sample_seed = self.seed + self.epoch * 9973
+        worker_plans = list(self._iter_worker_plans())
+
+        def _plan_samples(plan_idx, plan):
+            pairs = self._load_pairs(plan)
+            samples = []
+            for fit_map_name in plan["map_names"]:
+                obs, action = self._load_pair_tensors(pairs, fit_map_name)
+                row_indices = list(range(int(action.shape[0])))
+                if self.shuffle:
+                    rng = random.Random(sample_seed + plan_idx * 997 + len(samples))
+                    rng.shuffle(row_indices)
+                samples.extend((obs[row_idx], action[row_idx]) for row_idx in row_indices)
+            if self.shuffle:
+                rng = random.Random(sample_seed + plan_idx)
+                rng.shuffle(samples)
+            return samples
+
+        plan_iter = iter(enumerate(worker_plans))
+        yield from self._iter_mixed_shard_stream(plan_iter, _plan_samples)
+
+    def _iter_mixed_shard_stream(self, shard_iter, shard_sample_fn):
+        active_shards = []
+        sample_rng = random.Random(self.seed + self.epoch * 9973 + 17)
+
+        def _fill_active():
+            while len(active_shards) < self.shard_shuffle_buffer:
+                try:
+                    shard_idx, plan = next(shard_iter)
+                except StopIteration:
+                    break
+                shard_samples = shard_sample_fn(shard_idx, plan)
+                if shard_samples:
+                    active_shards.append(shard_samples)
+
+        _fill_active()
+        while active_shards:
+            shard_choice = sample_rng.randrange(len(active_shards)) if self.shuffle else 0
+            shard_stream = active_shards[shard_choice]
+            yield shard_stream.pop()
+            if shard_stream:
+                continue
+            active_shards.pop(shard_choice)
+            _fill_active()
+
+    def manifest_stats(self):
+        return {
+            "built": 0,
+            "loaded": 0,
+            "cached": int(len(self._sample_count_cache)),
+            "weighted": 0,
+            "indexed_maps": int(self._indexed_maps),
+        }
+
+
+class _PairedOfflineFitStackedIIDDataset(IterableDataset):
+    def __init__(
+        self,
+        fit_export,
+        records,
+        obs_dim,
+        action_space_size,
+        *,
+        stack_len,
+        action_horizon,
+        fit_side,
+        obs_key,
+        extend_classic_action_space,
+        shuffle,
+        seed,
+        shard_shuffle_buffer=1,
+        index_log_interval=_BC_INDEX_PROGRESS_INTERVAL,
+    ):
+        super().__init__()
+        self.fit_export = str(fit_export)
+        self.records = list(records)
+        self.obs_dim = int(obs_dim)
+        self.action_space_size = int(action_space_size)
+        self.stack_len = max(1, int(stack_len))
+        self.action_horizon = max(1, int(action_horizon))
+        self.fit_side = str(fit_side)
+        self.obs_key = str(obs_key)
+        self.extend_classic_action_space = _as_bool(extend_classic_action_space)
+        self.shuffle = bool(shuffle)
+        self.seed = int(seed)
+        self.shard_shuffle_buffer = max(1, int(shard_shuffle_buffer))
+        self.index_log_interval = max(1, int(index_log_interval))
+        self.epoch = 0
+        self._manifest = _load_paired_fit_manifest(self.fit_export)
+        self.records = _filter_records_to_paired_fit_manifest(
+            self.records,
+            self._manifest,
+            context="BC source split",
+        )
+        self._shard_plans = _build_paired_fit_shard_plans(self.fit_export, self._manifest, self.records)
+        self.shard_paths = [plan["path"] for plan in self._shard_plans]
+        self._length = None
+        self._sample_count_cache = {}
+        self._indexed_maps = 0
+        self.accel_values = _classic_acceleration_values(
+            extend_classic_action_space=self.extend_classic_action_space
+        )
+        expected_action_space = len(self.accel_values) * len(_CLASSIC_STEERING_VALUES)
+        if int(self.action_space_size) != int(expected_action_space):
+            raise ValueError(
+                "Stacked IID BC mode expects classic joint discrete action ids that factor into "
+                f"{len(self.accel_values)} accel bins x {len(_CLASSIC_STEERING_VALUES)} steer bins, "
+                f"but action_space_size={self.action_space_size}"
+            )
+
+    def set_epoch(self, epoch):
+        self.epoch = int(epoch)
+
+    @property
+    def map_count(self):
+        return len(self.records)
+
+    def _iter_worker_plans(self):
+        plans = list(self._shard_plans)
+        if self.shuffle:
+            rng = random.Random(self.seed + self.epoch)
+            rng.shuffle(plans)
+        worker = get_worker_info()
+        if worker is None:
+            return plans
+        return plans[worker.id :: worker.num_workers]
+
+    def _load_pairs(self, plan):
+        payload = torch.load(plan["path"], map_location="cpu")
+        pairs = payload.get("pairs")
+        if not isinstance(pairs, dict):
+            message = f"Paired offline-fit shard {plan['path']} is missing pairs dict"
+            _print_mismatch(message)
+            raise ValueError(message)
+        return pairs
+
+    def _load_pair_tensors(self, pairs, fit_map_name):
+        pair = pairs.get(fit_map_name)
+        if pair is None:
+            message = f"Paired offline-fit shard is missing requested map {fit_map_name}"
+            _print_mismatch(message)
+            raise KeyError(message)
+        return _validate_paired_fit_side_with_timestep(
+            pair,
+            fit_map_name=fit_map_name,
+            fit_side=self.fit_side,
+            obs_key=self.obs_key,
+            obs_dim=self.obs_dim,
+            action_space_size=self.action_space_size,
+        )
+
+    def __len__(self):
+        if self._length is None:
+            self._length = int(self._compute_length())
+        return self._length
+
+    def _stack_observations(self, obs, row_idx):
+        start_idx = row_idx - self.stack_len + 1
+        history = obs[start_idx : row_idx + 1]
+        history = torch.flip(history, dims=(0,))
+        return history.reshape(-1).to(torch.float32)
+
+    def _compute_length(self):
+        total = 0
+        total_shards = len(self._shard_plans)
+        start_time = time.time()
+        for shard_idx, plan in enumerate(self._shard_plans, start=1):
+            pairs = self._load_pairs(plan)
+            for fit_map_name in plan["map_names"]:
+                _obs, action, _timestep = self._load_pair_tensors(pairs, fit_map_name)
+                sample_count = max(0, int(action.shape[0]) - self.stack_len - self.action_horizon + 2)
+                self._sample_count_cache[fit_map_name] = sample_count
+                self._indexed_maps += 1
+                total += sample_count
+            if shard_idx % self.index_log_interval == 0 or shard_idx == total_shards:
+                print(
+                    f"[BC] paired-fit stacked indexing progress shards={shard_idx}/{total_shards} "
+                    f"maps={self._indexed_maps}/{len(self.records)} samples={total} "
+                    f"stack_len={self.stack_len} action_horizon={self.action_horizon} "
+                    f"elapsed={time.time() - start_time:.1f}s",
+                    flush=True,
+                )
+        return total
+
+    def __iter__(self):
+        sample_seed = self.seed + self.epoch * 9973
+        worker_plans = list(self._iter_worker_plans())
+
+        def _plan_samples(plan_idx, plan):
+            pairs = self._load_pairs(plan)
+            samples = []
+            for fit_map_name in plan["map_names"]:
+                obs, action, _timestep = self._load_pair_tensors(pairs, fit_map_name)
+                max_row_idx = int(action.shape[0]) - self.action_horizon
+                row_indices = list(range(self.stack_len - 1, max_row_idx + 1))
+                if self.shuffle:
+                    rng = random.Random(sample_seed + plan_idx * 997 + len(samples))
+                    rng.shuffle(row_indices)
+                for row_idx in row_indices:
+                    stacked_obs = self._stack_observations(obs, row_idx)
+                    future_actions = action[row_idx : row_idx + self.action_horizon]
+                    accel_idx, steer_idx = _factorize_classic_joint_action(
+                        future_actions,
+                        extend_classic_action_space=self.extend_classic_action_space,
+                    )
+                    if self.action_horizon == 1:
+                        accel_idx = accel_idx.reshape(())
+                        steer_idx = steer_idx.reshape(())
+                    else:
+                        accel_idx = accel_idx.reshape(self.action_horizon)
+                        steer_idx = steer_idx.reshape(self.action_horizon)
+                    samples.append((stacked_obs, accel_idx, steer_idx))
+            if self.shuffle:
+                rng = random.Random(sample_seed + plan_idx)
+                rng.shuffle(samples)
+            return samples
+
+        plan_iter = iter(enumerate(worker_plans))
+        yield from self._iter_mixed_shard_stream(plan_iter, _plan_samples)
+
+    def _iter_mixed_shard_stream(self, shard_iter, shard_sample_fn):
+        active_shards = []
+        sample_rng = random.Random(self.seed + self.epoch * 9973 + 17)
+
+        def _fill_active():
+            while len(active_shards) < self.shard_shuffle_buffer:
+                try:
+                    shard_idx, plan = next(shard_iter)
+                except StopIteration:
+                    break
+                shard_samples = shard_sample_fn(shard_idx, plan)
+                if shard_samples:
+                    active_shards.append(shard_samples)
+
+        _fill_active()
+        while active_shards:
+            shard_choice = sample_rng.randrange(len(active_shards)) if self.shuffle else 0
+            shard_stream = active_shards[shard_choice]
+            yield shard_stream.pop()
+            if shard_stream:
+                continue
+            active_shards.pop(shard_choice)
+            _fill_active()
+
+    def manifest_stats(self):
+        return {
+            "built": 0,
+            "loaded": 0,
+            "cached": int(len(self._sample_count_cache)),
+            "weighted": 0,
+            "indexed_maps": int(self._indexed_maps),
+        }
+
+
+def _validate_bc_shard_payload(payload, obs_dim, action_space_size, shard_path, *, obs_field="obs"):
+    obs_field = _normalize_bc_obs_field(obs_field)
+    required = {"action", "map_id", "timestep", "sequence_id"}
     missing = required.difference(payload.keys())
     if missing:
         message = f"BC shard {shard_path} is missing required keys: {sorted(missing)}"
         _print_mismatch(message)
         raise ValueError(message)
+    if obs_field not in payload:
+        available_obs_fields = sorted(key for key in payload.keys() if str(key).startswith("obs"))
+        message = (
+            f"BC shard {shard_path} does not contain requested obs_field='{obs_field}'. "
+            f"Available observation keys: {available_obs_fields}"
+        )
+        _print_mismatch(message)
+        raise ValueError(message)
 
-    obs = payload["obs"]
+    obs = payload[obs_field]
     action = payload["action"]
     map_id = payload["map_id"]
     timestep = payload["timestep"]
@@ -1749,13 +2637,49 @@ def _validate_bc_shard_payload(payload, obs_dim, action_space_size, shard_path):
             _validate_sequence_manifest(manifest, shard_path=f"{shard_path}:{name}")
 
 
-def _peek_bc_shard(shard_paths, obs_dim, action_space_size):
+def _validate_bc_continuous_targets_payload(payload, shard_path, *, accel_field, steer_field):
+    for field_name in (str(accel_field), str(steer_field)):
+        if field_name not in payload:
+            message = f"BC shard {shard_path} is missing required continuous target field: {field_name}"
+            _print_mismatch(message)
+            raise ValueError(message)
+        field_value = payload[field_name]
+        if field_value.ndim != 1:
+            message = f"BC shard {shard_path} {field_name} must be rank-1, got shape {tuple(field_value.shape)}"
+            _print_mismatch(message)
+            raise ValueError(message)
+        if int(field_value.shape[0]) != int(payload["action"].shape[0]):
+            message = (
+                f"BC shard {shard_path} {field_name} sample count mismatch: "
+                f"expected {int(payload['action'].shape[0])}, got {int(field_value.shape[0])}"
+            )
+            _print_mismatch(message)
+            raise ValueError(message)
+
+
+def _peek_bc_shard(shard_paths, obs_dim, action_space_size, *, obs_field="obs"):
     for shard_path in shard_paths:
         payload = torch.load(shard_path, map_location="cpu")
-        _validate_bc_shard_payload(payload, obs_dim, action_space_size, shard_path)
+        _validate_bc_shard_payload(
+            payload,
+            obs_dim,
+            action_space_size,
+            shard_path,
+            obs_field=obs_field,
+        )
         if int(payload["action"].shape[0]) > 0:
             return payload
     return None
+
+
+def _load_bc_dataset_manifest(dataset_dir):
+    manifest_path = Path(dataset_dir) / "dataset_manifest.json"
+    if not manifest_path.exists():
+        return None
+    with manifest_path.open("r", encoding="utf-8") as file_obj:
+        payload = json.load(file_obj)
+    payload["_manifest_path"] = str(manifest_path)
+    return payload
 
 
 def _sequence_manifest_path(shard_path, seq_len, stride):
@@ -1950,6 +2874,7 @@ def _load_or_build_sequence_manifest(
     *,
     seq_len,
     stride,
+    obs_field="obs",
     require_embedded=False,
     return_status=False,
 ):
@@ -1970,7 +2895,13 @@ def _load_or_build_sequence_manifest(
             return manifest
 
     payload = torch.load(shard_path, map_location="cpu")
-    _validate_bc_shard_payload(payload, obs_dim, action_space_size, str(shard_path))
+    _validate_bc_shard_payload(
+        payload,
+        obs_dim,
+        action_space_size,
+        str(shard_path),
+        obs_field=obs_field,
+    )
     try:
         embedded_manifest = _embedded_sequence_manifest(
             payload,
@@ -2003,8 +2934,8 @@ def _load_or_build_sequence_manifest(
     return manifest
 
 
-def _build_sequence_samples_from_manifest(payload, manifest):
-    obs = payload["obs"].float()
+def _build_sequence_samples_from_manifest(payload, manifest, *, obs_field="obs"):
+    obs = payload[_normalize_bc_obs_field(obs_field)].float()
     action = payload["action"].long()
     seq_len = int(manifest["seq_len"])
     samples = []
@@ -2023,11 +2954,135 @@ def _build_sequence_samples_from_manifest(payload, manifest):
     return samples
 
 
-def _build_sequence_samples_from_payload(payload, seq_len, stride):
+def _build_continuous_sequence_samples_from_manifest(
+    payload,
+    manifest,
+    *,
+    obs_field="obs",
+    accel_field,
+    steer_field,
+    accel_scale,
+    steer_scale,
+):
+    obs = payload[_normalize_bc_obs_field(obs_field)].float()
+    accel = payload[str(accel_field)].float() / max(float(accel_scale), 1e-8)
+    steer = payload[str(steer_field)].float() / max(float(steer_scale), 1e-8)
+    targets = torch.stack([accel, steer], dim=1).clamp_(-1.0, 1.0)
+    seq_len = int(manifest["seq_len"])
+    samples = []
+    for window_indices, valid_len in zip(manifest["window_indices"], manifest["valid_lengths"]):
+        valid_len = int(valid_len.item())
+        if valid_len <= 0:
+            continue
+        row_indices = window_indices[:valid_len].long()
+        obs_window = torch.zeros((seq_len, obs.shape[1]), dtype=torch.float32)
+        target_window = torch.zeros((seq_len, 2), dtype=torch.float32)
+        mask_window = torch.zeros((seq_len,), dtype=torch.bool)
+        obs_window[:valid_len] = obs[row_indices]
+        target_window[:valid_len] = targets[row_indices]
+        mask_window[:valid_len] = True
+        samples.append((obs_window, target_window, mask_window))
+    return samples
+
+
+def _stacked_iid_row_indices_from_payload(payload, *, stack_len, action_horizon=1):
+    stack_len = max(1, int(stack_len))
+    action_horizon = max(1, int(action_horizon))
+    action = payload["action"].long()
+    sequence_id = payload["sequence_id"].long()
+    sequence_row_index = payload.get("sequence_row_index")
+    if sequence_row_index is None:
+        sequence_row_index = torch.arange(int(action.shape[0]), dtype=torch.long)
+    else:
+        sequence_row_index = sequence_row_index.long()
+
+    sample_indices = []
+    max_row_idx = int(action.shape[0]) - action_horizon
+    for row_idx in range(stack_len - 1, max_row_idx + 1):
+        if int(sequence_row_index[row_idx].item()) < stack_len - 1:
+            continue
+        start_idx = row_idx - stack_len + 1
+        if not torch.all(sequence_id[start_idx : row_idx + 1] == sequence_id[row_idx]):
+            continue
+        expected_rows = torch.arange(
+            int(sequence_row_index[row_idx].item()) - stack_len + 1,
+            int(sequence_row_index[row_idx].item()) + 1,
+            dtype=torch.long,
+        )
+        if not torch.equal(sequence_row_index[start_idx : row_idx + 1], expected_rows):
+            continue
+        future_end_idx = row_idx + action_horizon - 1
+        if not torch.all(sequence_id[row_idx : future_end_idx + 1] == sequence_id[row_idx]):
+            continue
+        future_expected_rows = torch.arange(
+            int(sequence_row_index[row_idx].item()),
+            int(sequence_row_index[row_idx].item()) + action_horizon,
+            dtype=torch.long,
+        )
+        if not torch.equal(sequence_row_index[row_idx : future_end_idx + 1], future_expected_rows):
+            continue
+        sample_indices.append(int(row_idx))
+    return sample_indices
+
+
+def _build_stacked_iid_sample_from_payload(
+    payload,
+    row_idx,
+    *,
+    stack_len,
+    action_horizon,
+    obs_field="obs",
+    extend_classic_action_space,
+):
+    normalized_obs_field = _normalize_bc_obs_field(obs_field)
+    obs = payload[normalized_obs_field].float()
+    action = payload["action"].long()
+    row_idx = int(row_idx)
+    start_idx = row_idx - int(stack_len) + 1
+    history = torch.flip(obs[start_idx : row_idx + 1], dims=(0,))
+    stacked_obs = history.reshape(-1).to(torch.float32)
+    future_actions = action[row_idx : row_idx + int(action_horizon)]
+    accel_idx, steer_idx = _factorize_classic_joint_action(
+        future_actions,
+        extend_classic_action_space=extend_classic_action_space,
+    )
+    if int(action_horizon) == 1:
+        return stacked_obs, accel_idx.reshape(()), steer_idx.reshape(())
+    return stacked_obs, accel_idx.reshape(int(action_horizon)), steer_idx.reshape(int(action_horizon))
+
+
+def _build_continuous_stacked_iid_sample_from_payload(
+    payload,
+    row_idx,
+    *,
+    stack_len,
+    action_horizon,
+    obs_field="obs",
+    accel_field,
+    steer_field,
+    accel_scale,
+    steer_scale,
+):
+    normalized_obs_field = _normalize_bc_obs_field(obs_field)
+    obs = payload[normalized_obs_field].float()
+    accel = payload[str(accel_field)].float() / max(float(accel_scale), 1e-8)
+    steer = payload[str(steer_field)].float() / max(float(steer_scale), 1e-8)
+    targets = torch.stack([accel, steer], dim=1).clamp_(-1.0, 1.0)
+    row_idx = int(row_idx)
+    start_idx = row_idx - int(stack_len) + 1
+    history = torch.flip(obs[start_idx : row_idx + 1], dims=(0,))
+    stacked_obs = history.reshape(-1).to(torch.float32)
+    future_targets = targets[row_idx : row_idx + int(action_horizon)]
+    if int(action_horizon) == 1:
+        return stacked_obs, future_targets.reshape(2)
+    return stacked_obs, future_targets.reshape(int(action_horizon), 2)
+
+
+def _build_sequence_samples_from_payload(payload, seq_len, stride, *, obs_field="obs"):
     manifest = _embedded_sequence_manifest(payload, seq_len=seq_len, stride=stride)
     if manifest is None:
         manifest = _build_sequence_manifest_from_payload(payload, seq_len, stride)
-    return _build_sequence_samples_from_manifest(payload, manifest)
+    return _build_sequence_samples_from_manifest(payload, manifest, obs_field=obs_field)
 
 
 def _make_bc_loader(dataset, batch_size, shuffle, num_workers):
@@ -2057,10 +3112,124 @@ def _make_bc_loader(dataset, batch_size, shuffle, num_workers):
 
 def _extract_action_logits(logits):
     if isinstance(logits, (tuple, list)):
-        if len(logits) != 1:
-            raise ValueError("Offline BC trainer expects a single discrete action head")
-        return logits[0]
+        return tuple(logits)
     return logits
+
+
+class _StackedDriveBCPolicy(torch.nn.Module):
+    def __init__(self, base_policy, *, obs_dim, stack_len, accel_bins, steer_bins, action_horizon=1):
+        super().__init__()
+        self.base_policy = base_policy
+        self.obs_dim = int(obs_dim)
+        self.stack_len = max(1, int(stack_len))
+        self.accel_bins = int(accel_bins)
+        self.steer_bins = int(steer_bins)
+        self.action_horizon = max(1, int(action_horizon))
+        self.embedding_dim = int(getattr(base_policy, "hidden_size"))
+        self.stack_adapter = torch.nn.Sequential(
+            torch.nn.LayerNorm(self.embedding_dim * self.stack_len),
+            torch.nn.GELU(),
+            pufferlib.pytorch.layer_init(
+                torch.nn.Linear(self.embedding_dim * self.stack_len, self.embedding_dim),
+                std=0.01,
+            ),
+            torch.nn.GELU(),
+        )
+        self.actor_accel = pufferlib.pytorch.layer_init(
+            torch.nn.Linear(self.embedding_dim, self.accel_bins * self.action_horizon),
+            std=0.01,
+        )
+        self.actor_steer = pufferlib.pytorch.layer_init(
+            torch.nn.Linear(self.embedding_dim, self.steer_bins * self.action_horizon),
+            std=0.01,
+        )
+        self.value_fn = pufferlib.pytorch.layer_init(torch.nn.Linear(self.embedding_dim, 1), std=1)
+
+    def forward(self, observations, state=None):
+        if observations.ndim != 2:
+            raise ValueError(
+                f"Stacked BC policy expects rank-2 observations [batch, stacked_obs_dim], got {tuple(observations.shape)}"
+            )
+        expected_width = self.obs_dim * self.stack_len
+        if int(observations.shape[1]) != expected_width:
+            raise ValueError(
+                f"Stacked BC policy observation width mismatch: expected {expected_width}, "
+                f"got {int(observations.shape[1])}"
+            )
+        batch_size = int(observations.shape[0])
+        flat_obs = observations.reshape(batch_size * self.stack_len, self.obs_dim)
+        encoded_frames = self.base_policy.encode_observations(flat_obs)
+        encoded_frames = encoded_frames.reshape(batch_size, self.stack_len, self.embedding_dim)
+        stacked_embedding = encoded_frames.reshape(batch_size, self.stack_len * self.embedding_dim)
+        hidden = self.stack_adapter(stacked_embedding)
+        accel_logits = self.actor_accel(hidden)
+        steer_logits = self.actor_steer(hidden)
+        if self.action_horizon == 1:
+            logits = (accel_logits, steer_logits)
+        else:
+            logits = (
+                accel_logits.reshape(batch_size, self.action_horizon, self.accel_bins),
+                steer_logits.reshape(batch_size, self.action_horizon, self.steer_bins),
+            )
+        value = self.value_fn(hidden)
+        return logits, value
+
+
+class _StackedDriveBCContinuousPolicy(torch.nn.Module):
+    def __init__(self, base_policy, *, obs_dim, stack_len, action_dim, action_horizon=1):
+        super().__init__()
+        self.base_policy = base_policy
+        self.obs_dim = int(obs_dim)
+        self.stack_len = max(1, int(stack_len))
+        self.action_dim = int(action_dim)
+        self.action_horizon = max(1, int(action_horizon))
+        self.embedding_dim = int(getattr(base_policy, "hidden_size"))
+        self.stack_adapter = torch.nn.Sequential(
+            torch.nn.LayerNorm(self.embedding_dim * self.stack_len),
+            torch.nn.GELU(),
+            pufferlib.pytorch.layer_init(
+                torch.nn.Linear(self.embedding_dim * self.stack_len, self.embedding_dim),
+                std=0.01,
+            ),
+            torch.nn.GELU(),
+        )
+        flat_action_dim = self.action_dim * self.action_horizon
+        self.actor_loc = pufferlib.pytorch.layer_init(
+            torch.nn.Linear(self.embedding_dim, flat_action_dim),
+            std=0.01,
+        )
+        self.actor_scale = pufferlib.pytorch.layer_init(
+            torch.nn.Linear(self.embedding_dim, flat_action_dim),
+            std=0.01,
+        )
+        self.value_fn = pufferlib.pytorch.layer_init(torch.nn.Linear(self.embedding_dim, 1), std=1)
+
+    def forward(self, observations, state=None):
+        if observations.ndim != 2:
+            raise ValueError(
+                f"Stacked BC continuous policy expects rank-2 observations [batch, stacked_obs_dim], got {tuple(observations.shape)}"
+            )
+        expected_width = self.obs_dim * self.stack_len
+        if int(observations.shape[1]) != expected_width:
+            raise ValueError(
+                f"Stacked BC continuous policy observation width mismatch: expected {expected_width}, "
+                f"got {int(observations.shape[1])}"
+            )
+        batch_size = int(observations.shape[0])
+        flat_obs = observations.reshape(batch_size * self.stack_len, self.obs_dim)
+        encoded_frames = self.base_policy.encode_observations(flat_obs)
+        encoded_frames = encoded_frames.reshape(batch_size, self.stack_len, self.embedding_dim)
+        stacked_embedding = encoded_frames.reshape(batch_size, self.stack_len * self.embedding_dim)
+        hidden = self.stack_adapter(stacked_embedding)
+        loc = self.actor_loc(hidden)
+        scale = self.actor_scale(hidden)
+        if self.action_horizon > 1:
+            loc = loc.reshape(batch_size, self.action_horizon, self.action_dim)
+            scale = scale.reshape(batch_size, self.action_horizon, self.action_dim)
+        std = torch.nn.functional.softplus(scale) + 1e-4
+        action = torch.distributions.Normal(loc, std)
+        value = self.value_fn(hidden)
+        return action, value
 
 
 def _run_bc_epoch(
@@ -2068,7 +3237,8 @@ def _run_bc_epoch(
     dataloader,
     optimizer,
     device,
-    recurrent,
+    mode,
+    continuous_actions=False,
     desc=None,
     log_interval=0,
     batch_log_fn=None,
@@ -2081,6 +3251,15 @@ def _run_bc_epoch(
     total_loss = 0.0
     total_correct = 0
     total_samples = 0
+    total_accel_correct = 0
+    total_steer_correct = 0
+    total_sequence_correct = 0
+    total_sequences = 0
+    total_accel_loss = 0.0
+    total_steer_loss = 0.0
+    total_mae = 0.0
+    total_accel_mae = 0.0
+    total_steer_mae = 0.0
     start_time = time.time()
     try:
         total_batches = len(dataloader)
@@ -2098,7 +3277,41 @@ def _run_bc_epoch(
     )
 
     for batch_idx, batch in enumerate(progress, start=1):
-        if recurrent:
+        if mode == _BC_MODE_RECURRENT and continuous_actions:
+            obs, action_target, mask = batch
+            obs = obs.to(device)
+            action_target = action_target.to(device)
+            mask = mask.to(device)
+            state = {"lstm_h": None, "lstm_c": None, "hidden": None}
+            dist, _ = model(obs, state)
+            dist = _extract_action_logits(dist)
+            if not isinstance(dist, torch.distributions.Normal):
+                raise ValueError("Continuous recurrent offline BC trainer expects a Normal action distribution")
+            flat_loc = dist.loc.reshape(-1, dist.loc.shape[-1])
+            flat_scale = dist.scale.reshape(-1, dist.scale.shape[-1])
+            flat_targets = action_target.reshape(-1, action_target.shape[-1])
+            flat_mask = mask.reshape(-1)
+            if not torch.any(flat_mask):
+                continue
+            flat_dist = torch.distributions.Normal(flat_loc, flat_scale)
+            losses = -flat_dist.log_prob(flat_targets).sum(dim=1)
+            loss = losses[flat_mask].mean()
+            flat_mae = torch.abs(flat_loc - flat_targets)
+            batch_samples = int(flat_mask.sum().item())
+            batch_mae = float(flat_mae[flat_mask].mean().item())
+            batch_accel_mae = float(flat_mae[flat_mask, 0].mean().item())
+            batch_steer_mae = float(flat_mae[flat_mask, 1].mean().item())
+            batch_correct = 0
+            batch_metrics = {
+                "accuracy": 0.0,
+                "mae": batch_mae,
+                "accel_mae": batch_accel_mae,
+                "steer_mae": batch_steer_mae,
+            }
+            total_mae += batch_mae * batch_samples
+            total_accel_mae += batch_accel_mae * batch_samples
+            total_steer_mae += batch_steer_mae * batch_samples
+        elif mode == _BC_MODE_RECURRENT:
             obs, action, mask = batch
             obs = obs.to(device)
             action = action.to(device)
@@ -2106,6 +3319,10 @@ def _run_bc_epoch(
             state = {"lstm_h": None, "lstm_c": None, "hidden": None}
             logits, _ = model(obs, state)
             logits = _extract_action_logits(logits)
+            if isinstance(logits, tuple):
+                if len(logits) != 1:
+                    raise ValueError("Recurrent offline BC trainer expects a single discrete action head")
+                logits = logits[0]
             flat_logits = logits.reshape(-1, logits.shape[-1])
             flat_targets = action.reshape(-1)
             flat_mask = mask.reshape(-1)
@@ -2116,16 +3333,116 @@ def _run_bc_epoch(
             predictions = flat_logits.argmax(dim=1)
             batch_correct = (predictions[flat_mask] == flat_targets[flat_mask]).sum().item()
             batch_samples = int(flat_mask.sum().item())
+            batch_metrics = {
+                "accuracy": float(batch_correct / max(1, batch_samples)),
+            }
+        elif mode == _BC_MODE_STACKED_IID and continuous_actions:
+            obs, action_target = batch
+            obs = obs.to(device)
+            action_target = action_target.to(device)
+            dist, _ = model(obs)
+            dist = _extract_action_logits(dist)
+            if not isinstance(dist, torch.distributions.Normal):
+                raise ValueError("Stacked IID continuous BC trainer expects a Normal action distribution")
+            if action_target.ndim == 2:
+                action_target = action_target.unsqueeze(1)
+            loc = dist.loc
+            if loc.ndim == 2:
+                loc = loc.unsqueeze(1)
+            scale = dist.scale
+            if scale.ndim == 2:
+                scale = scale.unsqueeze(1)
+            flat_dist = torch.distributions.Normal(
+                loc.reshape(-1, loc.shape[-1]),
+                scale.reshape(-1, scale.shape[-1]),
+            )
+            flat_targets = action_target.reshape(-1, action_target.shape[-1])
+            losses = -flat_dist.log_prob(flat_targets).sum(dim=1)
+            loss = losses.mean()
+            flat_mae = torch.abs(flat_dist.loc - flat_targets)
+            batch_samples = int(flat_targets.shape[0])
+            batch_mae = float(flat_mae.mean().item())
+            batch_accel_mae = float(flat_mae[:, 0].mean().item())
+            batch_steer_mae = float(flat_mae[:, 1].mean().item())
+            batch_correct = 0
+            batch_metrics = {
+                "accuracy": 0.0,
+                "mae": batch_mae,
+                "accel_mae": batch_accel_mae,
+                "steer_mae": batch_steer_mae,
+            }
+            total_mae += batch_mae * batch_samples
+            total_accel_mae += batch_accel_mae * batch_samples
+            total_steer_mae += batch_steer_mae * batch_samples
+        elif mode == _BC_MODE_STACKED_IID:
+            obs, accel_target, steer_target = batch
+            obs = obs.to(device)
+            accel_target = accel_target.to(device)
+            steer_target = steer_target.to(device)
+            logits, _ = model(obs)
+            logits = _extract_action_logits(logits)
+            if not isinstance(logits, tuple) or len(logits) != 2:
+                raise ValueError("Stacked IID BC trainer expects two discrete action heads: accel and steer")
+            accel_logits, steer_logits = logits
+            if accel_target.ndim == 1:
+                accel_target = accel_target.unsqueeze(1)
+            if steer_target.ndim == 1:
+                steer_target = steer_target.unsqueeze(1)
+            if accel_logits.ndim == 2:
+                accel_logits = accel_logits.unsqueeze(1)
+            if steer_logits.ndim == 2:
+                steer_logits = steer_logits.unsqueeze(1)
+            accel_loss = torch.nn.functional.cross_entropy(
+                accel_logits.reshape(-1, accel_logits.shape[-1]),
+                accel_target.reshape(-1),
+            )
+            steer_loss = torch.nn.functional.cross_entropy(
+                steer_logits.reshape(-1, steer_logits.shape[-1]),
+                steer_target.reshape(-1),
+            )
+            loss = accel_loss + steer_loss
+            accel_predictions = accel_logits.argmax(dim=-1)
+            steer_predictions = steer_logits.argmax(dim=-1)
+            accel_match = accel_predictions == accel_target
+            steer_match = steer_predictions == steer_target
+            joint_match = accel_match & steer_match
+            accel_correct = accel_match.sum().item()
+            steer_correct = steer_match.sum().item()
+            joint_correct = joint_match.sum().item()
+            sequence_correct = joint_match.all(dim=1).sum().item()
+            batch_samples = int(accel_target.numel())
+            batch_correct = int(joint_correct)
+            batch_metrics = {
+                "accuracy": float(joint_correct / max(1, batch_samples)),
+                "accel_accuracy": float(accel_correct / max(1, batch_samples)),
+                "steer_accuracy": float(steer_correct / max(1, batch_samples)),
+                "sequence_accuracy": float(sequence_correct / max(1, int(accel_target.shape[0]))),
+                "accel_loss": float(accel_loss.item()),
+                "steer_loss": float(steer_loss.item()),
+            }
+            total_accel_correct += int(accel_correct)
+            total_steer_correct += int(steer_correct)
+            total_sequence_correct += int(sequence_correct)
+            total_sequences += int(accel_target.shape[0])
+            total_accel_loss += float(accel_loss.item()) * batch_samples
+            total_steer_loss += float(steer_loss.item()) * batch_samples
         else:
             obs, action = batch
             obs = obs.to(device)
             action = action.to(device)
             logits, _ = model(obs)
             logits = _extract_action_logits(logits)
+            if isinstance(logits, tuple):
+                if len(logits) != 1:
+                    raise ValueError("IID offline BC trainer expects a single discrete action head")
+                logits = logits[0]
             loss = torch.nn.functional.cross_entropy(logits, action)
             predictions = logits.argmax(dim=1)
             batch_correct = (predictions == action).sum().item()
             batch_samples = int(action.numel())
+            batch_metrics = {
+                "accuracy": float(batch_correct / max(1, batch_samples)),
+            }
 
         if training:
             optimizer.zero_grad(set_to_none=True)
@@ -2138,12 +3455,21 @@ def _run_bc_epoch(
         if total_samples > 0:
             avg_loss = total_loss / total_samples
             avg_accuracy = total_correct / total_samples
-            progress.set_postfix(
-                loss=f"{avg_loss:.3f}",
-                acc=f"{avg_accuracy:.3f}",
-                seen=f"{total_samples / 1000.0:.1f}k",
-                refresh=False,
-            )
+            if continuous_actions:
+                avg_mae = total_mae / total_samples
+                progress.set_postfix(
+                    loss=f"{avg_loss:.3f}",
+                    mae=f"{avg_mae:.3f}",
+                    seen=f"{total_samples / 1000.0:.1f}k",
+                    refresh=False,
+                )
+            else:
+                progress.set_postfix(
+                    loss=f"{avg_loss:.3f}",
+                    acc=f"{avg_accuracy:.3f}",
+                    seen=f"{total_samples / 1000.0:.1f}k",
+                    refresh=False,
+                )
             if log_interval and batch_idx % int(log_interval) == 0:
                 progress_fraction = None
                 if total_batches is not None and total_batches > 0:
@@ -2151,33 +3477,60 @@ def _run_bc_epoch(
                     progress_fraction = batch_idx / total_batches
                 else:
                     progress_text = str(batch_idx)
-                print(
-                    f"[BC] {progress.desc} batch={progress_text} loss={avg_loss:.4f} "
-                    f"acc={avg_accuracy:.4f} seen={total_samples} elapsed={time.time() - start_time:.1f}s",
-                    flush=True,
-                )
-                if batch_log_fn is not None:
-                    batch_log_fn(
-                        {
-                            "batch": int(batch_idx),
-                            "progress": progress_fraction,
-                            "loss": float(avg_loss),
-                            "accuracy": float(avg_accuracy),
-                            "samples": int(total_samples),
-                            "elapsed_sec": float(time.time() - start_time),
-                        }
+                if continuous_actions:
+                    print(
+                        f"[BC] {progress.desc} batch={progress_text} loss={avg_loss:.4f} "
+                        f"mae={total_mae / total_samples:.4f} seen={total_samples} "
+                        f"elapsed={time.time() - start_time:.1f}s",
+                        flush=True,
                     )
+                else:
+                    print(
+                        f"[BC] {progress.desc} batch={progress_text} loss={avg_loss:.4f} "
+                        f"acc={avg_accuracy:.4f} seen={total_samples} elapsed={time.time() - start_time:.1f}s",
+                        flush=True,
+                    )
+                if batch_log_fn is not None:
+                    payload = {
+                        "batch": int(batch_idx),
+                        "progress": progress_fraction,
+                        "loss": float(avg_loss),
+                        "accuracy": float(avg_accuracy),
+                        "samples": int(total_samples),
+                        "elapsed_sec": float(time.time() - start_time),
+                    }
+                    payload.update(batch_metrics)
+                    batch_log_fn(payload)
 
     progress.close()
 
     if total_samples == 0:
         return {"loss": 0.0, "accuracy": 0.0, "samples": 0, "elapsed_sec": time.time() - start_time}
-    return {
+    result = {
         "loss": total_loss / total_samples,
         "accuracy": total_correct / total_samples,
         "samples": total_samples,
         "elapsed_sec": time.time() - start_time,
     }
+    if continuous_actions:
+        result.update(
+            {
+                "mae": total_mae / total_samples,
+                "accel_mae": total_accel_mae / total_samples,
+                "steer_mae": total_steer_mae / total_samples,
+            }
+        )
+    if mode == _BC_MODE_STACKED_IID and not continuous_actions:
+        result.update(
+            {
+                "accel_accuracy": total_accel_correct / total_samples,
+                "steer_accuracy": total_steer_correct / total_samples,
+                "sequence_accuracy": total_sequence_correct / max(1, total_sequences),
+                "accel_loss": total_accel_loss / total_samples,
+                "steer_loss": total_steer_loss / total_samples,
+            }
+        )
+    return result
 
 
 def _build_bc_policy(args, env, device):
@@ -2188,9 +3541,34 @@ def _build_bc_policy(args, env, device):
     policy_cls = getattr(ocean_torch, policy_name)
     policy = policy_cls(env, **args["policy"])
     rnn_name = _normalize_optional_name(_resolve_base_arg(args, "rnn_name"))
-    if rnn_name is not None:
+    train_cfg = dict(args.get("train", {}))
+    use_rnn = _as_bool(train_cfg.get("use_rnn", rnn_name is not None))
+    bc_train_cfg = _resolve_bc_train_config(args)
+    bc_mode = bc_train_cfg["mode"]
+    if use_rnn and rnn_name is not None:
         rnn_cls = getattr(ocean_torch, rnn_name)
         policy = rnn_cls(env, policy, **args["rnn"])
+    elif bc_mode == _BC_MODE_STACKED_IID:
+        if str(args.get("env", {}).get("action_type")) == "continuous":
+            policy = _StackedDriveBCContinuousPolicy(
+                policy,
+                obs_dim=int(env.single_observation_space.shape[0]),
+                stack_len=int(bc_train_cfg["stack_len"]),
+                action_dim=_get_continuous_action_dim(env),
+                action_horizon=int(bc_train_cfg.get("action_horizon", 1)),
+            )
+        else:
+            accel_values = _classic_acceleration_values(
+                extend_classic_action_space=_as_bool(args.get("env", {}).get("extend_classic_action_space", False))
+            )
+            policy = _StackedDriveBCPolicy(
+                policy,
+                obs_dim=int(env.single_observation_space.shape[0]),
+                stack_len=int(bc_train_cfg["stack_len"]),
+                accel_bins=len(accel_values),
+                steer_bins=len(_CLASSIC_STEERING_VALUES),
+                action_horizon=int(bc_train_cfg.get("action_horizon", 1)),
+            )
     return policy.to(device)
 
 
@@ -2206,13 +3584,12 @@ def _make_bc_training_env(env_cfg):
 def train_bc_policy(args=None, dataset_dir=None, output_dir=None, logger=None):
     args = args or load_drive_builder_config()
     env_cfg = _normalize_env_config(args["env"])
-    if env_cfg.get("action_type") != "discrete":
-        message = "Offline BC trainer currently supports only discrete action_type"
-        _print_mismatch(message)
-        raise ValueError(message)
+    action_type = str(env_cfg.get("action_type"))
+    continuous_actions = action_type == "continuous"
 
     bc_train_cfg = _resolve_bc_train_config(args, dataset_dir=dataset_dir, output_dir=output_dir)
     source_format = bc_train_cfg["source_format"]
+    obs_field = _normalize_bc_obs_field(bc_train_cfg.get("obs_field", "obs"))
     dataset_dir = bc_train_cfg["dataset_dir"]
     if source_format == _BC_SOURCE_FORMAT_SHARDS and (dataset_dir is None or not os.path.isdir(dataset_dir)):
         message = f"BC dataset directory not found: {dataset_dir}"
@@ -2227,6 +3604,17 @@ def train_bc_policy(args=None, dataset_dir=None, output_dir=None, logger=None):
             message = "bc_train.source_map_dir is required when source_format='paired_offline_fits'"
             _print_mismatch(message)
             raise ValueError(message)
+        if continuous_actions:
+            message = "Continuous offline BC currently supports only source_format='shards'"
+            _print_mismatch(message)
+            raise ValueError(message)
+    elif obs_field not in _BC_SHARD_OBS_FIELDS:
+        message = (
+            f"bc_train.obs_field must be one of {sorted(_BC_SHARD_OBS_FIELDS)} "
+            f"when source_format='shards'. Got: {obs_field}"
+        )
+        _print_mismatch(message)
+        raise ValueError(message)
 
     seed = int(args.get("train", {}).get("seed", 0))
     torch.manual_seed(seed)
@@ -2246,15 +3634,39 @@ def train_bc_policy(args=None, dataset_dir=None, output_dir=None, logger=None):
     output_path.mkdir(parents=True, exist_ok=True)
     print(
         f"[BC] starting training source_format={source_format} dataset_dir={dataset_dir} output_dir={output_path} "
-        f"device={device} epochs={int(bc_train_cfg['epochs'])} batch_size={int(bc_train_cfg['batch_size'])}",
+        f"device={device} mode={bc_train_cfg['mode']} epochs={int(bc_train_cfg['epochs'])} "
+        f"batch_size={int(bc_train_cfg['batch_size'])} "
+        f"index_log_interval={int(bc_train_cfg['index_log_interval'])}",
         flush=True,
     )
+
+    rnn_name = _normalize_optional_name(_resolve_base_arg(args, "rnn_name"))
+    use_rnn = _as_bool(args.get("train", {}).get("use_rnn", rnn_name is not None))
+    mode = bc_train_cfg["mode"]
+    recurrent = mode == _BC_MODE_RECURRENT
+    stacked_iid = mode == _BC_MODE_STACKED_IID
+    if recurrent and rnn_name is None:
+        message = "bc_train.mode='recurrent' requires a non-empty rnn_name"
+        _print_mismatch(message)
+        raise ValueError(message)
+    if recurrent and not use_rnn:
+        message = "bc_train.mode='recurrent' requires train.use_rnn=true"
+        _print_mismatch(message)
+        raise ValueError(message)
+    if not recurrent and use_rnn:
+        message = f"bc_train.mode='{mode}' requires train.use_rnn=false"
+        _print_mismatch(message)
+        raise ValueError(message)
 
     env = _make_bc_training_env(env_cfg)
     try:
         obs_dim = int(env.single_observation_space.shape[0])
-        action_space_size = _get_discrete_action_size(env)
-        recurrent = _normalize_optional_name(_resolve_base_arg(args, "rnn_name")) is not None
+        if continuous_actions:
+            model_action_dim = _get_continuous_action_dim(env)
+            action_space_size = _get_bc_discrete_label_space_size(env_cfg)
+        else:
+            action_space_size = _get_discrete_action_size(env)
+            model_action_dim = action_space_size
         if recurrent:
             expected_seq_len = int(args.get("train", {}).get("bptt_horizon", bc_train_cfg["seq_len"]))
             actual_seq_len = int(bc_train_cfg["seq_len"])
@@ -2270,19 +3682,29 @@ def train_bc_policy(args=None, dataset_dir=None, output_dir=None, logger=None):
         val_shards = []
         train_maps = []
         val_maps = []
+        accel_scale, steer_scale = _continuous_action_normalization_scales(env_cfg)
         if source_format == _BC_SOURCE_FORMAT_PAIRED_OFFLINE_FITS:
-            if not recurrent:
-                message = "paired_offline_fits BC training currently expects a recurrent policy"
-                _print_mismatch(message)
-                raise ValueError(message)
             fit_export = bc_train_cfg["fit_export"]
             fit_side = str(bc_train_cfg["fit_side"])
             obs_key = str(bc_train_cfg["obs_key"])
+            print(
+                f"[BC] loading paired-fit source records from {bc_train_cfg['source_map_dir']}",
+                flush=True,
+            )
             source_records = _load_paired_fit_source_records(
                 bc_train_cfg["source_map_dir"],
                 max_maps=bc_train_cfg["max_maps"],
             )
+            print(f"[BC] loaded {len(source_records)} source records", flush=True)
+            print(f"[BC] loading paired-fit manifest from {fit_export}", flush=True)
             fit_manifest = _load_paired_fit_manifest(fit_export)
+            fit_manifest_maps = _paired_fit_manifest_map_names(fit_manifest)
+            print(
+                f"[BC] paired-fit manifest ready format={fit_manifest.get('format')} "
+                f"shards={len(fit_manifest.get('shards') or [])} "
+                f"shared_maps={len(fit_manifest_maps or [])}",
+                flush=True,
+            )
             source_records = _filter_records_to_paired_fit_manifest(
                 source_records,
                 fit_manifest,
@@ -2296,36 +3718,105 @@ def train_bc_policy(args=None, dataset_dir=None, output_dir=None, logger=None):
                 f"train={len(train_records)} val={len(val_records)} fit_side={fit_side} obs_key={obs_key}",
                 flush=True,
             )
-            print("[BC] using paired offline-fit streaming; no materialized BC shard dataset is required", flush=True)
-            train_dataset = _PairedOfflineFitSequenceDataset(
-                fit_export,
-                train_records,
-                obs_dim,
-                action_space_size,
-                seq_len=bc_train_cfg["seq_len"],
-                stride=bc_train_cfg["sequence_stride"],
-                fit_side=fit_side,
-                obs_key=obs_key,
-                shuffle=True,
-                seed=seed,
-                shard_shuffle_buffer=bc_train_cfg["shard_shuffle_buffer"],
-            )
-            val_dataset = _PairedOfflineFitSequenceDataset(
-                fit_export,
-                val_records,
-                obs_dim,
-                action_space_size,
-                seq_len=bc_train_cfg["seq_len"],
-                stride=bc_train_cfg["sequence_stride"],
-                fit_side=fit_side,
-                obs_key=obs_key,
-                shuffle=False,
-                seed=seed,
-                shard_shuffle_buffer=1,
-            )
+            if recurrent:
+                print("[BC] using paired offline-fit streaming; no materialized BC shard dataset is required", flush=True)
+                train_dataset = _PairedOfflineFitSequenceDataset(
+                    fit_export,
+                    train_records,
+                    obs_dim,
+                    action_space_size,
+                    seq_len=bc_train_cfg["seq_len"],
+                    stride=bc_train_cfg["sequence_stride"],
+                    fit_side=fit_side,
+                    obs_key=obs_key,
+                    shuffle=True,
+                    seed=seed,
+                    shard_shuffle_buffer=bc_train_cfg["shard_shuffle_buffer"],
+                    index_log_interval=bc_train_cfg["index_log_interval"],
+                )
+                val_dataset = _PairedOfflineFitSequenceDataset(
+                    fit_export,
+                    val_records,
+                    obs_dim,
+                    action_space_size,
+                    seq_len=bc_train_cfg["seq_len"],
+                    stride=bc_train_cfg["sequence_stride"],
+                    fit_side=fit_side,
+                    obs_key=obs_key,
+                    shuffle=False,
+                    seed=seed,
+                    shard_shuffle_buffer=1,
+                    index_log_interval=bc_train_cfg["index_log_interval"],
+                )
+            elif stacked_iid:
+                print(
+                    f"[BC] mode={mode} using stacked feedforward observation-action pairs "
+                    f"stack_len={int(bc_train_cfg['stack_len'])} "
+                    f"action_horizon={int(bc_train_cfg['action_horizon'])}",
+                    flush=True,
+                )
+                print("[BC] using paired offline-fit streaming; no materialized BC shard dataset is required", flush=True)
+                train_dataset = _PairedOfflineFitStackedIIDDataset(
+                    fit_export,
+                    train_records,
+                    obs_dim,
+                    action_space_size,
+                    stack_len=bc_train_cfg["stack_len"],
+                    action_horizon=bc_train_cfg["action_horizon"],
+                    fit_side=fit_side,
+                    obs_key=obs_key,
+                    extend_classic_action_space=env_cfg.get("extend_classic_action_space", False),
+                    shuffle=True,
+                    seed=seed,
+                    shard_shuffle_buffer=bc_train_cfg["shard_shuffle_buffer"],
+                    index_log_interval=bc_train_cfg["index_log_interval"],
+                )
+                val_dataset = _PairedOfflineFitStackedIIDDataset(
+                    fit_export,
+                    val_records,
+                    obs_dim,
+                    action_space_size,
+                    stack_len=bc_train_cfg["stack_len"],
+                    action_horizon=bc_train_cfg["action_horizon"],
+                    fit_side=fit_side,
+                    obs_key=obs_key,
+                    extend_classic_action_space=env_cfg.get("extend_classic_action_space", False),
+                    shuffle=False,
+                    seed=seed,
+                    shard_shuffle_buffer=1,
+                    index_log_interval=bc_train_cfg["index_log_interval"],
+                )
+            else:
+                print("[BC] mode=iid using single-step shuffled observation-action pairs", flush=True)
+                print("[BC] using paired offline-fit streaming; no materialized BC shard dataset is required", flush=True)
+                train_dataset = _PairedOfflineFitFlatDataset(
+                    fit_export,
+                    train_records,
+                    obs_dim,
+                    action_space_size,
+                    fit_side=fit_side,
+                    obs_key=obs_key,
+                    shuffle=True,
+                    seed=seed,
+                    shard_shuffle_buffer=bc_train_cfg["shard_shuffle_buffer"],
+                    index_log_interval=bc_train_cfg["index_log_interval"],
+                )
+                val_dataset = _PairedOfflineFitFlatDataset(
+                    fit_export,
+                    val_records,
+                    obs_dim,
+                    action_space_size,
+                    fit_side=fit_side,
+                    obs_key=obs_key,
+                    shuffle=False,
+                    seed=seed,
+                    shard_shuffle_buffer=1,
+                    index_log_interval=bc_train_cfg["index_log_interval"],
+                )
             train_shards = train_dataset.shard_paths
             val_shards = val_dataset.shard_paths
         else:
+            dataset_manifest = _load_bc_dataset_manifest(dataset_dir)
             shard_paths = _list_bc_shards(dataset_dir, max_shards=bc_train_cfg["max_shards"])
             if not shard_paths:
                 message = f"No BC shard files found in {dataset_dir}"
@@ -2337,49 +3828,191 @@ def train_bc_policy(args=None, dataset_dir=None, output_dir=None, logger=None):
                 f"[BC] found {len(shard_paths)} shards total: train={len(train_shards)} val={len(val_shards)}",
                 flush=True,
             )
+            resolved_obs_dim = _dataset_manifest_obs_dim(dataset_manifest, obs_field)
+            if resolved_obs_dim is None and train_shards:
+                resolved_obs_dim = _infer_bc_obs_dim_from_shard(train_shards[0], obs_field)
+            if resolved_obs_dim is not None and int(resolved_obs_dim) != int(obs_dim):
+                print(
+                    f"[BC] overriding env observation dim for obs_field={obs_field}: "
+                    f"{obs_dim} -> {int(resolved_obs_dim)}",
+                    flush=True,
+                )
+                obs_dim = int(resolved_obs_dim)
+                _override_bc_env_observation_space(env, obs_dim)
+            _override_bc_env_obs_schema(env, obs_field=obs_field, obs_dim=obs_dim)
+            if dataset_manifest is not None:
+                observation_keys = dataset_manifest.get("observation_keys")
+                dims = {
+                    key: dataset_manifest.get(f"{key}_dim")
+                    for key in ("obs", "obs_default", _BC_EGO_DYNAMICS_OBS_FIELD, "obs_sdc_only_with_trailer")
+                    if dataset_manifest.get(f"{key}_dim") is not None
+                }
+                print(
+                    f"[BC] shard dataset manifest path={dataset_manifest['_manifest_path']} "
+                    f"obs_field={obs_field} observation_keys={observation_keys} dims={dims}",
+                    flush=True,
+                )
             print("[BC] using shard-streamed loading; training starts without full dataset preload", flush=True)
 
-            first_train_payload = _peek_bc_shard(train_shards, obs_dim, action_space_size)
+            first_train_payload = _peek_bc_shard(
+                train_shards,
+                obs_dim,
+                action_space_size,
+                obs_field=obs_field,
+            )
             if first_train_payload is None or int(first_train_payload["action"].shape[0]) == 0:
                 message = "BC training dataset is empty after loading selected shards"
                 _print_mismatch(message)
                 raise ValueError(message)
 
             if recurrent:
-                train_dataset = _SequenceBCDataset(
-                    train_shards,
-                    obs_dim,
-                    action_space_size,
-                    seq_len=bc_train_cfg["seq_len"],
-                    stride=bc_train_cfg["sequence_stride"],
-                    shuffle=True,
-                    seed=seed,
-                    require_embedded=_as_bool(bc_train_cfg.get("use_embedded_windows", False)),
-                    shard_shuffle_buffer=bc_train_cfg["shard_shuffle_buffer"],
-                    rebalance_windows=_as_bool(bc_train_cfg.get("rebalance_windows", False)),
-                    window_balance_fraction=bc_train_cfg["window_balance_fraction"],
-                    window_balance_max_multiplier=bc_train_cfg["window_balance_max_multiplier"],
+                if continuous_actions:
+                    train_dataset = _ContinuousSequenceBCDataset(
+                        train_shards,
+                        obs_dim,
+                        action_space_size,
+                        seq_len=bc_train_cfg["seq_len"],
+                        stride=bc_train_cfg["sequence_stride"],
+                        shuffle=True,
+                        seed=seed,
+                        obs_field=obs_field,
+                        require_embedded=_as_bool(bc_train_cfg.get("use_embedded_windows", False)),
+                        continuous_accel_field=bc_train_cfg["continuous_accel_field"],
+                        continuous_steer_field=bc_train_cfg["continuous_steer_field"],
+                        accel_scale=accel_scale,
+                        steer_scale=steer_scale,
+                        shard_shuffle_buffer=bc_train_cfg["shard_shuffle_buffer"],
+                        index_log_interval=bc_train_cfg["index_log_interval"],
+                    )
+                    val_dataset = _ContinuousSequenceBCDataset(
+                        val_shards,
+                        obs_dim,
+                        action_space_size,
+                        seq_len=bc_train_cfg["seq_len"],
+                        stride=bc_train_cfg["sequence_stride"],
+                        shuffle=False,
+                        seed=seed,
+                        obs_field=obs_field,
+                        require_embedded=_as_bool(bc_train_cfg.get("use_embedded_windows", False)),
+                        continuous_accel_field=bc_train_cfg["continuous_accel_field"],
+                        continuous_steer_field=bc_train_cfg["continuous_steer_field"],
+                        accel_scale=accel_scale,
+                        steer_scale=steer_scale,
+                        shard_shuffle_buffer=1,
+                        index_log_interval=bc_train_cfg["index_log_interval"],
+                    )
+                else:
+                    train_dataset = _SequenceBCDataset(
+                        train_shards,
+                        obs_dim,
+                        action_space_size,
+                        seq_len=bc_train_cfg["seq_len"],
+                        stride=bc_train_cfg["sequence_stride"],
+                        shuffle=True,
+                        seed=seed,
+                        obs_field=obs_field,
+                        require_embedded=_as_bool(bc_train_cfg.get("use_embedded_windows", False)),
+                        shard_shuffle_buffer=bc_train_cfg["shard_shuffle_buffer"],
+                        index_log_interval=bc_train_cfg["index_log_interval"],
+                        rebalance_windows=_as_bool(bc_train_cfg.get("rebalance_windows", False)),
+                        window_balance_fraction=bc_train_cfg["window_balance_fraction"],
+                        window_balance_max_multiplier=bc_train_cfg["window_balance_max_multiplier"],
+                    )
+                    val_dataset = _SequenceBCDataset(
+                        val_shards,
+                        obs_dim,
+                        action_space_size,
+                        seq_len=bc_train_cfg["seq_len"],
+                        stride=bc_train_cfg["sequence_stride"],
+                        shuffle=False,
+                        seed=seed,
+                        obs_field=obs_field,
+                        require_embedded=_as_bool(bc_train_cfg.get("use_embedded_windows", False)),
+                        shard_shuffle_buffer=1,
+                        index_log_interval=bc_train_cfg["index_log_interval"],
+                        rebalance_windows=False,
+                    )
+            elif stacked_iid:
+                print(
+                    f"[BC] mode={mode} using stacked feedforward observation-action pairs "
+                    f"stack_len={int(bc_train_cfg['stack_len'])} "
+                    f"action_horizon={int(bc_train_cfg['action_horizon'])}",
+                    flush=True,
                 )
-                val_dataset = _SequenceBCDataset(
-                    val_shards,
-                    obs_dim,
-                    action_space_size,
-                    seq_len=bc_train_cfg["seq_len"],
-                    stride=bc_train_cfg["sequence_stride"],
-                    shuffle=False,
-                    seed=seed,
-                    require_embedded=_as_bool(bc_train_cfg.get("use_embedded_windows", False)),
-                    shard_shuffle_buffer=1,
-                    rebalance_windows=False,
-                )
+                if continuous_actions:
+                    train_dataset = _ContinuousStackedIIDBCDataset(
+                        train_shards,
+                        obs_dim,
+                        action_space_size,
+                        stack_len=bc_train_cfg["stack_len"],
+                        action_horizon=bc_train_cfg["action_horizon"],
+                        shuffle=True,
+                        seed=seed,
+                        obs_field=obs_field,
+                        continuous_accel_field=bc_train_cfg["continuous_accel_field"],
+                        continuous_steer_field=bc_train_cfg["continuous_steer_field"],
+                        accel_scale=accel_scale,
+                        steer_scale=steer_scale,
+                        shard_shuffle_buffer=bc_train_cfg["shard_shuffle_buffer"],
+                        index_log_interval=bc_train_cfg["index_log_interval"],
+                    )
+                    val_dataset = _ContinuousStackedIIDBCDataset(
+                        val_shards,
+                        obs_dim,
+                        action_space_size,
+                        stack_len=bc_train_cfg["stack_len"],
+                        action_horizon=bc_train_cfg["action_horizon"],
+                        shuffle=False,
+                        seed=seed,
+                        obs_field=obs_field,
+                        continuous_accel_field=bc_train_cfg["continuous_accel_field"],
+                        continuous_steer_field=bc_train_cfg["continuous_steer_field"],
+                        accel_scale=accel_scale,
+                        steer_scale=steer_scale,
+                        shard_shuffle_buffer=1,
+                        index_log_interval=bc_train_cfg["index_log_interval"],
+                    )
+                else:
+                    train_dataset = _StackedIIDBCDataset(
+                        train_shards,
+                        obs_dim,
+                        action_space_size,
+                        stack_len=bc_train_cfg["stack_len"],
+                        action_horizon=bc_train_cfg["action_horizon"],
+                        shuffle=True,
+                        seed=seed,
+                        obs_field=obs_field,
+                        extend_classic_action_space=env_cfg.get("extend_classic_action_space", False),
+                        shard_shuffle_buffer=bc_train_cfg["shard_shuffle_buffer"],
+                        index_log_interval=bc_train_cfg["index_log_interval"],
+                    )
+                    val_dataset = _StackedIIDBCDataset(
+                        val_shards,
+                        obs_dim,
+                        action_space_size,
+                        stack_len=bc_train_cfg["stack_len"],
+                        action_horizon=bc_train_cfg["action_horizon"],
+                        shuffle=False,
+                        seed=seed,
+                        obs_field=obs_field,
+                        extend_classic_action_space=env_cfg.get("extend_classic_action_space", False),
+                        shard_shuffle_buffer=1,
+                        index_log_interval=bc_train_cfg["index_log_interval"],
+                    )
             else:
+                if continuous_actions:
+                    message = "Continuous offline BC currently supports only recurrent mode"
+                    _print_mismatch(message)
+                    raise ValueError(message)
                 train_dataset = _FlatBCDataset(
                     train_shards,
                     obs_dim,
                     action_space_size,
                     shuffle=True,
                     seed=seed,
+                    obs_field=obs_field,
                     shard_shuffle_buffer=bc_train_cfg["shard_shuffle_buffer"],
+                    index_log_interval=bc_train_cfg["index_log_interval"],
                 )
                 val_dataset = _FlatBCDataset(
                     val_shards,
@@ -2387,7 +4020,9 @@ def train_bc_policy(args=None, dataset_dir=None, output_dir=None, logger=None):
                     action_space_size,
                     shuffle=False,
                     seed=seed,
+                    obs_field=obs_field,
                     shard_shuffle_buffer=1,
+                    index_log_interval=bc_train_cfg["index_log_interval"],
                 )
 
         if recurrent:
@@ -2428,15 +4063,29 @@ def train_bc_policy(args=None, dataset_dir=None, output_dir=None, logger=None):
         else:
             train_window_count = len(train_dataset)
             val_window_count = len(val_dataset)
+            if source_format == _BC_SOURCE_FORMAT_PAIRED_OFFLINE_FITS:
+                print(
+                    f"[BC] indexed train samples={train_window_count} cached={train_dataset.manifest_stats()['cached']} "
+                    f"elapsed=0.0s",
+                    flush=True,
+                )
+                if val_shards:
+                    print(
+                        f"[BC] indexed val samples={val_window_count} cached={val_dataset.manifest_stats()['cached']} "
+                        f"elapsed=0.0s",
+                        flush=True,
+                    )
         if train_window_count <= 0:
             message = "BC training dataset is empty after indexing selected source data"
             _print_mismatch(message)
             raise ValueError(message)
         print(
-            f"[BC] dataset ready recurrent={recurrent} train_shards={len(train_shards)} "
+            f"[BC] dataset ready mode={bc_train_cfg['mode']} recurrent={recurrent} train_shards={len(train_shards)} "
             f"val_shards={len(val_shards)} train_maps={len(train_maps)} val_maps={len(val_maps)} "
             f"train_items={train_window_count} val_items={val_window_count} "
-            f"obs_dim={obs_dim} action_space={action_space_size}",
+            f"obs_dim={obs_dim} obs_field={obs_field} "
+            f"model_obs_dim={obs_dim * int(bc_train_cfg['stack_len']) if stacked_iid else obs_dim} "
+            f"action_space={action_space_size} model_action_dim={model_action_dim}",
             flush=True,
         )
 
@@ -2508,6 +4157,17 @@ def train_bc_policy(args=None, dataset_dir=None, output_dir=None, logger=None):
                     "bc/train_samples_seen_epoch": int(batch_metrics["samples"]),
                     "bc/train_elapsed_sec_running": float(batch_metrics["elapsed_sec"]),
                 }
+                if "accel_accuracy" in batch_metrics:
+                    batch_logs["bc/train_accel_accuracy_running"] = float(batch_metrics["accel_accuracy"])
+                    batch_logs["bc/train_steer_accuracy_running"] = float(batch_metrics["steer_accuracy"])
+                    if "sequence_accuracy" in batch_metrics:
+                        batch_logs["bc/train_sequence_accuracy_running"] = float(batch_metrics["sequence_accuracy"])
+                    batch_logs["bc/train_accel_loss_running"] = float(batch_metrics["accel_loss"])
+                    batch_logs["bc/train_steer_loss_running"] = float(batch_metrics["steer_loss"])
+                if "mae" in batch_metrics:
+                    batch_logs["bc/train_mae_running"] = float(batch_metrics["mae"])
+                    batch_logs["bc/train_accel_mae_running"] = float(batch_metrics["accel_mae"])
+                    batch_logs["bc/train_steer_mae_running"] = float(batch_metrics["steer_mae"])
                 if batch_metrics["progress"] is not None:
                     batch_logs["bc/train_epoch_progress"] = float(batch_metrics["progress"])
                 logger.log(batch_logs, batch_step)
@@ -2517,7 +4177,8 @@ def train_bc_policy(args=None, dataset_dir=None, output_dir=None, logger=None):
                 train_loader,
                 optimizer,
                 device,
-                recurrent=recurrent,
+                mode=mode,
+                continuous_actions=continuous_actions,
                 desc=f"BC train epoch {epoch + 1}/{int(bc_train_cfg['epochs'])}",
                 log_interval=bc_train_cfg["log_interval"],
                 batch_log_fn=_log_train_batch,
@@ -2528,7 +4189,8 @@ def train_bc_policy(args=None, dataset_dir=None, output_dir=None, logger=None):
                     val_loader,
                     None,
                     device,
-                    recurrent=recurrent,
+                    mode=mode,
+                    continuous_actions=continuous_actions,
                     desc=f"BC val epoch {epoch + 1}/{int(bc_train_cfg['epochs'])}",
                     log_interval=0,
                 )
@@ -2545,6 +4207,32 @@ def train_bc_policy(args=None, dataset_dir=None, output_dir=None, logger=None):
                 "val_elapsed_sec": float(val_metrics["elapsed_sec"]),
                 "learning_rate": float(optimizer.param_groups[0]["lr"]),
             }
+            if stacked_iid and not continuous_actions:
+                epoch_metrics.update(
+                    {
+                        "train_accel_loss": float(train_metrics["accel_loss"]),
+                        "train_steer_loss": float(train_metrics["steer_loss"]),
+                        "train_accel_accuracy": float(train_metrics["accel_accuracy"]),
+                        "train_steer_accuracy": float(train_metrics["steer_accuracy"]),
+                        "train_sequence_accuracy": float(train_metrics.get("sequence_accuracy", train_metrics["accuracy"])),
+                        "val_accel_loss": float(val_metrics.get("accel_loss", 0.0)),
+                        "val_steer_loss": float(val_metrics.get("steer_loss", 0.0)),
+                        "val_accel_accuracy": float(val_metrics.get("accel_accuracy", 0.0)),
+                        "val_steer_accuracy": float(val_metrics.get("steer_accuracy", 0.0)),
+                        "val_sequence_accuracy": float(val_metrics.get("sequence_accuracy", val_metrics["accuracy"])),
+                    }
+                )
+            elif continuous_actions:
+                epoch_metrics.update(
+                    {
+                        "train_mae": float(train_metrics["mae"]),
+                        "train_accel_mae": float(train_metrics["accel_mae"]),
+                        "train_steer_mae": float(train_metrics["steer_mae"]),
+                        "val_mae": float(val_metrics.get("mae", 0.0)),
+                        "val_accel_mae": float(val_metrics.get("accel_mae", 0.0)),
+                        "val_steer_mae": float(val_metrics.get("steer_mae", 0.0)),
+                    }
+                )
             history.append(epoch_metrics)
             completed_epochs = epoch_metrics["epoch"]
             torch.save(policy.state_dict(), latest_path)
@@ -2581,13 +4269,61 @@ def train_bc_policy(args=None, dataset_dir=None, output_dir=None, logger=None):
                     },
                     train_step,
                 )
+                if stacked_iid and not continuous_actions:
+                    logger.log(
+                        {
+                            "bc/train_accel_loss": epoch_metrics["train_accel_loss"],
+                            "bc/train_steer_loss": epoch_metrics["train_steer_loss"],
+                            "bc/train_accel_accuracy": epoch_metrics["train_accel_accuracy"],
+                            "bc/train_steer_accuracy": epoch_metrics["train_steer_accuracy"],
+                            "bc/train_sequence_accuracy": epoch_metrics["train_sequence_accuracy"],
+                            "bc/val_accel_loss": epoch_metrics["val_accel_loss"],
+                            "bc/val_steer_loss": epoch_metrics["val_steer_loss"],
+                            "bc/val_accel_accuracy": epoch_metrics["val_accel_accuracy"],
+                            "bc/val_steer_accuracy": epoch_metrics["val_steer_accuracy"],
+                            "bc/val_sequence_accuracy": epoch_metrics["val_sequence_accuracy"],
+                        },
+                        train_step,
+                    )
+                elif continuous_actions:
+                    logger.log(
+                        {
+                            "bc/train_mae": epoch_metrics["train_mae"],
+                            "bc/train_accel_mae": epoch_metrics["train_accel_mae"],
+                            "bc/train_steer_mae": epoch_metrics["train_steer_mae"],
+                            "bc/val_mae": epoch_metrics["val_mae"],
+                            "bc/val_accel_mae": epoch_metrics["val_accel_mae"],
+                            "bc/val_steer_mae": epoch_metrics["val_steer_mae"],
+                        },
+                        train_step,
+                    )
 
-            print(
-                f"[BC] epoch={epoch_metrics['epoch']} train_loss={epoch_metrics['train_loss']:.4f} "
-                f"train_acc={epoch_metrics['train_accuracy']:.4f} val_loss={epoch_metrics['val_loss']:.4f} "
-                f"val_acc={epoch_metrics['val_accuracy']:.4f} train_sec={epoch_metrics['train_elapsed_sec']:.1f} "
-                f"val_sec={epoch_metrics['val_elapsed_sec']:.1f}"
-            )
+            if continuous_actions:
+                print(
+                    f"[BC] epoch={epoch_metrics['epoch']} train_loss={epoch_metrics['train_loss']:.4f} "
+                    f"train_mae={epoch_metrics['train_mae']:.4f} val_loss={epoch_metrics['val_loss']:.4f} "
+                    f"val_mae={epoch_metrics['val_mae']:.4f} train_sec={epoch_metrics['train_elapsed_sec']:.1f} "
+                    f"val_sec={epoch_metrics['val_elapsed_sec']:.1f}",
+                    flush=True,
+                )
+            else:
+                print(
+                    f"[BC] epoch={epoch_metrics['epoch']} train_loss={epoch_metrics['train_loss']:.4f} "
+                    f"train_acc={epoch_metrics['train_accuracy']:.4f} val_loss={epoch_metrics['val_loss']:.4f} "
+                    f"val_acc={epoch_metrics['val_accuracy']:.4f} train_sec={epoch_metrics['train_elapsed_sec']:.1f} "
+                    f"val_sec={epoch_metrics['val_elapsed_sec']:.1f}",
+                    flush=True,
+                )
+            if stacked_iid and not continuous_actions:
+                print(
+                    f"[BC] epoch={epoch_metrics['epoch']} accel_acc={epoch_metrics['train_accel_accuracy']:.4f}/"
+                    f"{epoch_metrics['val_accel_accuracy']:.4f} "
+                    f"steer_acc={epoch_metrics['train_steer_accuracy']:.4f}/"
+                    f"{epoch_metrics['val_steer_accuracy']:.4f} "
+                    f"seq_acc={epoch_metrics['train_sequence_accuracy']:.4f}/"
+                    f"{epoch_metrics['val_sequence_accuracy']:.4f}",
+                    flush=True,
+                )
 
             if early_stopping_patience > 0 and early_stopping_bad_epochs >= early_stopping_patience:
                 stopped_early = True
@@ -2614,7 +4350,21 @@ def train_bc_policy(args=None, dataset_dir=None, output_dir=None, logger=None):
             "val_maps": val_maps,
             "observation_dim": obs_dim,
             "action_space_size": action_space_size,
+            "model_action_dim": model_action_dim,
+            "model_observation_dim": obs_dim * int(bc_train_cfg["stack_len"]) if stacked_iid else obs_dim,
+            "stack_len": int(bc_train_cfg["stack_len"]) if stacked_iid else 1,
+            "action_horizon": int(bc_train_cfg.get("action_horizon", 1)) if stacked_iid else 1,
+            "acceleration_values": list(
+                _classic_acceleration_values(
+                    extend_classic_action_space=env_cfg.get("extend_classic_action_space", False)
+                )
+            )
+            if stacked_iid
+            else None,
+            "steering_values": list(_CLASSIC_STEERING_VALUES) if stacked_iid else None,
+            "mode": bc_train_cfg["mode"],
             "recurrent": recurrent,
+            "continuous_actions": continuous_actions,
             "completed_epochs": completed_epochs,
             "best_epoch": best_epoch,
             "best_metric": best_metric,
@@ -3346,6 +5096,10 @@ class Drive(pufferlib.PufferEnv):
         self.num_envs = num_envs
         self._live_map_entries = [entry for entry, _ in selected_entries]
         super().__init__(buf=buf)
+        self.bc_kl_teacher_ids = None
+        if isinstance(buf, dict) and "bc_kl_teacher_ids" in buf:
+            self.bc_kl_teacher_ids = buf["bc_kl_teacher_ids"]
+        self._update_bc_kl_teacher_ids()
         self._sim_observations = self.observations
         if self.observation_mode == 1:
             self._sim_observations = np.zeros((self.num_agents, self._sim_num_obs), dtype=np.float32)
@@ -3365,8 +5119,33 @@ class Drive(pufferlib.PufferEnv):
         self.map_ids = map_ids
         self.num_envs = num_envs
         self._live_map_entries = [entry for entry, _ in selected_entries]
+        self._update_bc_kl_teacher_ids()
         self.c_envs = self._build_vector_env(self._live_map_entries, self.agent_offsets, seed)
         binding.vec_reset(self.c_envs, seed)
+
+    @staticmethod
+    def _bc_kl_teacher_id_for_entry(entry: MapDatasetEntry) -> int:
+        parts = [
+            entry.source_dataset,
+            entry.source_name,
+            entry.relative_path,
+            entry.map_path,
+        ]
+        text = " ".join(str(part).lower() for part in parts if part)
+        if "truck" in text:
+            return 1
+        if "car" in text:
+            return 0
+        return -1
+
+    def _update_bc_kl_teacher_ids(self):
+        if self.bc_kl_teacher_ids is None:
+            return
+        self.bc_kl_teacher_ids[:] = -1
+        for i, entry in enumerate(self._live_map_entries):
+            cur = self.agent_offsets[i]
+            nxt = self.agent_offsets[i + 1]
+            self.bc_kl_teacher_ids[cur:nxt] = self._bc_kl_teacher_id_for_entry(entry)
 
     def _inspect_map_entry(self, entry: MapDatasetEntry) -> dict[str, Any]:
         cached = self._map_validation_cache.get(entry.map_path)

@@ -11,6 +11,7 @@ from pufferlib.ocean.drive import drive as drive_module
 
 OBS_DIM = 1120
 ACTION_SPACE = 91
+STACK_LEN = 3
 
 
 def _write_source_split(source_dir, fit_map_names):
@@ -178,6 +179,35 @@ class _TinyRecurrentPolicy(torch.nn.Module):
         return logits, state
 
 
+class _TinyFeedforwardPolicy(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.actor = torch.nn.Linear(OBS_DIM, ACTION_SPACE)
+
+    def forward(self, obs, state=None):
+        logits = self.actor(obs)
+        return logits, state
+
+
+class _TinyTwoHeadFeedforwardPolicy(torch.nn.Module):
+    def __init__(self, *, action_horizon=1):
+        super().__init__()
+        self.action_horizon = int(action_horizon)
+        self.accel = torch.nn.Linear(OBS_DIM * STACK_LEN, 7 * self.action_horizon)
+        self.steer = torch.nn.Linear(OBS_DIM * STACK_LEN, 13 * self.action_horizon)
+
+    def forward(self, obs, state=None):
+        accel = self.accel(obs)
+        steer = self.steer(obs)
+        if self.action_horizon == 1:
+            return (accel, steer), state
+        batch = obs.shape[0]
+        return (
+            accel.reshape(batch, self.action_horizon, 7),
+            steer.reshape(batch, self.action_horizon, 13),
+        ), state
+
+
 def test_bc_trainer_streams_paired_offline_fits_and_writes_checkpoints(tmp_path, monkeypatch):
     fit_map_names = ["map_00000.bin", "map_00001.bin"]
     source_dir = tmp_path / "source"
@@ -254,3 +284,513 @@ def test_bc_trainer_streams_paired_offline_fits_and_writes_checkpoints(tmp_path,
     assert metrics["action_space_size"] == ACTION_SPACE
     assert sorted(metrics["train_maps"]) == sorted(fit_map_names)
     assert metrics["history"][0]["train_samples"] == 20
+    assert metrics["mode"] == "recurrent"
+
+
+def test_paired_offline_fit_flat_loader_shapes_and_counts(tmp_path):
+    fit_map_names = ["map_00000.bin", "map_00001.bin"]
+    source_dir = tmp_path / "source"
+    _write_source_split(source_dir, fit_map_names)
+    fit_export = _write_paired_fit_export(tmp_path, fit_map_names)
+
+    records = drive_module._load_paired_fit_source_records(source_dir)
+    dataset = drive_module._PairedOfflineFitFlatDataset(
+        fit_export,
+        records,
+        OBS_DIM,
+        ACTION_SPACE,
+        fit_side="car",
+        obs_key="logged_obs_default",
+        shuffle=False,
+        seed=0,
+    )
+
+    assert len(dataset) == 12
+    samples = list(dataset)
+    assert len(samples) == 12
+    for obs, action in samples:
+        assert obs.shape == (OBS_DIM,)
+        assert isinstance(int(action.item()), int)
+        assert 0 <= int(action.item()) < ACTION_SPACE
+
+    loader = drive_module._make_bc_loader(dataset, batch_size=3, shuffle=False, num_workers=0)
+    obs_batch, action_batch = next(iter(loader))
+    assert obs_batch.shape == (3, OBS_DIM)
+    assert action_batch.shape == (3,)
+
+
+def test_bc_trainer_streams_paired_offline_fits_iid_and_writes_checkpoints(tmp_path, monkeypatch):
+    fit_map_names = ["map_00000.bin", "map_00001.bin"]
+    source_dir = tmp_path / "source"
+    _write_source_split(source_dir, fit_map_names)
+    fit_export = _write_paired_fit_export(tmp_path, fit_map_names)
+    output_dir = tmp_path / "checkpoints"
+
+    monkeypatch.setattr(drive_module, "_make_bc_training_env", lambda _env_cfg: _DummyBCEnv())
+    monkeypatch.setattr(
+        drive_module,
+        "_build_bc_policy",
+        lambda _args, _env, device: _TinyFeedforwardPolicy().to(device),
+    )
+
+    args = {
+        "package": "ocean",
+        "env_name": "puffer_drive",
+        "policy_name": "Drive",
+        "rnn_name": None,
+        "policy": {},
+        "rnn": {},
+        "train": {
+            "device": "cpu",
+            "seed": 7,
+            "learning_rate": 0.01,
+            "use_rnn": False,
+        },
+        "env": {
+            "map_dir": str(source_dir),
+            "num_maps": len(fit_map_names),
+            "num_agents": 1,
+            "action_type": "discrete",
+            "dynamics_model": "articulated",
+            "extend_classic_action_space": False,
+            "observation_mode": "default",
+            "init_mode": "create_all_valid",
+            "control_mode": "control_sdc_only",
+        },
+        "bc_train": {
+            "source_format": "paired_offline_fits",
+            "mode": "iid",
+            "fit_export": str(fit_export),
+            "source_map_dir": str(source_dir),
+            "fit_side": "car",
+            "obs_key": "logged_obs_default",
+            "output_dir": str(output_dir),
+            "device": "cpu",
+            "epochs": 1,
+            "batch_size": 2,
+            "learning_rate": 0.01,
+            "weight_decay": 0.0,
+            "num_workers": 0,
+            "shard_shuffle_buffer": 1,
+            "val_fraction": 0.0,
+            "max_maps": -1,
+            "save_best": True,
+            "log_interval": 0,
+        },
+    }
+
+    result = drive_module.train_bc_policy(args)
+    latest_path = Path(result["latest_path"])
+    best_path = Path(result["best_path"])
+    metrics_path = Path(result["metadata_path"])
+    assert latest_path.is_file()
+    assert best_path.is_file()
+    assert metrics_path.is_file()
+
+    with open(metrics_path, "r", encoding="utf-8") as f:
+        metrics = json.load(f)
+    assert metrics["source_format"] == "paired_offline_fits"
+    assert metrics["mode"] == "iid"
+    assert metrics["recurrent"] is False
+    assert metrics["observation_dim"] == OBS_DIM
+    assert metrics["action_space_size"] == ACTION_SPACE
+    assert sorted(metrics["train_maps"]) == sorted(fit_map_names)
+    assert metrics["history"][0]["train_samples"] == 12
+
+
+def test_paired_offline_fit_stacked_iid_loader_shapes_and_targets(tmp_path):
+    fit_map_names = ["map_00000.bin", "map_00001.bin"]
+    source_dir = tmp_path / "source"
+    _write_source_split(source_dir, fit_map_names)
+    fit_export = _write_paired_fit_export(tmp_path, fit_map_names)
+
+    records = drive_module._load_paired_fit_source_records(source_dir)
+    dataset = drive_module._PairedOfflineFitStackedIIDDataset(
+        fit_export,
+        records,
+        OBS_DIM,
+        ACTION_SPACE,
+        stack_len=STACK_LEN,
+        action_horizon=1,
+        fit_side="car",
+        obs_key="logged_obs_default",
+        extend_classic_action_space=False,
+        shuffle=False,
+        seed=0,
+    )
+
+    assert len(dataset) == 8
+    samples = list(dataset)
+    assert len(samples) == 8
+    for obs, accel, steer in samples:
+        assert obs.shape == (OBS_DIM * STACK_LEN,)
+        assert 0 <= int(accel.item()) < 7
+        assert 0 <= int(steer.item()) < 13
+    pairs = torch.load(fit_export.parent / "paired_offline_fits_shards" / "paired_offline_fits.part00001.pt", map_location="cpu")[
+        "pairs"
+    ]
+    raw_obs = pairs[fit_map_names[0]]["car"]["logged_obs_default"]
+    expected_obs = torch.cat([raw_obs[2], raw_obs[1], raw_obs[0]], dim=0)
+    matching = [
+        (obs, accel, steer)
+        for obs, accel, steer in samples
+        if torch.allclose(obs, expected_obs)
+    ]
+    assert len(matching) >= 1
+    match_obs, match_accel, match_steer = next(
+        (obs, accel, steer)
+        for obs, accel, steer in matching
+        if int(accel.item()) == 0 and int(steer.item()) == 2
+    )
+    assert torch.allclose(match_obs[:OBS_DIM], raw_obs[2])
+    assert torch.allclose(match_obs[OBS_DIM : 2 * OBS_DIM], raw_obs[1])
+    assert torch.allclose(match_obs[2 * OBS_DIM :], raw_obs[0])
+    assert int(match_accel.item()) == 0
+    assert int(match_steer.item()) == 2
+
+    loader = drive_module._make_bc_loader(dataset, batch_size=2, shuffle=False, num_workers=0)
+    obs_batch, accel_batch, steer_batch = next(iter(loader))
+    assert obs_batch.shape == (2, OBS_DIM * STACK_LEN)
+    assert accel_batch.shape == (2,)
+    assert steer_batch.shape == (2,)
+
+
+def test_paired_offline_fit_stacked_iid_loader_supports_future_action_horizon(tmp_path):
+    fit_map_names = ["map_00000.bin"]
+    source_dir = tmp_path / "source"
+    _write_source_split(source_dir, fit_map_names)
+    fit_export = _write_paired_fit_export(tmp_path, fit_map_names)
+
+    records = drive_module._load_paired_fit_source_records(source_dir)
+    dataset = drive_module._PairedOfflineFitStackedIIDDataset(
+        fit_export,
+        records,
+        OBS_DIM,
+        ACTION_SPACE,
+        stack_len=STACK_LEN,
+        action_horizon=2,
+        fit_side="car",
+        obs_key="logged_obs_default",
+        extend_classic_action_space=False,
+        shuffle=False,
+        seed=0,
+    )
+
+    stacked_obs, accel_idx, steer_idx = next(iter(dataset))
+    assert stacked_obs.shape == (OBS_DIM * STACK_LEN,)
+    assert accel_idx.shape == (2,)
+    assert steer_idx.shape == (2,)
+
+
+def test_bc_trainer_streams_paired_offline_fits_stacked_iid_and_writes_checkpoints(tmp_path, monkeypatch):
+    fit_map_names = ["map_00000.bin", "map_00001.bin"]
+    source_dir = tmp_path / "source"
+    _write_source_split(source_dir, fit_map_names)
+    fit_export = _write_paired_fit_export(tmp_path, fit_map_names)
+    output_dir = tmp_path / "checkpoints"
+
+    monkeypatch.setattr(drive_module, "_make_bc_training_env", lambda _env_cfg: _DummyBCEnv())
+    monkeypatch.setattr(
+        drive_module,
+        "_build_bc_policy",
+        lambda _args, _env, device: _TinyTwoHeadFeedforwardPolicy().to(device),
+    )
+
+    args = {
+        "package": "ocean",
+        "env_name": "puffer_drive",
+        "policy_name": "Drive",
+        "rnn_name": None,
+        "policy": {},
+        "rnn": {},
+        "train": {
+            "device": "cpu",
+            "seed": 7,
+            "learning_rate": 0.01,
+            "use_rnn": False,
+        },
+        "env": {
+            "map_dir": str(source_dir),
+            "num_maps": len(fit_map_names),
+            "num_agents": 1,
+            "action_type": "discrete",
+            "dynamics_model": "articulated",
+            "extend_classic_action_space": False,
+            "observation_mode": "default",
+            "init_mode": "create_all_valid",
+            "control_mode": "control_sdc_only",
+        },
+        "bc_train": {
+            "source_format": "paired_offline_fits",
+            "mode": "stacked_iid",
+            "stack_len": STACK_LEN,
+            "fit_export": str(fit_export),
+            "source_map_dir": str(source_dir),
+            "fit_side": "car",
+            "obs_key": "logged_obs_default",
+            "output_dir": str(output_dir),
+            "device": "cpu",
+            "epochs": 1,
+            "batch_size": 2,
+            "learning_rate": 0.01,
+            "weight_decay": 0.0,
+            "num_workers": 0,
+            "shard_shuffle_buffer": 1,
+            "val_fraction": 0.0,
+            "max_maps": -1,
+            "save_best": True,
+            "log_interval": 0,
+        },
+    }
+
+    result = drive_module.train_bc_policy(args)
+    metrics_path = Path(result["metadata_path"])
+    assert metrics_path.is_file()
+
+    with open(metrics_path, "r", encoding="utf-8") as f:
+        metrics = json.load(f)
+    assert metrics["mode"] == "stacked_iid"
+    assert metrics["recurrent"] is False
+    assert metrics["model_observation_dim"] == OBS_DIM * STACK_LEN
+    assert metrics["history"][0]["train_samples"] == 8
+    assert "train_accel_accuracy" in metrics["history"][0]
+    assert "train_steer_accuracy" in metrics["history"][0]
+
+
+def test_bc_trainer_streams_paired_offline_fits_stacked_iid_with_future_action_horizon(tmp_path, monkeypatch):
+    fit_map_names = ["map_00000.bin", "map_00001.bin"]
+    source_dir = tmp_path / "source"
+    _write_source_split(source_dir, fit_map_names)
+    fit_export = _write_paired_fit_export(tmp_path, fit_map_names)
+    output_dir = tmp_path / "checkpoints_h2"
+
+    monkeypatch.setattr(drive_module, "_make_bc_training_env", lambda _env_cfg: _DummyBCEnv())
+    monkeypatch.setattr(
+        drive_module,
+        "_build_bc_policy",
+        lambda _args, _env, device: _TinyTwoHeadFeedforwardPolicy(action_horizon=2).to(device),
+    )
+
+    args = {
+        "package": "ocean",
+        "env_name": "puffer_drive",
+        "policy_name": "Drive",
+        "rnn_name": None,
+        "policy": {},
+        "rnn": {},
+        "train": {
+            "device": "cpu",
+            "seed": 7,
+            "learning_rate": 0.01,
+            "use_rnn": False,
+        },
+        "env": {
+            "map_dir": str(source_dir),
+            "num_maps": len(fit_map_names),
+            "num_agents": 1,
+            "action_type": "discrete",
+            "dynamics_model": "articulated",
+            "extend_classic_action_space": False,
+            "observation_mode": "default",
+            "init_mode": "create_all_valid",
+            "control_mode": "control_sdc_only",
+        },
+        "bc_train": {
+            "source_format": "paired_offline_fits",
+            "mode": "stacked_iid",
+            "stack_len": STACK_LEN,
+            "action_horizon": 2,
+            "fit_export": str(fit_export),
+            "source_map_dir": str(source_dir),
+            "fit_side": "car",
+            "obs_key": "logged_obs_default",
+            "output_dir": str(output_dir),
+            "device": "cpu",
+            "epochs": 1,
+            "batch_size": 2,
+            "learning_rate": 0.01,
+            "weight_decay": 0.0,
+            "num_workers": 0,
+            "shard_shuffle_buffer": 1,
+            "val_fraction": 0.0,
+            "max_maps": -1,
+            "save_best": True,
+            "log_interval": 0,
+        },
+    }
+
+    result = drive_module.train_bc_policy(args)
+    metrics = json.loads(Path(result["metadata_path"]).read_text(encoding="utf-8"))
+    assert metrics["mode"] == "stacked_iid"
+    assert metrics["action_horizon"] == 2
+    assert "train_sequence_accuracy" in metrics["history"][0]
+
+
+def test_bc_trainer_paired_offline_fits_iid_rejects_enabled_rnn(tmp_path):
+    fit_map_names = ["map_00000.bin"]
+    source_dir = tmp_path / "source"
+    _write_source_split(source_dir, fit_map_names)
+    fit_export = _write_paired_fit_export(tmp_path, fit_map_names)
+
+    args = {
+        "package": "ocean",
+        "env_name": "puffer_drive",
+        "policy_name": "Drive",
+        "rnn_name": "Recurrent",
+        "policy": {},
+        "rnn": {},
+        "train": {
+            "device": "cpu",
+            "seed": 7,
+            "learning_rate": 0.01,
+            "use_rnn": True,
+        },
+        "env": {
+            "map_dir": str(source_dir),
+            "num_maps": len(fit_map_names),
+            "num_agents": 1,
+            "action_type": "discrete",
+            "dynamics_model": "articulated",
+            "extend_classic_action_space": False,
+            "observation_mode": "default",
+            "init_mode": "create_all_valid",
+            "control_mode": "control_sdc_only",
+        },
+        "bc_train": {
+            "source_format": "paired_offline_fits",
+            "mode": "iid",
+            "fit_export": str(fit_export),
+            "source_map_dir": str(source_dir),
+            "fit_side": "car",
+            "obs_key": "logged_obs_default",
+            "output_dir": str(tmp_path / "checkpoints"),
+            "device": "cpu",
+            "epochs": 1,
+            "batch_size": 2,
+            "learning_rate": 0.01,
+            "weight_decay": 0.0,
+            "num_workers": 0,
+            "shard_shuffle_buffer": 1,
+            "val_fraction": 0.0,
+            "save_best": True,
+            "log_interval": 0,
+        },
+    }
+
+    with pytest.raises(ValueError, match="train.use_rnn=false"):
+        drive_module.train_bc_policy(args)
+
+
+def test_bc_trainer_paired_offline_fits_recurrent_rejects_missing_rnn(tmp_path, monkeypatch):
+    fit_map_names = ["map_00000.bin"]
+    source_dir = tmp_path / "source"
+    _write_source_split(source_dir, fit_map_names)
+    fit_export = _write_paired_fit_export(tmp_path, fit_map_names)
+    monkeypatch.setattr(drive_module, "_make_bc_training_env", lambda _env_cfg: _DummyBCEnv())
+
+    args = {
+        "package": "ocean",
+        "env_name": "puffer_drive",
+        "policy_name": "Drive",
+        "rnn_name": None,
+        "policy": {},
+        "rnn": {},
+        "train": {
+            "device": "cpu",
+            "seed": 7,
+            "learning_rate": 0.01,
+            "use_rnn": False,
+            "bptt_horizon": 4,
+        },
+        "env": {
+            "map_dir": str(source_dir),
+            "num_maps": len(fit_map_names),
+            "num_agents": 1,
+            "action_type": "discrete",
+            "dynamics_model": "articulated",
+            "extend_classic_action_space": False,
+            "observation_mode": "default",
+            "init_mode": "create_all_valid",
+            "control_mode": "control_sdc_only",
+        },
+        "bc_train": {
+            "source_format": "paired_offline_fits",
+            "mode": "recurrent",
+            "fit_export": str(fit_export),
+            "source_map_dir": str(source_dir),
+            "fit_side": "car",
+            "obs_key": "logged_obs_default",
+            "output_dir": str(tmp_path / "checkpoints"),
+            "device": "cpu",
+            "epochs": 1,
+            "batch_size": 2,
+            "learning_rate": 0.01,
+            "weight_decay": 0.0,
+            "num_workers": 0,
+            "shard_shuffle_buffer": 1,
+            "val_fraction": 0.0,
+            "seq_len": 4,
+            "sequence_stride": 2,
+            "save_best": True,
+            "log_interval": 0,
+        },
+    }
+
+    with pytest.raises(ValueError, match="requires a non-empty rnn_name"):
+        drive_module.train_bc_policy(args)
+
+
+def test_bc_trainer_paired_offline_fits_stacked_iid_rejects_enabled_rnn(tmp_path):
+    fit_map_names = ["map_00000.bin"]
+    source_dir = tmp_path / "source"
+    _write_source_split(source_dir, fit_map_names)
+    fit_export = _write_paired_fit_export(tmp_path, fit_map_names)
+
+    args = {
+        "package": "ocean",
+        "env_name": "puffer_drive",
+        "policy_name": "Drive",
+        "rnn_name": "Recurrent",
+        "policy": {},
+        "rnn": {},
+        "train": {
+            "device": "cpu",
+            "seed": 7,
+            "learning_rate": 0.01,
+            "use_rnn": True,
+        },
+        "env": {
+            "map_dir": str(source_dir),
+            "num_maps": len(fit_map_names),
+            "num_agents": 1,
+            "action_type": "discrete",
+            "dynamics_model": "articulated",
+            "extend_classic_action_space": False,
+            "observation_mode": "default",
+            "init_mode": "create_all_valid",
+            "control_mode": "control_sdc_only",
+        },
+        "bc_train": {
+            "source_format": "paired_offline_fits",
+            "mode": "stacked_iid",
+            "stack_len": STACK_LEN,
+            "fit_export": str(fit_export),
+            "source_map_dir": str(source_dir),
+            "fit_side": "car",
+            "obs_key": "logged_obs_default",
+            "output_dir": str(tmp_path / "checkpoints"),
+            "device": "cpu",
+            "epochs": 1,
+            "batch_size": 2,
+            "learning_rate": 0.01,
+            "weight_decay": 0.0,
+            "num_workers": 0,
+            "shard_shuffle_buffer": 1,
+            "val_fraction": 0.0,
+            "save_best": True,
+            "log_interval": 0,
+        },
+    }
+
+    with pytest.raises(ValueError, match="train.use_rnn=false"):
+        drive_module.train_bc_policy(args)

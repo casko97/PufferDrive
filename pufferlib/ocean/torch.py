@@ -20,6 +20,7 @@ class Drive(nn.Module):
         self.hidden_size = hidden_size
         self.observation_size = env.single_observation_space.shape[0]
         self.observation_mode = getattr(env, "observation_mode", 0)
+        self.observation_variant = getattr(env, "observation_variant", "default")
         self.max_partner_objects = env.max_partner_objects
         self.partner_features = env.partner_features
         self.max_road_objects = env.max_road_objects
@@ -31,15 +32,22 @@ class Drive(nn.Module):
         self.base_partner_features = 7
         self.type_classes = env.type_classes
         self.real_type_classes = max(1, self.type_classes - 1)
-        self.has_augmented_ego = self.ego_dim > self.base_ego_dim
-        self.has_partner_type = self.partner_features > self.base_partner_features
-        self.ego_trailer_state_features = EGO_TRAILER_STATE_FEATURES if self.has_augmented_ego else 0
-        self.ego_encoder_input_dim = self.base_ego_dim + self.ego_trailer_state_features + (
-            self.type_classes if self.has_augmented_ego else 0
-        )
-        self.partner_encoder_input_dim = self.base_partner_features + (
-            self.real_type_classes if self.has_partner_type else 0
-        )
+        if self.observation_variant in ("velocity_xy", "motion_prev_control", "motion_prev_control_road_controls"):
+            self.has_augmented_ego = False
+            self.has_partner_type = False
+            self.ego_trailer_state_features = 0
+            self.ego_encoder_input_dim = self.ego_dim
+            self.partner_encoder_input_dim = self.partner_features
+        else:
+            self.has_augmented_ego = self.ego_dim > self.base_ego_dim
+            self.has_partner_type = self.partner_features > self.base_partner_features
+            self.ego_trailer_state_features = EGO_TRAILER_STATE_FEATURES if self.has_augmented_ego else 0
+            self.ego_encoder_input_dim = self.base_ego_dim + self.ego_trailer_state_features + (
+                self.type_classes if self.has_augmented_ego else 0
+            )
+            self.partner_encoder_input_dim = self.base_partner_features + (
+                self.real_type_classes if self.has_partner_type else 0
+            )
 
         self.ego_encoder = nn.Sequential(
             pufferlib.pytorch.layer_init(nn.Linear(self.ego_encoder_input_dim, input_size)),
@@ -85,12 +93,22 @@ class Drive(nn.Module):
         return self.forward(x, state)
 
     def encode_observations(self, observations, state=None):
-        ego_dim = self.ego_dim
         partner_dim = self.max_partner_objects * self.partner_features
         road_dim = self.max_road_objects * self.road_features
-        ego_obs = observations[:, :ego_dim]
-        partner_obs = observations[:, ego_dim : ego_dim + partner_dim]
-        road_obs = observations[:, ego_dim + partner_dim : ego_dim + partner_dim + road_dim]
+        if self.observation_variant in ("motion_prev_control", "motion_prev_control_road_controls"):
+            # This BC-only variant stores extra ego-control features as a tail
+            # appended after the default observation layout.
+            default_obs_dim = self.base_ego_dim + partner_dim + road_dim
+            ego_core = observations[:, : self.base_ego_dim]
+            partner_obs = observations[:, self.base_ego_dim : self.base_ego_dim + partner_dim]
+            road_obs = observations[:, self.base_ego_dim + partner_dim : default_obs_dim]
+            ego_extra = observations[:, default_obs_dim:]
+            ego_obs = torch.cat([ego_core, ego_extra], dim=1)
+        else:
+            ego_dim = self.ego_dim
+            ego_obs = observations[:, :ego_dim]
+            partner_obs = observations[:, ego_dim : ego_dim + partner_dim]
+            road_obs = observations[:, ego_dim + partner_dim : ego_dim + partner_dim + road_dim]
 
         partner_objects = partner_obs.view(-1, self.max_partner_objects, self.partner_features)
         if self.has_partner_type:
@@ -108,7 +126,7 @@ class Drive(nn.Module):
 
         road_objects = road_obs.view(-1, self.max_road_objects, self.road_features)
         road_continuous = road_objects[:, :, : self.road_features - 1]
-        road_categorical = road_objects[:, :, self.road_features - 1]
+        road_categorical = road_objects[:, :, self.road_features - 1].long().clamp(min=0, max=6)
         road_onehot = F.one_hot(road_categorical.long(), num_classes=7)  # Shape: [batch, ROAD_MAX_OBJECTS, 7]
         road_objects = torch.cat([road_continuous, road_onehot], dim=2)
 
