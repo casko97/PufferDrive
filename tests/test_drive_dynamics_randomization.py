@@ -4,6 +4,7 @@ import numpy as np
 import pytest
 
 from pufferlib.ocean.drive.drive import Drive
+from pufferlib.ocean.drive import binding
 
 
 MAP_DIR = str(Path(__file__).parents[1] / "resources" / "drive" / "binaries")
@@ -140,5 +141,76 @@ def test_forward_speed_uses_randomized_upper_clip():
 
         actual_speed = env.observations[0, 2] * 100.0
         assert actual_speed == pytest.approx(20.0 * velocity_scale, abs=1e-4)
+    finally:
+        env.close()
+
+
+def make_reward_env(*, randomized):
+    return Drive(
+        num_agents=1,
+        num_maps=1,
+        map_dir=MAP_DIR,
+        sequential_map_sampling=True,
+        init_mode="create_only_controlled",
+        control_mode="control_sdc_only",
+        dynamics_model="classic",
+        reward_model="gigaflow",
+        reward_randomization=randomized,
+        action_type="discrete",
+        episode_length=80,
+        goal_behavior=1,
+        resample_frequency=0,
+        collision_behavior=0,
+        offroad_behavior=0,
+    )
+
+
+def test_reward_randomization_requires_gigaflow_reward():
+    with pytest.raises(ValueError, match="requires reward_model='gigaflow'"):
+        Drive(reward_randomization=True)
+
+
+def test_fixed_gigaflow_condition_and_observation_shape():
+    env = make_reward_env(randomized=False)
+    try:
+        env.reset(seed=7)
+        expected = np.asarray(
+            [10.0, 3.0, 3.0, 0.05, 0.025, 1.0, 0.0038, 0.0, 0.0025, 0.005, 0.000025],
+            dtype=np.float32,
+        )
+        np.testing.assert_allclose(env.get_reward_conditions()[0], expected)
+        assert env.ego_features == binding.EGO_FEATURES_CLASSIC + binding.REWARD_CONDITION_FEATURES
+        obs_conditions = env.observations[0, binding.EGO_FEATURES_CLASSIC : env.ego_features]
+        assert np.all(obs_conditions <= 1.0)
+        assert np.all(obs_conditions >= -1.0)
+        assert obs_conditions[8] == 0.0
+        assert obs_conditions[10] == 0.0
+    finally:
+        env.close()
+
+
+def test_reward_ranges_resampling_and_seed_reproducibility():
+    env = make_reward_env(randomized=True)
+    try:
+        samples = []
+        for seed in range(32):
+            env.reset(seed=seed)
+            samples.append(env.get_reward_conditions()[0].copy())
+        samples = np.asarray(samples)
+        lower = np.asarray(
+            [2.0, 0.0, 0.0, 0.0, 2.5e-4, 0.0, 2.5e-4, -0.5, 2.5e-3, 2.5e-4, 2.5e-5],
+            dtype=np.float32,
+        )
+        upper = np.asarray(
+            [12.0, 3.0, 3.0, 0.1, 2.5e-2, 1.0, 7.5e-3, 0.5, 2.5e-3, 7.5e-3, 2.5e-5],
+            dtype=np.float32,
+        )
+        assert np.all(samples >= lower - 1e-6)
+        assert np.all(samples <= upper + 1e-6)
+        assert np.unique(samples[:, :8], axis=0).shape[0] > 1
+        env.reset(seed=1234)
+        first = env.get_reward_conditions().copy()
+        env.reset(seed=1234)
+        np.testing.assert_array_equal(first, env.get_reward_conditions())
     finally:
         env.close()

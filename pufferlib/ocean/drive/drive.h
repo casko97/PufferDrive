@@ -50,6 +50,10 @@
 #define CLASSIC 0
 #define JERK 1
 
+// Reward models
+#define PUFFERDRIVE_REWARD 0
+#define GIGAFLOW_REWARD 1
+
 // Collision state
 #define NO_COLLISION 0
 #define VEHICLE_COLLISION 1
@@ -280,6 +284,8 @@ float clip(float value, float min, float max) {
 
 float random_unit_interval(void) { return (float)rand() / ((float)RAND_MAX + 1.0f); }
 
+float sample_uniform(float lower, float upper) { return lower + random_unit_interval() * (upper - lower); }
+
 // X(a) = 0.5 U(a^-1, 1) + 0.5 U(1, a), with equal probability
 // mass below and above one, as defined by Gigaflow.
 float sample_mixed_uniform(float a) {
@@ -344,6 +350,8 @@ struct Drive {
     int dynamics_randomization;
     GridMap *grid_map;
     int *neighbor_offsets;
+    int reward_model;
+    int reward_randomization;
     int episode_length;
     int termination_mode;
     float reward_vehicle_collision;
@@ -580,7 +588,40 @@ void sample_dynamics_conditions(Drive *env) {
     }
 }
 
+void sample_reward_conditions(Drive *env) {
+    for (int i = 0; i < env->active_agent_count; i++) {
+        Entity *agent = &env->entities[env->active_agent_indices[i]];
+        if (env->reward_randomization) {
+            agent->reward_goal_radius = sample_uniform(2.0f, 12.0f);
+            agent->reward_collision = sample_uniform(0.0f, 3.0f);
+            agent->reward_boundary = sample_uniform(0.0f, 3.0f);
+            agent->reward_comfort = sample_uniform(0.0f, 0.1f);
+            agent->reward_lane_align = sample_uniform(2.5e-4f, 2.5e-2f);
+            agent->reward_velocity_align = sample_uniform(0.0f, 1.0f);
+            agent->reward_lane_center = sample_uniform(2.5e-4f, 7.5e-3f);
+            agent->reward_center_bias = sample_uniform(-0.5f, 0.5f);
+            agent->reward_reverse = sample_uniform(2.5e-4f, 7.5e-3f);
+        } else {
+            // Conservative long-form evaluation condition from Table A4.
+            agent->reward_goal_radius = 10.0f;
+            agent->reward_collision = 3.0f;
+            agent->reward_boundary = 3.0f;
+            agent->reward_comfort = 0.05f;
+            agent->reward_lane_align = 2.5e-2f;
+            agent->reward_velocity_align = 1.0f;
+            agent->reward_lane_center = 3.8e-3f;
+            agent->reward_center_bias = 0.0f;
+            agent->reward_reverse = 5.0e-3f;
+        }
+        agent->reward_velocity = 2.5e-3f;
+        agent->reward_timestep = 2.5e-5f;
+    }
+}
 
+static inline int ego_feature_count(Drive *env) {
+    int base = (env->dynamics_model == JERK) ? EGO_FEATURES_JERK : EGO_FEATURES_CLASSIC;
+    return base + (env->reward_model == GIGAFLOW_REWARD ? REWARD_CONDITION_FEATURES : 0);
+}
 
 float normalize_heading(float heading);
 
@@ -1581,6 +1622,7 @@ void init(Drive *env) {
     remove_bad_trajectories(env);
     set_start_position(env);
     sample_dynamics_conditions(env);
+    sample_reward_conditions(env);
     init_goal_positions(env);
     env->logs = (Log *)calloc(env->active_agent_count, sizeof(Log));
 }
@@ -1614,7 +1656,7 @@ void c_close(Drive *env) {
 
 void allocate(Drive *env) {
     init(env);
-    int ego_dim = (env->dynamics_model == JERK) ? EGO_FEATURES_JERK : EGO_FEATURES_CLASSIC;
+    int ego_dim = ego_feature_count(env);
     int max_obs = ego_dim + PARTNER_FEATURES * (MAX_AGENTS - 1) + ROAD_FEATURES * MAX_ROAD_SEGMENT_OBSERVATIONS;
     env->observations = (float *)calloc(env->active_agent_count * max_obs, sizeof(float));
     env->actions = (float *)calloc(env->active_agent_count * 2, sizeof(float));
@@ -1914,7 +1956,8 @@ void c_get_road_edge_polylines(Drive *env, float *x_out, float *y_out, int *leng
 }
 
 void compute_observations(Drive *env) {
-    int ego_dim = (env->dynamics_model == JERK) ? EGO_FEATURES_JERK : EGO_FEATURES_CLASSIC;
+    int base_ego_dim = (env->dynamics_model == JERK) ? EGO_FEATURES_JERK : EGO_FEATURES_CLASSIC;
+    int ego_dim = ego_feature_count(env);
     int max_obs = ego_dim + PARTNER_FEATURES * (MAX_AGENTS - 1) + ROAD_FEATURES * MAX_ROAD_SEGMENT_OBSERVATIONS;
     memset(env->observations, 0, max_obs * env->active_agent_count * sizeof(float));
     float (*observations)[max_obs] = (float (*)[max_obs])env->observations;
@@ -1954,6 +1997,21 @@ void compute_observations(Drive *env) {
             obs[9] = (ego_entity->respawn_timestep != -1) ? 1 : 0;
         } else {
             obs[6] = (ego_entity->respawn_timestep != -1) ? 1 : 0;
+        }
+
+        if (env->reward_model == GIGAFLOW_REWARD) {
+            int reward_idx = base_ego_dim;
+            obs[reward_idx++] = normalize_value(ego_entity->reward_goal_radius, 2.0f, 12.0f) * 2.0f - 1.0f;
+            obs[reward_idx++] = normalize_value(ego_entity->reward_collision, 0.0f, 3.0f) * 2.0f - 1.0f;
+            obs[reward_idx++] = normalize_value(ego_entity->reward_boundary, 0.0f, 3.0f) * 2.0f - 1.0f;
+            obs[reward_idx++] = normalize_value(ego_entity->reward_comfort, 0.0f, 0.1f) * 2.0f - 1.0f;
+            obs[reward_idx++] = normalize_value(ego_entity->reward_lane_align, 2.5e-4f, 2.5e-2f) * 2.0f - 1.0f;
+            obs[reward_idx++] = ego_entity->reward_velocity_align * 2.0f - 1.0f;
+            obs[reward_idx++] = normalize_value(ego_entity->reward_lane_center, 2.5e-4f, 7.5e-3f) * 2.0f - 1.0f;
+            obs[reward_idx++] = ego_entity->reward_center_bias * 2.0f;
+            obs[reward_idx++] = 0.0f; // fixed alpha_velocity
+            obs[reward_idx++] = normalize_value(ego_entity->reward_reverse, 2.5e-4f, 7.5e-3f) * 2.0f - 1.0f;
+            obs[reward_idx] = 0.0f; // fixed alpha_timestep
         }
 
         // Relative Pos of other cars
@@ -2136,6 +2194,7 @@ void c_reset(Drive *env) {
     env->timestep = env->init_steps;
     set_start_position(env);
     sample_dynamics_conditions(env);
+    sample_reward_conditions(env);
     for (int x = 0; x < env->active_agent_count; x++) {
         env->logs[x] = (Log){0};
         int agent_idx = env->active_agent_indices[x];
@@ -2227,7 +2286,7 @@ void c_step(Drive *env) {
         move_dynamics(env, i, agent_idx);
 
         // Tiny jerk penalty for smoothness
-        if (env->dynamics_model == CLASSIC) {
+        if (env->dynamics_model == CLASSIC && env->reward_model == PUFFERDRIVE_REWARD) {
             float delta_vx = env->entities[agent_idx].vx - prev_vx;
             float delta_vy = env->entities[agent_idx].vy - prev_vy;
             float jerk_penalty = -0.0002f * sqrtf(delta_vx * delta_vx + delta_vy * delta_vy) / env->dt;
@@ -2242,17 +2301,30 @@ void c_step(Drive *env) {
         env->entities[agent_idx].collision_state = 0;
 
         compute_agent_metrics(env, agent_idx);
+        if (env->reward_model == GIGAFLOW_REWARD) {
+            float dense_reward = compute_gigaflow_dense_reward(env, &env->entities[agent_idx]);
+            env->rewards[i] += dense_reward;
+            env->logs[i].episode_return += dense_reward;
+        }
         int collision_state = env->entities[agent_idx].collision_state;
+        if (env->reward_model == GIGAFLOW_REWARD)
+            collision_state = gigaflow_reward_collision_state(&env->entities[agent_idx], collision_state);
 
         if (collision_state > 0) {
             if (collision_state == VEHICLE_COLLISION) {
-                env->rewards[i] += env->reward_vehicle_collision;
-                env->logs[i].episode_return += env->reward_vehicle_collision;
+                float collision_reward = env->reward_model == GIGAFLOW_REWARD
+                                             ? gigaflow_collision_reward(&env->entities[agent_idx])
+                                             : env->reward_vehicle_collision;
+                env->rewards[i] += collision_reward;
+                env->logs[i].episode_return += collision_reward;
                 env->logs[i].collision_rate = 1.0f;
                 env->logs[i].collisions_per_agent += 1.0f;
             } else if (collision_state == OFFROAD) {
-                env->rewards[i] += env->reward_offroad_collision;
-                env->logs[i].episode_return += env->reward_offroad_collision;
+                float offroad_reward = env->reward_model == GIGAFLOW_REWARD
+                                           ? gigaflow_boundary_reward(&env->entities[agent_idx])
+                                           : env->reward_offroad_collision;
+                env->rewards[i] += offroad_reward;
+                env->logs[i].episode_return += offroad_reward;
                 env->logs[i].offroad_rate = 1.0f;
                 env->logs[i].offroad_per_agent += 1.0f;
             }
@@ -2268,23 +2340,38 @@ void c_step(Drive *env) {
                                     env->entities[agent_idx].vy * env->entities[agent_idx].vy);
 
         // Reward agent if it is within X meters of goal and speed is below threshold
-        bool within_distance = distance_to_goal < env->goal_radius;
-        bool within_speed = current_speed <= env->goal_speed;
+        float goal_radius =
+            env->reward_model == GIGAFLOW_REWARD ? env->entities[agent_idx].reward_goal_radius : env->goal_radius;
+        float goal_speed = env->reward_model == GIGAFLOW_REWARD ? 3.0f : env->goal_speed;
+        float goal_reward = env->reward_model == GIGAFLOW_REWARD ? 1.0f : env->reward_goal;
+        float goal_post_respawn_reward =
+            env->reward_model == GIGAFLOW_REWARD ? 1.0f : env->reward_goal_post_respawn;
+        bool within_distance = distance_to_goal < goal_radius;
+        bool within_speed = current_speed <= goal_speed;
 
-        if (within_distance && within_speed && !env->entities[agent_idx].current_goal_reached) {
+        bool goal_eligible = env->reward_model == GIGAFLOW_REWARD
+                                 ? gigaflow_goal_reward(&env->entities[agent_idx], distance_to_goal, current_speed,
+                                                        env->goal_behavior == GOAL_GENERATE_NEW) > 0.0f
+                                 : within_distance && within_speed && !env->entities[agent_idx].current_goal_reached;
+        if (goal_eligible) {
             if (env->goal_behavior == GOAL_RESPAWN && env->entities[agent_idx].respawn_timestep != -1) {
-                env->rewards[i] += env->reward_goal_post_respawn;
-                env->logs[i].episode_return += env->reward_goal_post_respawn;
+                env->rewards[i] += goal_post_respawn_reward;
+                env->logs[i].episode_return += goal_post_respawn_reward;
                 env->entities[agent_idx].current_goal_reached = 1;
             } else if (env->goal_behavior == GOAL_GENERATE_NEW && (!env->entities[agent_idx].current_goal_reached)) {
-                env->rewards[i] += env->reward_goal;
-                env->logs[i].episode_return += env->reward_goal;
+                env->rewards[i] += goal_reward;
+                env->logs[i].episode_return += goal_reward;
                 sample_new_goal(env, agent_idx);
                 env->entities[agent_idx].current_goal_reached = 0;
                 env->entities[agent_idx].goals_reached_this_episode += 1.0f;
             } else { // Zero out the velocity so that the agent stops at the goal
-                env->rewards[i] = env->reward_goal;
-                env->logs[i].episode_return = env->reward_goal;
+                if (env->reward_model == GIGAFLOW_REWARD) {
+                    env->rewards[i] += goal_reward;
+                    env->logs[i].episode_return += goal_reward;
+                } else {
+                    env->rewards[i] = goal_reward;
+                    env->logs[i].episode_return = goal_reward;
+                }
                 env->entities[agent_idx].stopped = 1;
                 env->entities[agent_idx].vx = env->entities[agent_idx].vy = 0.0f;
                 env->entities[agent_idx].goals_reached_this_episode += 1.0f;
@@ -2466,7 +2553,7 @@ void draw_agent_obs(Drive *env, int agent_index, int mode, int obs_only, int las
         return;
     }
 
-    int ego_dim = (env->dynamics_model == JERK) ? EGO_FEATURES_JERK : EGO_FEATURES_CLASSIC;
+    int ego_dim = ego_feature_count(env);
     int max_obs = ego_dim + PARTNER_FEATURES * (MAX_AGENTS - 1) + ROAD_FEATURES * MAX_ROAD_SEGMENT_OBSERVATIONS;
     float (*observations)[max_obs] = (float (*)[max_obs])env->observations;
     float *agent_obs = &observations[agent_index][0];

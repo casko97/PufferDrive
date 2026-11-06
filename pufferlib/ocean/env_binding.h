@@ -1002,6 +1002,7 @@ PyMODINIT_FUNC PyInit_binding(void) {
     PyModule_AddIntConstant(m, "PARTNER_FEATURES", PARTNER_FEATURES);
     PyModule_AddIntConstant(m, "EGO_FEATURES_CLASSIC", EGO_FEATURES_CLASSIC);
     PyModule_AddIntConstant(m, "EGO_FEATURES_JERK", EGO_FEATURES_JERK);
+    PyModule_AddIntConstant(m, "REWARD_CONDITION_FEATURES", REWARD_CONDITION_FEATURES);
 
     return m;
 }

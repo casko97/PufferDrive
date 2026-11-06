@@ -11,6 +11,8 @@ typedef struct {
     int action_type;
     int dynamics_model;
     int dynamics_randomization;
+    int reward_model;
+    int reward_randomization;
     float reward_vehicle_collision;
     float reward_offroad_collision;
     float reward_goal;
@@ -57,6 +59,18 @@ static int handler(void *config, const char *section, const char *name, const ch
         }
     } else if (MATCH("env", "dynamics_randomization")) {
         env_config->dynamics_randomization =
+            strcmp(value, "1") == 0 || strcmp(value, "true") == 0 || strcmp(value, "True") == 0;
+    } else if (MATCH("env", "reward_model")) {
+        if (strcmp(value, "\"pufferdrive\"") == 0 || strcmp(value, "pufferdrive") == 0) {
+            env_config->reward_model = PUFFERDRIVE_REWARD;
+        } else if (strcmp(value, "\"gigaflow\"") == 0 || strcmp(value, "gigaflow") == 0) {
+            env_config->reward_model = GIGAFLOW_REWARD;
+        } else {
+            printf("Warning: Unknown reward_model value '%s', defaulting to pufferdrive\n", value);
+            env_config->reward_model = PUFFERDRIVE_REWARD;
+        }
+    } else if (MATCH("env", "reward_randomization")) {
+        env_config->reward_randomization =
             strcmp(value, "1") == 0 || strcmp(value, "true") == 0 || strcmp(value, "True") == 0;
     } else if (MATCH("env", "goal_behavior")) {
         env_config->goal_behavior = atoi(value);

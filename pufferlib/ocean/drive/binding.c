@@ -197,6 +197,29 @@ static PyObject *my_get(PyObject *dict, Env *env) {
         return NULL;
     }
     Py_DECREF(conditions);
+
+    PyObject *reward_conditions = PyList_New(env->active_agent_count);
+    if (reward_conditions == NULL)
+        return NULL;
+    for (int i = 0; i < env->active_agent_count; i++) {
+        Entity *agent = &env->entities[env->active_agent_indices[i]];
+        PyObject *condition = Py_BuildValue("(fffffffffff)", agent->reward_goal_radius, agent->reward_collision,
+                                            agent->reward_boundary, agent->reward_comfort, agent->reward_lane_align,
+                                            agent->reward_velocity_align, agent->reward_lane_center,
+                                            agent->reward_center_bias, agent->reward_velocity, agent->reward_reverse,
+                                            agent->reward_timestep);
+        if (condition == NULL) {
+            Py_DECREF(reward_conditions);
+            return NULL;
+        }
+        PyList_SET_ITEM(reward_conditions, i, condition);
+    }
+    if (PyDict_SetItemString(dict, "reward_conditions", reward_conditions) < 0) {
+        Py_DECREF(reward_conditions);
+        return NULL;
+    }
+    Py_DECREF(reward_conditions);
+
     return dict;
 }
 
@@ -384,6 +407,8 @@ static int my_init(Env *env, PyObject *args, PyObject *kwargs) {
     env->action_type = (int)unpack(kwargs, "action_type");
     env->dynamics_model = (int)unpack(kwargs, "dynamics_model");
     env->dynamics_randomization = (int)unpack(kwargs, "dynamics_randomization");
+    env->reward_model = (int)unpack(kwargs, "reward_model");
+    env->reward_randomization = (int)unpack(kwargs, "reward_randomization");
     env->reward_vehicle_collision = conf.reward_vehicle_collision;
     env->reward_offroad_collision = conf.reward_offroad_collision;
     env->reward_goal = conf.reward_goal;

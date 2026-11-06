@@ -36,6 +36,8 @@ class Drive(pufferlib.PufferEnv):
         action_type="discrete",
         dynamics_model="classic",
         dynamics_randomization=False,
+        reward_model="pufferdrive",
+        reward_randomization=False,
         max_controlled_agents=-1,
         buf=None,
         seed=1,
@@ -66,9 +68,16 @@ class Drive(pufferlib.PufferEnv):
         self.resample_frequency = resample_frequency
         self.dynamics_model = dynamics_model
         self.dynamics_randomization = dynamics_randomization
+        self.reward_model = reward_model
+        self.reward_randomization = reward_randomization
 
         if dynamics_randomization and dynamics_model != "jerk":
             raise ValueError("dynamics_randomization requires dynamics_model='jerk'")
+
+        if reward_model not in ("pufferdrive", "gigaflow"):
+            raise ValueError("reward_model must be 'pufferdrive' or 'gigaflow'")
+        if reward_randomization and reward_model != "gigaflow":
+            raise ValueError("reward_randomization requires reward_model='gigaflow'")
 
         # Observation space calculation
         self.ego_features = {"classic": binding.EGO_FEATURES_CLASSIC, "jerk": binding.EGO_FEATURES_JERK}.get(
@@ -76,6 +85,9 @@ class Drive(pufferlib.PufferEnv):
         )
 
         # Extract observation shapes from constants
+        if reward_model == "gigaflow":
+            self.ego_features += binding.REWARD_CONDITION_FEATURES
+
         # These need to be defined in C, since they determine the shape of the arrays
         self.max_road_objects = binding.MAX_ROAD_SEGMENT_OBSERVATIONS
         self.max_partner_objects = binding.MAX_AGENTS - 1
@@ -133,6 +145,7 @@ class Drive(pufferlib.PufferEnv):
 
         self._action_type_flag = 0 if action_type == "discrete" else 1
         self._dynamics_model_flag = 0 if dynamics_model == "classic" else 1
+        self._reward_model_flag = 0 if reward_model == "pufferdrive" else 1
 
         # Check if resources directory exists
         binary_path = f"{map_dir}/map_000.bin"
@@ -186,6 +199,8 @@ class Drive(pufferlib.PufferEnv):
                 human_agent_idx=human_agent_idx,
                 reward_vehicle_collision=reward_vehicle_collision,
                 reward_offroad_collision=reward_offroad_collision,
+                reward_model=self._reward_model_flag,
+                reward_randomization=self.reward_randomization,
                 reward_goal=reward_goal,
                 reward_goal_post_respawn=reward_goal_post_respawn,
                 goal_radius=goal_radius,
@@ -264,6 +279,8 @@ class Drive(pufferlib.PufferEnv):
                     human_agent_idx=self.human_agent_idx,
                     reward_vehicle_collision=self.reward_vehicle_collision,
                     reward_offroad_collision=self.reward_offroad_collision,
+                    reward_model=self._reward_model_flag,
+                    reward_randomization=self.reward_randomization,
                     reward_goal=self.reward_goal,
                     reward_goal_post_respawn=self.reward_goal_post_respawn,
                     goal_radius=self.goal_radius,
@@ -296,6 +313,13 @@ class Drive(pufferlib.PufferEnv):
         conditions = [binding.env_get(env_id)["dynamics_conditions"] for env_id in self.c_env_ids]
         if not conditions:
             return np.empty((0, 4), dtype=np.float32)
+        return np.concatenate([np.asarray(values, dtype=np.float32) for values in conditions], axis=0)
+
+    def get_reward_conditions(self):
+        """Return the 11 supported per-agent Gigaflow reward parameters in Table A2 order."""
+        conditions = [binding.env_get(env_id)["reward_conditions"] for env_id in self.c_env_ids]
+        if not conditions:
+            return np.empty((0, binding.REWARD_CONDITION_FEATURES), dtype=np.float32)
         return np.concatenate([np.asarray(values, dtype=np.float32) for values in conditions], axis=0)
 
     def get_global_agent_state(self):
