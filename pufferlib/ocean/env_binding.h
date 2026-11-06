@@ -806,6 +806,55 @@ static PyObject *vec_get_global_agent_state(PyObject *self, PyObject *args) {
     Py_RETURN_NONE;
 }
 
+static PyObject *vec_get_articulated_ego_state(PyObject *self, PyObject *args) {
+    if (PyTuple_Size(args) != 3) {
+        PyErr_SetString(PyExc_TypeError, "vec_get_articulated_ego_state requires 3 arguments");
+        return NULL;
+    }
+
+    VecEnv *vec = unpack_vecenv(args);
+    if (!vec) {
+        return NULL;
+    }
+
+    PyObject *valid_arr = PyTuple_GetItem(args, 1);
+    PyObject *state_arr = PyTuple_GetItem(args, 2);
+    if (!PyArray_Check(valid_arr) || !PyArray_Check(state_arr)) {
+        PyErr_SetString(PyExc_TypeError, "valid and state outputs must be NumPy arrays");
+        return NULL;
+    }
+
+    PyArrayObject *valid_array = (PyArrayObject *)valid_arr;
+    PyArrayObject *state_array = (PyArrayObject *)state_arr;
+    if (!PyArray_ISCONTIGUOUS(valid_array) || !PyArray_ISCONTIGUOUS(state_array)) {
+        PyErr_SetString(PyExc_ValueError, "articulated state output arrays must be contiguous");
+        return NULL;
+    }
+    if (PyArray_TYPE(valid_array) != NPY_INT32 || PyArray_NDIM(valid_array) != 1 ||
+        PyArray_DIM(valid_array, 0) != vec->num_envs) {
+        PyErr_SetString(PyExc_ValueError, "valid output must be int32 with shape (num_envs,)");
+        return NULL;
+    }
+    if (PyArray_TYPE(state_array) != NPY_FLOAT32 || PyArray_NDIM(state_array) != 2 ||
+        PyArray_DIM(state_array, 0) != vec->num_envs ||
+        PyArray_DIM(state_array, 1) != ARTICULATED_EGO_STATE_SIZE) {
+        PyErr_SetString(
+            PyExc_ValueError,
+            "state output must be float32 with shape (num_envs, ARTICULATED_EGO_STATE_SIZE)");
+        return NULL;
+    }
+
+    int *valid_data = (int *)PyArray_DATA(valid_array);
+    float *state_data = (float *)PyArray_DATA(state_array);
+    for (int i = 0; i < vec->num_envs; i++) {
+        Drive *drive = (Drive *)vec->envs[i];
+        c_get_articulated_ego_state(
+            drive, &valid_data[i], &state_data[i * ARTICULATED_EGO_STATE_SIZE]);
+    }
+
+    Py_RETURN_NONE;
+}
+
 static PyObject *get_ground_truth_trajectories(PyObject *self, PyObject *args) {
     if (PyTuple_Size(args) != 9) {
         PyErr_SetString(PyExc_TypeError, "get_ground_truth_trajectories requires 9 arguments");
@@ -1058,6 +1107,8 @@ static PyMethodDef methods[] = {
     {"shared", (PyCFunction)my_shared, METH_VARARGS | METH_KEYWORDS, "Shared state"},
     {"get_global_agent_state", get_global_agent_state, METH_VARARGS, "Get global agent state"},
     {"vec_get_global_agent_state", vec_get_global_agent_state, METH_VARARGS, "Get agent state from vectorized env"},
+    {"vec_get_articulated_ego_state", vec_get_articulated_ego_state, METH_VARARGS,
+     "Get articulated ego state from vectorized env"},
     {"get_ground_truth_trajectories", get_ground_truth_trajectories, METH_VARARGS, "Get ground truth trajectories"},
     {"vec_get_global_ground_truth_trajectories", vec_get_global_ground_truth_trajectories, METH_VARARGS,
      "Get ground truth trajectories from vectorized env"},
@@ -1084,6 +1135,7 @@ PyMODINIT_FUNC PyInit_binding(void) {
     PyModule_AddIntConstant(m, "MAX_AGENTS", MAX_AGENTS);
     PyModule_AddIntConstant(m, "TRAJECTORY_LENGTH", TRAJECTORY_LENGTH);
     PyModule_AddIntConstant(m, "MAX_ENTITIES_PER_CELL", MAX_ENTITIES_PER_CELL);
+    PyModule_AddIntConstant(m, "ARTICULATED_EGO_STATE_SIZE", ARTICULATED_EGO_STATE_SIZE);
 
     PyModule_AddIntConstant(m, "ROAD_FEATURES", ROAD_FEATURES);
     PyModule_AddIntConstant(m, "PARTNER_FEATURES", PARTNER_FEATURES);

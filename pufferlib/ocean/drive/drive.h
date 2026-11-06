@@ -76,6 +76,44 @@
 #define EGO_VEHICLE_CAR 0
 #define EGO_VEHICLE_TRACTOR_TRAILER 1
 
+// Flat native layout used by get_articulated_ego_state(). Python exposes
+// named views of these fields rather than the flat buffer.
+#define ARTICULATED_EGO_STATE_SIZE 32
+typedef enum ArticulatedEgoStateField {
+    ART_STATE_TRACTOR_CENTER_X = 0,
+    ART_STATE_TRACTOR_CENTER_Y = 1,
+    ART_STATE_TRACTOR_CENTER_Z = 2,
+    ART_STATE_TRACTOR_CENTER_HEADING = 3,
+    ART_STATE_TRAILER_CENTER_X = 4,
+    ART_STATE_TRAILER_CENTER_Y = 5,
+    ART_STATE_TRAILER_CENTER_Z = 6,
+    ART_STATE_TRAILER_CENTER_HEADING = 7,
+    ART_STATE_TRACTOR_REAR_AXLE_X = 8,
+    ART_STATE_TRACTOR_REAR_AXLE_Y = 9,
+    ART_STATE_TRACTOR_REAR_AXLE_HEADING = 10,
+    ART_STATE_TRAILER_AXLE_X = 11,
+    ART_STATE_TRAILER_AXLE_Y = 12,
+    ART_STATE_TRAILER_AXLE_HEADING = 13,
+    ART_STATE_HITCH_X = 14,
+    ART_STATE_HITCH_Y = 15,
+    ART_STATE_HITCH_Z = 16,
+    ART_STATE_TRACTOR_VX = 17,
+    ART_STATE_TRACTOR_VY = 18,
+    ART_STATE_TRACTOR_VZ = 19,
+    ART_STATE_TRAILER_VX = 20,
+    ART_STATE_TRAILER_VY = 21,
+    ART_STATE_TRAILER_VZ = 22,
+    ART_STATE_SPEED = 23,
+    ART_STATE_STEERING_ANGLE = 24,
+    ART_STATE_ARTICULATION_ANGLE = 25,
+    ART_STATE_TRACTOR_LENGTH = 26,
+    ART_STATE_TRACTOR_WIDTH = 27,
+    ART_STATE_TRACTOR_HEIGHT = 28,
+    ART_STATE_TRAILER_LENGTH = 29,
+    ART_STATE_TRAILER_WIDTH = 30,
+    ART_STATE_TRAILER_HEIGHT = 31,
+} ArticulatedEgoStateField;
+
 // Articulated entity roles
 #define ARTICULATED_ROLE_NONE 0
 #define ARTICULATED_ROLE_TRACTOR 1
@@ -1940,6 +1978,57 @@ void c_get_global_agent_state(Drive *env, float *x_out, float *y_out, float *z_o
         length_out[i] = agent->length;
         width_out[i] = agent->width;
     }
+}
+
+void c_get_articulated_ego_state(Drive *env, int *valid_out, float *state_out) {
+    *valid_out = 0;
+    memset(state_out, 0, ARTICULATED_EGO_STATE_SIZE * sizeof(float));
+    if (!env->articulated_ego_valid || env->tractor_idx < 0 || env->trailer_idx < 0 ||
+        env->tractor_idx >= env->num_entities || env->trailer_idx >= env->num_entities) {
+        return;
+    }
+
+    const Entity *tractor = &env->entities[env->tractor_idx];
+    const Entity *trailer = &env->entities[env->trailer_idx];
+    const ArticulatedVehicleState *state = &env->articulated_state;
+    const float world_x = env->world_mean_x;
+    const float world_y = env->world_mean_y;
+    const ArticulatedPoint hitch =
+        tractor_connection_point(state->tractor_rear_axle, &env->articulated_geometry);
+
+    state_out[ART_STATE_TRACTOR_CENTER_X] = tractor->x + world_x;
+    state_out[ART_STATE_TRACTOR_CENTER_Y] = tractor->y + world_y;
+    state_out[ART_STATE_TRACTOR_CENTER_Z] = tractor->z;
+    state_out[ART_STATE_TRACTOR_CENTER_HEADING] = tractor->heading;
+    state_out[ART_STATE_TRAILER_CENTER_X] = trailer->x + world_x;
+    state_out[ART_STATE_TRAILER_CENTER_Y] = trailer->y + world_y;
+    state_out[ART_STATE_TRAILER_CENTER_Z] = trailer->z;
+    state_out[ART_STATE_TRAILER_CENTER_HEADING] = trailer->heading;
+    state_out[ART_STATE_TRACTOR_REAR_AXLE_X] = state->tractor_rear_axle.x + world_x;
+    state_out[ART_STATE_TRACTOR_REAR_AXLE_Y] = state->tractor_rear_axle.y + world_y;
+    state_out[ART_STATE_TRACTOR_REAR_AXLE_HEADING] = state->tractor_rear_axle.heading;
+    state_out[ART_STATE_TRAILER_AXLE_X] = state->trailer_axle.x + world_x;
+    state_out[ART_STATE_TRAILER_AXLE_Y] = state->trailer_axle.y + world_y;
+    state_out[ART_STATE_TRAILER_AXLE_HEADING] = state->trailer_axle.heading;
+    state_out[ART_STATE_HITCH_X] = hitch.x + world_x;
+    state_out[ART_STATE_HITCH_Y] = hitch.y + world_y;
+    state_out[ART_STATE_HITCH_Z] = hitch.z;
+    state_out[ART_STATE_TRACTOR_VX] = tractor->vx;
+    state_out[ART_STATE_TRACTOR_VY] = tractor->vy;
+    state_out[ART_STATE_TRACTOR_VZ] = tractor->vz;
+    state_out[ART_STATE_TRAILER_VX] = trailer->vx;
+    state_out[ART_STATE_TRAILER_VY] = trailer->vy;
+    state_out[ART_STATE_TRAILER_VZ] = trailer->vz;
+    state_out[ART_STATE_SPEED] = state->speed;
+    state_out[ART_STATE_STEERING_ANGLE] = state->steering_angle;
+    state_out[ART_STATE_ARTICULATION_ANGLE] = articulated_angle(state);
+    state_out[ART_STATE_TRACTOR_LENGTH] = tractor->length;
+    state_out[ART_STATE_TRACTOR_WIDTH] = tractor->width;
+    state_out[ART_STATE_TRACTOR_HEIGHT] = tractor->height;
+    state_out[ART_STATE_TRAILER_LENGTH] = trailer->length;
+    state_out[ART_STATE_TRAILER_WIDTH] = trailer->width;
+    state_out[ART_STATE_TRAILER_HEIGHT] = trailer->height;
+    *valid_out = 1;
 }
 
 void c_get_global_ground_truth_trajectories(Drive *env, float *x_out, float *y_out, float *z_out, float *heading_out,

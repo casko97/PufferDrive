@@ -358,6 +358,45 @@ class Drive(pufferlib.PufferEnv):
 
         return states
 
+    def get_articulated_ego_state(self):
+        """Return articulated ego state with one row per simulator environment.
+
+        Valid is false for environments without an initialized tractor-trailer
+        SDC. All pose coordinates are in the restored global/world frame.
+
+        Returns:
+            A dictionary containing:
+                valid: bool array shaped (num_envs,).
+                tractor_center_pose, trailer_center_pose: [x, y, z, heading].
+                tractor_rear_axle_pose, trailer_axle_pose: [x, y, heading].
+                hitch_position: [x, y, z].
+                tractor_velocity, trailer_velocity: [vx, vy, vz].
+                speed, steering_angle, articulation_angle: scalar state arrays.
+                tractor_dimensions, trailer_dimensions: [length, width, height].
+        """
+        valid = np.zeros(self.num_envs, dtype=np.int32)
+        raw = np.zeros(
+            (self.num_envs, binding.ARTICULATED_EGO_STATE_SIZE),
+            dtype=np.float32,
+        )
+        binding.vec_get_articulated_ego_state(self.c_envs, valid, raw)
+
+        return {
+            "valid": valid.astype(bool),
+            "tractor_center_pose": raw[:, 0:4].copy(),
+            "trailer_center_pose": raw[:, 4:8].copy(),
+            "tractor_rear_axle_pose": raw[:, 8:11].copy(),
+            "trailer_axle_pose": raw[:, 11:14].copy(),
+            "hitch_position": raw[:, 14:17].copy(),
+            "tractor_velocity": raw[:, 17:20].copy(),
+            "trailer_velocity": raw[:, 20:23].copy(),
+            "speed": raw[:, 23].copy(),
+            "steering_angle": raw[:, 24].copy(),
+            "articulation_angle": raw[:, 25].copy(),
+            "tractor_dimensions": raw[:, 26:29].copy(),
+            "trailer_dimensions": raw[:, 29:32].copy(),
+        }
+
     def get_ground_truth_trajectories(self):
         """Get ground truth trajectories for all active agents.
 
