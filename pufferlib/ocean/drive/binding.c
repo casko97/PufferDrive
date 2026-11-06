@@ -77,6 +77,10 @@ static PyObject *my_shared(PyObject *self, PyObject *args, PyObject *kwargs) {
     int goal_behavior = unpack(kwargs, "goal_behavior");
     float goal_target_distance = unpack(kwargs, "goal_target_distance");
     int max_controlled_agents = unpack(kwargs, "max_controlled_agents");
+    int ego_vehicle_type = EGO_VEHICLE_CAR;
+    if (kwargs && PyDict_GetItemString(kwargs, "ego_vehicle_type")) {
+        ego_vehicle_type = unpack(kwargs, "ego_vehicle_type");
+    }
 
     clock_gettime(CLOCK_REALTIME, &ts);
     srand(ts.tv_nsec); // Always use random sampling with replacement
@@ -106,8 +110,10 @@ static PyObject *my_shared(PyObject *self, PyObject *args, PyObject *kwargs) {
         env->goal_behavior = goal_behavior;
         env->goal_target_distance = goal_target_distance;
         env->max_controlled_agents = max_controlled_agents;
+        env->ego_vehicle_type = ego_vehicle_type;
         snprintf(map_file, sizeof(map_file), "%s/map_%03d.bin", map_dir, map_id);
         env->entities = load_map_binary(map_file, env);
+        initialize_articulated_ego(env);
         // Count the number of controllable agents in map
         set_active_agents(env);
 
@@ -258,6 +264,10 @@ static int my_init(Env *env, PyObject *args, PyObject *kwargs) {
     env->num_agents = max_agents;
     env->map_name = strdup(map_file);
     env->init_steps = init_steps;
+    env->ego_vehicle_type = EGO_VEHICLE_CAR;
+    if (kwargs && PyDict_GetItemString(kwargs, "ego_vehicle_type")) {
+        env->ego_vehicle_type = (int)unpack(kwargs, "ego_vehicle_type");
+    }
     env->timestep = init_steps;
     init(env);
     return 0;

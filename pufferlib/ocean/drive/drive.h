@@ -1,8 +1,10 @@
 #include <signal.h>
 #include <sys/types.h>
+#include <sys/wait.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <stdint.h>
+#include <limits.h>
 #include <stddef.h>
 #include <unistd.h>
 #include <math.h>
@@ -13,6 +15,7 @@
 #include "rlgl.h"
 #include <time.h>
 #include "error.h"
+#include "tractor_trailer.h"
 
 // Render modes
 #define RENDER_WINDOW 0
@@ -67,6 +70,15 @@
 // Dynamics Models
 #define CLASSIC 0
 #define JERK 1
+
+// Ego vehicle configurations
+#define EGO_VEHICLE_CAR 0
+#define EGO_VEHICLE_TRACTOR_TRAILER 1
+
+// Articulated entity roles
+#define ARTICULATED_ROLE_NONE 0
+#define ARTICULATED_ROLE_TRACTOR 1
+#define ARTICULATED_ROLE_TRAILER 2
 
 // Collision state
 #define NO_COLLISION 0
@@ -245,6 +257,10 @@ struct Entity {
     float jerk_lat;
     float steering_angle;
     float wheelbase;
+
+    // Articulated vehicle linkage
+    int articulated_role;
+    int articulated_parent_idx;
 };
 
 void free_entity(Entity *entity) {
@@ -358,6 +374,15 @@ struct Drive {
     int control_mode;
     int max_controlled_agents;
     int render_mode;
+    int ego_vehicle_type;
+
+    // A scenario has at most one articulated SDC in v1.
+    int articulated_ego_valid;
+    int tractor_idx;
+    int trailer_idx;
+    ArticulatedGeometry articulated_geometry;
+    ArticulatedVehicleState articulated_state;
+
 };
 
 void add_log(Drive *env) {
@@ -435,8 +460,10 @@ Entity *load_map_binary(const char *filename, Drive *env) {
     fread(&env->num_objects, sizeof(int), 1, file);
     fread(&env->num_roads, sizeof(int), 1, file);
     env->num_entities = env->num_objects + env->num_roads;
-    Entity *entities = (Entity *)malloc(env->num_entities * sizeof(Entity));
+    Entity *entities = (Entity *)calloc(env->num_entities, sizeof(Entity));
     for (int i = 0; i < env->num_entities; i++) {
+        entities[i].articulated_parent_idx = -1;
+
         // Read base entity data
         fread(&entities[i].scenario_id, sizeof(int), 1, file);
         fread(&entities[i].type, sizeof(int), 1, file);
@@ -489,6 +516,8 @@ Entity *load_map_binary(const char *filename, Drive *env) {
     return entities;
 }
 
+#include "tractor_trailer_lifecycle.h"
+
 void set_start_position(Drive *env) {
     for (int i = 0; i < env->num_entities; i++) {
         int is_active = 0;
@@ -513,20 +542,24 @@ void set_start_position(Drive *env) {
         if (e->type > CYCLIST || e->type == 0) {
             continue;
         }
-        if (is_active == 0) {
+        int is_attached_trailer = env->articulated_ego_valid && i == env->trailer_idx;
+        if (is_active == 0 && !is_attached_trailer) {
             e->vx = 0;
             e->vy = 0;
             e->vz = 0;
             e->collided_before_goal = 0;
         } else {
-            e->vx = e->traj_vx[env->init_steps];
-            e->vy = e->traj_vy[env->init_steps];
-            e->vz = e->traj_vz[env->init_steps];
+            e->vx = e->traj_vx[step];
+            e->vy = e->traj_vy[step];
+            e->vz = e->traj_vz[step];
         }
-        e->heading = e->traj_heading[env->init_steps];
+        if (is_attached_trailer) {
+            e->collided_before_goal = 0;
+        }
+        e->heading = e->traj_heading[step];
         e->heading_x = cosf(e->heading);
         e->heading_y = sinf(e->heading);
-        e->valid = e->traj_valid[env->init_steps];
+        e->valid = e->traj_valid[step];
         e->collision_state = 0;
         e->metrics_array[COLLISION_IDX] = 0.0f;    // vehicle collision
         e->metrics_array[OFFROAD_IDX] = 0.0f;      // offroad
@@ -543,8 +576,11 @@ void set_start_position(Drive *env) {
         e->jerk_long = 0.0f;
         e->jerk_lat = 0.0f;
         e->steering_angle = 0.0f;
-        e->wheelbase = 0.6f * e->length;
+        if (!(env->articulated_ego_valid && i == env->tractor_idx)) {
+            e->wheelbase = 0.6f * e->length;
+        }
     }
+    refresh_articulated_state_from_entities(env);
 }
 
 int getGridIndex(Drive *env, float x1, float y1) {
@@ -1322,11 +1358,23 @@ void set_active_agents(Drive *env) {
         env->entities[sdc_index].active_agent = 1;
     }
 
+    // The attached trailer occupies an actor slot, but is not policy-controlled.
+    if (env->articulated_ego_valid) {
+        static_agent_indices[env->static_agent_count++] = env->trailer_idx;
+        env->entities[env->trailer_idx].active_agent = 0;
+        env->num_actors++;
+    }
+
     // Iterate through entities to find agents to create and/or control
     for (int i = 0; i < env->num_objects && env->num_actors < MAX_AGENTS; i++) {
 
         // Skip if its the SDC
         if (i == sdc_index) {
+            continue;
+        }
+
+        // The attached trailer was already registered with its tractor above.
+        if (env->articulated_ego_valid && i == env->trailer_idx) {
             continue;
         }
 
@@ -1458,6 +1506,7 @@ void init(Drive *env) {
     env->timestep = 0;
     env->entities = load_map_binary(env->map_name, env);
     set_means(env);
+    initialize_articulated_ego(env);
     init_grid_map(env);
     env->grid_map->vision_range = 21; // TODO: Why is this hardcoded?
     init_neighbor_offsets(env);
@@ -2080,6 +2129,11 @@ void respawn_agent(Drive *env, int agent_idx) {
     env->entities[agent_idx].jerk_long = 0.0f;
     env->entities[agent_idx].jerk_lat = 0.0f;
     env->entities[agent_idx].steering_angle = 0.0f;
+
+    if (env->articulated_ego_valid && agent_idx == env->tractor_idx) {
+        reset_attached_trailer_runtime(env, 0, env->timestep);
+        refresh_articulated_state_from_entities(env);
+    }
 }
 
 void c_step(Drive *env) {

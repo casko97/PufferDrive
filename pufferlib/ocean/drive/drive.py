@@ -49,6 +49,7 @@ class Drive(pufferlib.PufferEnv):
         control_mode="control_vehicles",
         max_controlled_agents=32,
         map_dir="resources/drive/binaries/training",
+        ego_vehicle_type="car",
     ):
         # env
         self.dt = dt
@@ -70,7 +71,17 @@ class Drive(pufferlib.PufferEnv):
         self.termination_mode = termination_mode
         self.resample_frequency = resample_frequency
         self.dynamics_model = dynamics_model
+        self.ego_vehicle_type = ego_vehicle_type
         self.max_controlled_agents = max_controlled_agents
+
+        if ego_vehicle_type == "car":
+            self._ego_vehicle_type_flag = 0
+        elif ego_vehicle_type == "tractor_trailer":
+            self._ego_vehicle_type_flag = 1
+        else:
+            raise ValueError(
+                f"ego_vehicle_type must be either 'car' or 'tractor_trailer'. Got: {ego_vehicle_type}"
+            )
 
         # Observation space calculation
         self.ego_features = {"classic": binding.EGO_FEATURES_CLASSIC, "jerk": binding.EGO_FEATURES_JERK}.get(
@@ -162,6 +173,7 @@ class Drive(pufferlib.PufferEnv):
             goal_behavior=self.goal_behavior,
             goal_target_distance=self.goal_target_distance,
             max_controlled_agents=self.max_controlled_agents,
+            ego_vehicle_type=self._ego_vehicle_type_flag,
         )
 
         self.num_agents = agent_offsets[-1]
@@ -203,6 +215,7 @@ class Drive(pufferlib.PufferEnv):
                 control_mode=self.control_mode,
                 map_dir=map_dir,
                 max_controlled_agents=self.max_controlled_agents,
+                ego_vehicle_type=self._ego_vehicle_type_flag,
                 render_mode=render_mode,
             )
             self.env_ids.append(env_id)
@@ -230,6 +243,7 @@ class Drive(pufferlib.PufferEnv):
             goal_speed=self.goal_speed,
             map_dir=self.map_dir,
             max_controlled_agents=self.max_controlled_agents,
+            ego_vehicle_type=self._ego_vehicle_type_flag,
         )
         self.agent_offsets = agent_offsets
         self.map_ids = map_ids
@@ -269,6 +283,7 @@ class Drive(pufferlib.PufferEnv):
                 map_dir=self.map_dir,
                 termination_mode=(int(self.termination_mode) if self.termination_mode is not None else 0),
                 max_controlled_agents=self.max_controlled_agents,
+                ego_vehicle_type=self._ego_vehicle_type_flag,
                 render_mode=self.render_mode,
             )
             self.env_ids.append(env_id)
