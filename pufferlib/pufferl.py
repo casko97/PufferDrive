@@ -1353,6 +1353,48 @@ def load_env(env_name, args):
     return pufferlib.vector.make(make_env, env_kwargs=args["env"], **args["vec"])
 
 
+def _adapt_legacy_drive_ego_encoder(state_dict, model_state_dict):
+    """Pad the pre-entity-type Drive ego encoder from seven to eight inputs.
+
+    PufferDrive commit 3ca4087d appended normalized entity type to the classic
+    ego observation. The first seven features retained their order, so a zero
+    weight for the appended input preserves the legacy policy exactly.
+    """
+    adapted_keys = []
+    for key, checkpoint_value in tuple(state_dict.items()):
+        if not key.endswith("ego_encoder.0.weight") or key not in model_state_dict:
+            continue
+
+        model_value = model_state_dict[key]
+        if (
+            checkpoint_value.ndim == 2
+            and model_value.ndim == 2
+            and checkpoint_value.shape[0] == model_value.shape[0]
+            and checkpoint_value.shape[1] == 7
+            and model_value.shape[1] == 8
+        ):
+            padded = checkpoint_value.new_zeros(model_value.shape)
+            padded[:, :7] = checkpoint_value
+            state_dict[key] = padded
+            adapted_keys.append(key)
+
+    return adapted_keys
+
+
+def _load_policy_state_dict(policy, state_dict, env_name):
+    state_dict = {key.replace("module.", ""): value for key, value in state_dict.items()}
+    if env_name == "puffer_drive":
+        adapted_keys = _adapt_legacy_drive_ego_encoder(state_dict, policy.state_dict())
+        if adapted_keys:
+            warnings.warn(
+                "Adapted a legacy seven-feature PufferDrive checkpoint to the "
+                "current eight-feature ego observation by zero-initializing the "
+                "entity-type input weight.",
+                UserWarning,
+            )
+    policy.load_state_dict(state_dict)
+
+
 def load_policy(args, vecenv, env_name=""):
     package = args["package"]
     module_name = "pufferlib.ocean" if package == "ocean" else f"pufferlib.environments.{package}"
@@ -1379,8 +1421,7 @@ def load_policy(args, vecenv, env_name=""):
             raise pufferlib.APIUsageError("No run id provided for eval")
 
         state_dict = torch.load(path, map_location=device)
-        state_dict = {k.replace("module.", ""): v for k, v in state_dict.items()}
-        policy.load_state_dict(state_dict)
+        _load_policy_state_dict(policy, state_dict, env_name or args.get("env_name", ""))
 
     load_path = args["load_model_path"]
     if load_path == "latest":
@@ -1388,8 +1429,7 @@ def load_policy(args, vecenv, env_name=""):
 
     if load_path is not None:
         state_dict = torch.load(load_path, map_location=device)
-        state_dict = {k.replace("module.", ""): v for k, v in state_dict.items()}
-        policy.load_state_dict(state_dict)
+        _load_policy_state_dict(policy, state_dict, env_name or args.get("env_name", ""))
         # state_path = os.path.join(*load_path.split('/')[:-1], 'state.pt')
         # optim_state = torch.load(state_path)['optimizer_state_dict']
         # pufferl.optimizer.load_state_dict(optim_state)
