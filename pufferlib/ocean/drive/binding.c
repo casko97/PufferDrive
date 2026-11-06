@@ -268,6 +268,10 @@ static int my_init(Env *env, PyObject *args, PyObject *kwargs) {
     if (kwargs && PyDict_GetItemString(kwargs, "ego_vehicle_type")) {
         env->ego_vehicle_type = (int)unpack(kwargs, "ego_vehicle_type");
     }
+    env->max_articulation_angle = 0.0f;
+    if (kwargs && PyDict_GetItemString(kwargs, "max_articulation_angle")) {
+        env->max_articulation_angle = (float)unpack(kwargs, "max_articulation_angle");
+    }
     env->timestep = init_steps;
     init(env);
     return 0;

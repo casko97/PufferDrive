@@ -50,6 +50,7 @@ class Drive(pufferlib.PufferEnv):
         max_controlled_agents=32,
         map_dir="resources/drive/binaries/training",
         ego_vehicle_type="car",
+        max_articulation_angle=None,
     ):
         # env
         self.dt = dt
@@ -72,6 +73,7 @@ class Drive(pufferlib.PufferEnv):
         self.resample_frequency = resample_frequency
         self.dynamics_model = dynamics_model
         self.ego_vehicle_type = ego_vehicle_type
+        self.max_articulation_angle = max_articulation_angle
         self.max_controlled_agents = max_controlled_agents
 
         if ego_vehicle_type == "car":
@@ -82,6 +84,13 @@ class Drive(pufferlib.PufferEnv):
             raise ValueError(
                 f"ego_vehicle_type must be either 'car' or 'tractor_trailer'. Got: {ego_vehicle_type}"
             )
+
+        if max_articulation_angle is None:
+            self._max_articulation_angle = 0.0
+        elif 0.0 < float(max_articulation_angle) <= np.pi:
+            self._max_articulation_angle = float(max_articulation_angle)
+        else:
+            raise ValueError("max_articulation_angle must be None or in the interval (0, pi]")
 
         # Observation space calculation
         self.ego_features = {"classic": binding.EGO_FEATURES_CLASSIC, "jerk": binding.EGO_FEATURES_JERK}.get(
@@ -216,6 +225,7 @@ class Drive(pufferlib.PufferEnv):
                 map_dir=map_dir,
                 max_controlled_agents=self.max_controlled_agents,
                 ego_vehicle_type=self._ego_vehicle_type_flag,
+                max_articulation_angle=self._max_articulation_angle,
                 render_mode=render_mode,
             )
             self.env_ids.append(env_id)
@@ -284,6 +294,7 @@ class Drive(pufferlib.PufferEnv):
                 termination_mode=(int(self.termination_mode) if self.termination_mode is not None else 0),
                 max_controlled_agents=self.max_controlled_agents,
                 ego_vehicle_type=self._ego_vehicle_type_flag,
+                max_articulation_angle=self._max_articulation_angle,
                 render_mode=self.render_mode,
             )
             self.env_ids.append(env_id)

@@ -16,6 +16,7 @@
 #include <time.h>
 #include "error.h"
 #include "tractor_trailer.h"
+#include "tractor_trailer_dynamics.h"
 
 // Render modes
 #define RENDER_WINDOW 0
@@ -382,6 +383,7 @@ struct Drive {
     int trailer_idx;
     ArticulatedGeometry articulated_geometry;
     ArticulatedVehicleState articulated_state;
+    float max_articulation_angle;
 
 };
 
@@ -1602,6 +1604,12 @@ void move_dynamics(Drive *env, int action_idx, int agent_idx) {
     if (agent->stopped) {
         agent->vx = 0.0f;
         agent->vy = 0.0f;
+        if (env->articulated_ego_valid && agent_idx == env->tractor_idx) {
+            Entity *trailer = &env->entities[env->trailer_idx];
+            trailer->vx = 0.0f;
+            trailer->vy = 0.0f;
+            env->articulated_state.speed = 0.0f;
+        }
         return;
     }
 
@@ -1639,10 +1647,32 @@ void move_dynamics(Drive *env, int action_idx, int agent_idx) {
         float speed_magnitude = sqrtf(vx * vx + vy * vy);
         float v_dot_heading = vx * agent->heading_x + vy * agent->heading_y;
         float signed_speed = copysignf(speed_magnitude, v_dot_heading);
+        float initial_signed_speed = signed_speed;
+        if (env->articulated_ego_valid && agent_idx == env->tractor_idx) {
+            initial_signed_speed = env->articulated_state.speed;
+            signed_speed = initial_signed_speed;
+        }
 
         // Update speed with acceleration
         signed_speed = signed_speed + acceleration * env->dt;
         signed_speed = clipSpeed(signed_speed);
+
+        if (env->articulated_ego_valid && agent_idx == env->tractor_idx) {
+            ArticulatedStepInput articulated_input = {
+                .speed_start = initial_signed_speed,
+                .speed_end = signed_speed,
+                // Classic steering is a direct angle command, not a steering-rate command.
+                .steering_start = steering,
+                .steering_end = steering,
+                .dt = env->dt,
+                .max_articulation_angle = env->max_articulation_angle,
+            };
+            articulated_integrate_rk2(
+                &env->articulated_state, &env->articulated_geometry, &articulated_input);
+            write_articulated_state_to_entities(env);
+            return;
+        }
+
         // Compute yaw rate
         float beta = tanh(.5 * tanf(steering));
 
@@ -1715,6 +1745,9 @@ void move_dynamics(Drive *env, int action_idx, int agent_idx) {
         // Calculate new velocity
         float v_dot_heading = agent->vx * agent->heading_x + agent->vy * agent->heading_y;
         float signed_v = copysignf(sqrtf(agent->vx * agent->vx + agent->vy * agent->vy), v_dot_heading);
+        if (env->articulated_ego_valid && agent_idx == env->tractor_idx) {
+            signed_v = env->articulated_state.speed;
+        }
         float v_new = signed_v + 0.5f * (a_long_new + agent->a_long) * env->dt;
 
         // Make it easy to stop with 0 vel
@@ -1734,6 +1767,27 @@ void move_dynamics(Drive *env, int action_idx, int agent_idx) {
         // Update curvature and accel to account for limited steering
         signed_curvature = tanf(new_steering_angle) / agent->wheelbase;
         a_lat_new = v_new * v_new * signed_curvature;
+
+        if (env->articulated_ego_valid && agent_idx == env->tractor_idx) {
+            ArticulatedStepInput articulated_input = {
+                .speed_start = signed_v,
+                .speed_end = v_new,
+                // Jerk dynamics already applies the existing 0.6 rad/s steering-rate limit.
+                .steering_start = agent->steering_angle,
+                .steering_end = new_steering_angle,
+                .dt = env->dt,
+                .max_articulation_angle = env->max_articulation_angle,
+            };
+            articulated_integrate_rk2(
+                &env->articulated_state, &env->articulated_geometry, &articulated_input);
+
+            agent->jerk_long = (a_long_new - agent->a_long) / env->dt;
+            agent->jerk_lat = (a_lat_new - agent->a_lat) / env->dt;
+            agent->a_long = a_long_new;
+            agent->a_lat = a_lat_new;
+            write_articulated_state_to_entities(env);
+            return;
+        }
 
         // Calculate resulting movement using bicycle dynamics
         float d = 0.5f * (v_new + signed_v) * env->dt;

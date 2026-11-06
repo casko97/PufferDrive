@@ -32,10 +32,46 @@ static inline void refresh_articulated_state_from_entities(Drive *env) {
         entity_center_pose_to_axle(tractor_center, env->articulated_geometry.tractor_axle_to_center);
     env->articulated_state.trailer_axle =
         entity_center_pose_to_axle(trailer_center, env->articulated_geometry.trailer_axle_to_center);
-    float speed = sqrtf(tractor->vx * tractor->vx + tractor->vy * tractor->vy);
     float longitudinal_velocity = tractor->vx * tractor->heading_x + tractor->vy * tractor->heading_y;
-    env->articulated_state.speed = copysignf(speed, longitudinal_velocity);
+    env->articulated_state.speed = longitudinal_velocity;
     env->articulated_state.steering_angle = tractor->steering_angle;
+}
+
+static inline void write_articulated_state_to_entities(Drive *env) {
+    if (!env->articulated_ego_valid)
+        return;
+
+    Entity *tractor = &env->entities[env->tractor_idx];
+    Entity *trailer = &env->entities[env->trailer_idx];
+    ArticulatedPose tractor_center = axle_pose_to_entity_center(
+        env->articulated_state.tractor_rear_axle,
+        env->articulated_geometry.tractor_axle_to_center);
+    ArticulatedPose trailer_center = axle_pose_to_entity_center(
+        env->articulated_state.trailer_axle,
+        env->articulated_geometry.trailer_axle_to_center);
+    ArticulatedEntityVelocities velocities = articulated_entity_velocities(
+        &env->articulated_state, &env->articulated_geometry);
+
+    tractor->x = tractor_center.x;
+    tractor->y = tractor_center.y;
+    tractor->z = tractor_center.z;
+    tractor->heading = tractor_center.heading;
+    tractor->heading_x = cosf(tractor->heading);
+    tractor->heading_y = sinf(tractor->heading);
+    tractor->vx = velocities.tractor_vx;
+    tractor->vy = velocities.tractor_vy;
+    tractor->vz = 0.0f;
+    tractor->steering_angle = env->articulated_state.steering_angle;
+
+    trailer->x = trailer_center.x;
+    trailer->y = trailer_center.y;
+    trailer->z = trailer_center.z;
+    trailer->heading = trailer_center.heading;
+    trailer->heading_x = cosf(trailer->heading);
+    trailer->heading_y = sinf(trailer->heading);
+    trailer->vx = velocities.trailer_vx;
+    trailer->vy = velocities.trailer_vy;
+    trailer->vz = 0.0f;
 }
 
 static inline int initialize_articulated_ego(Drive *env) {
