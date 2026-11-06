@@ -84,6 +84,7 @@
 // Ego features depend on dynamics model
 #define EGO_FEATURES_CLASSIC 7
 #define EGO_FEATURES_JERK 10
+#define REWARD_CONDITION_FEATURES 11
 
 // Observation normalization constants
 #define MAX_SPEED 100.0f
@@ -189,6 +190,7 @@ struct Entity {
     float init_goal_y;
     int mark_as_expert;
     int collision_state;
+    float collision_speed;
     float metrics_array[5]; // metrics_array: [collision, offroad, reached_goal, lane_aligned
     float x;
     float y;
@@ -224,6 +226,23 @@ struct Entity {
     float dynamics_steer;
     float dynamics_acc;
     float dynamics_vel;
+
+    // Per-episode Gigaflow reward condition (Table A2)
+    float reward_goal_radius;
+    float reward_collision;
+    float reward_boundary;
+    float reward_comfort;
+    float reward_lane_align;
+    float reward_velocity_align;
+    float reward_lane_center;
+    float reward_center_bias;
+    float reward_velocity;
+    float reward_reverse;
+    float reward_timestep;
+
+    // Frenet-like quantities for the closest lane, populated by metrics.
+    float lane_heading_error;
+    float lane_center_offset;
 };
 
 void free_entity(Entity *entity) {
@@ -538,6 +557,8 @@ void set_start_position(Drive *env) {
         e->dynamics_steer = 1.0f;
         e->dynamics_acc = 1.0f;
         e->dynamics_vel = 1.0f;
+        e->lane_heading_error = M_PI;
+        e->lane_center_offset = 0.0f;
     }
 }
 
@@ -557,6 +578,84 @@ void sample_dynamics_conditions(Drive *env) {
         agent->dynamics_acc = sample_mixed_uniform(1.5f);
         agent->dynamics_vel = sample_mixed_uniform(1.5f);
     }
+}
+
+
+
+float normalize_heading(float heading);
+
+float gigaflow_signed_speed(Entity *agent) {
+    float speed = sqrtf(agent->vx * agent->vx + agent->vy * agent->vy);
+    float heading_dot = agent->vx * agent->heading_x + agent->vy * agent->heading_y;
+    return copysignf(speed, heading_dot);
+}
+
+float gigaflow_goal_reward(Entity *agent, float distance_to_goal, float speed, bool is_waypoint) {
+    bool eligible = !agent->current_goal_reached && distance_to_goal < agent->reward_goal_radius;
+    return eligible && (is_waypoint || speed <= 3.0f) ? 1.0f : 0.0f;
+}
+
+float gigaflow_collision_reward(Entity *agent) {
+    return -(agent->reward_collision + 0.1f * agent->collision_speed);
+}
+
+float gigaflow_boundary_reward(Entity *agent) { return -agent->reward_boundary; }
+
+int gigaflow_reward_collision_state(Entity *agent, int detected_collision_state) {
+    if (detected_collision_state == NO_COLLISION && agent->current_lane_idx < 0 && !agent->removed)
+        return OFFROAD;
+    return detected_collision_state;
+}
+
+float gigaflow_comfort_reward(Entity *agent) {
+    int events = (fabsf(agent->a_long) > 3.0f) + (fabsf(agent->a_lat) > 3.0f) +
+                 (fabsf(agent->jerk_long) > 5.0f || fabsf(agent->jerk_lat) > 5.0f);
+    return -agent->reward_comfort * events;
+}
+
+float gigaflow_lane_alignment_reward(Drive *env, Entity *agent) {
+    if (agent->current_lane_idx < 0)
+        return 0.0f;
+    float theta = agent->lane_heading_error;
+    float cos_theta = cosf(theta);
+    float signed_speed = gigaflow_signed_speed(agent);
+    return agent->reward_lane_align * env->dt *
+           (fminf(cos_theta, 0.0f) + agent->reward_velocity_align * fminf(cos_theta * signed_speed, 0.0f) +
+            0.0025f * (1.0f - fabsf(theta) / (M_PI / 2.0f)));
+}
+
+float gigaflow_lane_center_reward(Drive *env, Entity *agent) {
+    if (agent->current_lane_idx < 0)
+        return 0.0f;
+    float cos_theta = cosf(agent->lane_heading_error);
+    float center_error = fabsf(agent->lane_center_offset - agent->reward_center_bias);
+    return -agent->reward_lane_center * env->dt *
+           ((cos_theta > 0.5f ? center_error : 0.0f) - 0.05f / expf(center_error - 0.5f));
+}
+
+float gigaflow_progress_reward(Drive *env, Entity *agent) {
+    float speed = sqrtf(agent->vx * agent->vx + agent->vy * agent->vy);
+    if (agent->current_lane_idx < 0)
+        return 0.0f;
+    if (speed <= 2.5f)
+        return 0.0f;
+    return agent->reward_velocity * env->dt * fmaxf(cosf(agent->lane_heading_error), 0.0f);
+}
+
+float gigaflow_reverse_reward(Drive *env, Entity *agent) {
+    return gigaflow_signed_speed(agent) < 0.0f ? -agent->reward_reverse * env->dt : 0.0f;
+}
+
+float gigaflow_timestep_reward(Drive *env, Entity *agent) {
+    float speed = sqrtf(agent->vx * agent->vx + agent->vy * agent->vy);
+    bool moving = speed > 0.0f || fabsf(agent->a_long) > 0.0f || fabsf(agent->a_lat) > 0.0f;
+    return moving ? -agent->reward_timestep * env->dt : 0.0f;
+}
+
+float compute_gigaflow_dense_reward(Drive *env, Entity *agent) {
+    return gigaflow_comfort_reward(agent) + gigaflow_lane_alignment_reward(env, agent) +
+           gigaflow_lane_center_reward(env, agent) + gigaflow_progress_reward(env, agent) +
+           gigaflow_reverse_reward(env, agent) + gigaflow_timestep_reward(env, agent);
 }
 
 int getGridIndex(Drive *env, float x1, float y1) {
@@ -1090,6 +1189,10 @@ void reset_agent_metrics(Drive *env, int agent_idx) {
     agent->metrics_array[OFFROAD_IDX] = 0.0f;      // offroad
     agent->metrics_array[LANE_ALIGNED_IDX] = 0.0f; // lane aligned
     agent->collision_state = 0;
+    agent->collision_speed = 0.0f;
+    agent->current_lane_idx = -1;
+    agent->lane_heading_error = M_PI;
+    agent->lane_center_offset = 0.0f;
 }
 
 float point_to_segment_distance_2d(float px, float py, float x1, float y1, float x2, float y2) {
@@ -1209,6 +1312,19 @@ void compute_agent_metrics(Drive *env, int agent_idx) {
         int lane_aligned =
             check_lane_aligned(agent, &env->entities[closest_lane_entity_idx], closest_lane_geometry_idx);
         agent->metrics_array[LANE_ALIGNED_IDX] = lane_aligned;
+        Entity *lane = &env->entities[closest_lane_entity_idx];
+        float start_x = lane->traj_x[closest_lane_geometry_idx];
+        float start_y = lane->traj_y[closest_lane_geometry_idx];
+        float lane_dx = lane->traj_x[closest_lane_geometry_idx + 1] - start_x;
+        float lane_dy = lane->traj_y[closest_lane_geometry_idx + 1] - start_y;
+        float lane_length = sqrtf(lane_dx * lane_dx + lane_dy * lane_dy);
+        if (lane_length > 1e-6f) {
+            float lane_heading = atan2f(lane_dy, lane_dx);
+            float heading_error = normalize_heading(agent->heading - lane_heading);
+            agent->lane_heading_error = heading_error;
+            agent->lane_center_offset =
+                (lane_dx * (agent->y - start_y) - lane_dy * (agent->x - start_x)) / lane_length;
+        }
     }
 
     // Check for vehicle collisions
@@ -1219,6 +1335,8 @@ void compute_agent_metrics(Drive *env, int agent_idx) {
     agent->collision_state = collided;
 
     if (collided == VEHICLE_COLLISION) {
+        // Capture impact speed before STOP_AGENT can zero the velocity.
+        agent->collision_speed = sqrtf(agent->vx * agent->vx + agent->vy * agent->vy);
         if (env->collision_behavior == STOP_AGENT && !agent->stopped) {
             agent->stopped = 1;
             agent->vx = agent->vy = 0.0f;
@@ -1594,6 +1712,11 @@ void move_dynamics(Drive *env, int action_idx, int agent_idx) {
         x = x + (new_vx * env->dt);
         y = y + (new_vy * env->dt);
         heading = heading + yaw_rate * env->dt;
+        float lateral_acceleration = signed_speed * yaw_rate;
+        agent->jerk_long = (acceleration - agent->a_long) / env->dt;
+        agent->jerk_lat = (lateral_acceleration - agent->a_lat) / env->dt;
+        agent->a_long = acceleration;
+        agent->a_lat = lateral_acceleration;
 
         // Apply updates to the agent's state
         agent->x = x;

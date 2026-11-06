@@ -1,9 +1,180 @@
 #include "drive.h"
+#include <Python.h>
+
+static PyObject *test_gigaflow_reward_terms(PyObject *self, PyObject *args);
+static PyObject *test_lane_frenet_from_map(PyObject *self, PyObject *args);
+#define MY_METHODS                                                                                                     \
+    {"_test_gigaflow_reward_terms", test_gigaflow_reward_terms, METH_VARARGS, NULL},                                  \
+        {"_test_lane_frenet_from_map", test_lane_frenet_from_map, METH_VARARGS, NULL}
+
 #define Env Drive
 #define MY_SHARED
 #define MY_GET
 #define MY_PUT
 #include "../env_binding.h"
+
+static int unpack_float_sequence(PyObject *value, float *output, Py_ssize_t expected, const char *name) {
+    PyObject *sequence = PySequence_Fast(value, name);
+    if (sequence == NULL)
+        return -1;
+
+    if (PySequence_Fast_GET_SIZE(sequence) != expected) {
+        PyErr_Format(PyExc_ValueError, "%s must contain exactly %zd values", name, expected);
+        Py_DECREF(sequence);
+        return -1;
+    }
+    for (Py_ssize_t i = 0; i < expected; i++) {
+        output[i] = (float)PyFloat_AsDouble(PySequence_Fast_GET_ITEM(sequence, i));
+        if (PyErr_Occurred()) {
+            Py_DECREF(sequence);
+            return -1;
+        }
+    }
+    Py_DECREF(sequence);
+    return 0;
+}
+
+static PyObject *test_gigaflow_reward_terms(PyObject *self, PyObject *args) {
+    (void)self;
+    PyObject *condition_obj;
+    PyObject *state_obj;
+    int collision_state;
+    if (!PyArg_ParseTuple(args, "OOi", &condition_obj, &state_obj, &collision_state))
+        return NULL;
+
+    float condition[REWARD_CONDITION_FEATURES];
+    float state[13];
+    if (unpack_float_sequence(condition_obj, condition, REWARD_CONDITION_FEATURES, "condition") < 0 ||
+        unpack_float_sequence(state_obj, state, 13, "state") < 0)
+        return NULL;
+
+    Drive env = {.dt = state[0]};
+    Entity agent = {0};
+    agent.vx = state[1];
+    agent.collision_speed = state[11];
+    agent.heading_x = 1.0f;
+    agent.lane_heading_error = state[2];
+    agent.lane_center_offset = state[3];
+    agent.current_lane_idx = (int)state[12];
+    agent.a_long = state[4];
+    agent.a_lat = state[5];
+    agent.jerk_long = state[6];
+    agent.jerk_lat = state[7];
+    agent.current_goal_reached = (int)state[9];
+    agent.reward_goal_radius = condition[0];
+    agent.reward_collision = condition[1];
+    agent.reward_boundary = condition[2];
+    agent.reward_comfort = condition[3];
+    agent.reward_lane_align = condition[4];
+    agent.reward_velocity_align = condition[5];
+    agent.reward_lane_center = condition[6];
+    agent.reward_center_bias = condition[7];
+    agent.reward_velocity = condition[8];
+    agent.reward_reverse = condition[9];
+    agent.reward_timestep = condition[10];
+
+    float goal = gigaflow_goal_reward(&agent, state[8], fabsf(state[1]), (bool)state[10]);
+    int reward_collision_state = gigaflow_reward_collision_state(&agent, collision_state);
+    float collision = reward_collision_state == VEHICLE_COLLISION ? gigaflow_collision_reward(&agent) : 0.0f;
+    float boundary = reward_collision_state == OFFROAD ? gigaflow_boundary_reward(&agent) : 0.0f;
+    return Py_BuildValue("(ffffffffff)", goal, collision, boundary, gigaflow_comfort_reward(&agent),
+                         gigaflow_lane_alignment_reward(&env, &agent), gigaflow_lane_center_reward(&env, &agent),
+                         gigaflow_progress_reward(&env, &agent), gigaflow_reverse_reward(&env, &agent),
+                         gigaflow_timestep_reward(&env, &agent), compute_gigaflow_dense_reward(&env, &agent));
+}
+
+static PyObject *test_lane_frenet_from_map(PyObject *self, PyObject *args) {
+    (void)self;
+    const char *map_file;
+    PyObject *cases_obj;
+    if (!PyArg_ParseTuple(args, "sO", &map_file, &cases_obj))
+        return NULL;
+
+    PyObject *cases = PySequence_Fast(cases_obj, "cases must be a sequence of (x, y, heading) triples");
+    if (cases == NULL)
+        return NULL;
+
+    Drive env = {0};
+    env.entities = load_map_binary(map_file, &env);
+    if (env.entities == NULL) {
+        Py_DECREF(cases);
+        PyErr_Format(PyExc_FileNotFoundError, "could not load map binary: %s", map_file);
+        return NULL;
+    }
+    set_means(&env);
+    init_grid_map(&env);
+    env.grid_map->vision_range = 21;
+    init_neighbor_offsets(&env);
+    cache_neighbor_offsets(&env);
+
+    int agent_idx = env.num_entities;
+    Entity *resized = realloc(env.entities, (env.num_entities + 1) * sizeof(Entity));
+    if (resized == NULL) {
+        free(env.tracks_to_predict_indices);
+        c_close(&env);
+        Py_DECREF(cases);
+        return PyErr_NoMemory();
+    }
+    env.entities = resized;
+    memset(&env.entities[agent_idx], 0, sizeof(Entity));
+    env.num_entities++;
+    Entity *agent = &env.entities[agent_idx];
+    agent->type = VEHICLE;
+    agent->respawn_timestep = -1;
+
+    Py_ssize_t count = PySequence_Fast_GET_SIZE(cases);
+    PyObject *results = PyList_New(count);
+    if (results == NULL) {
+        free(env.tracks_to_predict_indices);
+        c_close(&env);
+        Py_DECREF(cases);
+        return NULL;
+    }
+
+    for (Py_ssize_t i = 0; i < count; i++) {
+        PyObject *row = PySequence_Fast(PySequence_Fast_GET_ITEM(cases, i), "each case must contain x, y, heading");
+        if (row == NULL || PySequence_Fast_GET_SIZE(row) != 3) {
+            Py_XDECREF(row);
+            PyErr_SetString(PyExc_ValueError, "each case must contain exactly x, y, heading");
+            Py_DECREF(results);
+            results = NULL;
+            break;
+        }
+        float world_x = (float)PyFloat_AsDouble(PySequence_Fast_GET_ITEM(row, 0));
+        float world_y = (float)PyFloat_AsDouble(PySequence_Fast_GET_ITEM(row, 1));
+        float heading = (float)PyFloat_AsDouble(PySequence_Fast_GET_ITEM(row, 2));
+        Py_DECREF(row);
+        if (PyErr_Occurred()) {
+            Py_DECREF(results);
+            results = NULL;
+            break;
+        }
+
+        agent->x = world_x - env.world_mean_x;
+        agent->y = world_y - env.world_mean_y;
+        agent->heading = heading;
+        agent->heading_x = cosf(heading);
+        agent->heading_y = sinf(heading);
+        compute_agent_metrics(&env, agent_idx);
+
+        int lane_idx = agent->current_lane_idx;
+        int lane_id = lane_idx >= 0 ? env.entities[lane_idx].id : -1;
+        PyObject *result = Py_BuildValue("(iiff)", lane_idx, lane_id, agent->lane_heading_error,
+                                         agent->lane_center_offset);
+        if (result == NULL) {
+            Py_DECREF(results);
+            results = NULL;
+            break;
+        }
+        PyList_SET_ITEM(results, i, result);
+    }
+
+    free(env.tracks_to_predict_indices);
+    env.tracks_to_predict_indices = NULL;
+    c_close(&env);
+    Py_DECREF(cases);
+    return results;
+}
 
 static PyObject *my_get(PyObject *dict, Env *env) {
     PyObject *conditions = PyList_New(env->active_agent_count);
