@@ -387,6 +387,42 @@ struct Drive {
 
 };
 
+static inline int entities_are_same_articulated_rig(const Drive *env, int first_idx,
+                                                     int second_idx) {
+    if (!env->articulated_ego_valid)
+        return 0;
+    return (first_idx == env->tractor_idx && second_idx == env->trailer_idx) ||
+           (first_idx == env->trailer_idx && second_idx == env->tractor_idx);
+}
+
+static inline int articulated_owner_hides_partner(const Drive *env, int ego_idx,
+                                                   int partner_idx) {
+    return env->articulated_ego_valid && ego_idx == env->tractor_idx &&
+           partner_idx == env->trailer_idx;
+}
+
+static inline int render_active_agent_slot(const Drive *env, int entity_idx) {
+    int owner_idx = entity_idx;
+    if (env->articulated_ego_valid && entity_idx == env->trailer_idx)
+        owner_idx = env->tractor_idx;
+    for (int slot = 0; slot < env->active_agent_count; slot++) {
+        if (env->active_agent_indices[slot] == owner_idx)
+            return slot;
+    }
+    return -1;
+}
+
+static inline int render_collision_state(const Drive *env, int entity_idx) {
+    if (env->articulated_ego_valid && entity_idx == env->trailer_idx)
+        return env->entities[env->tractor_idx].collision_state;
+    return env->entities[entity_idx].collision_state;
+}
+
+static inline int renders_as_articulated_rectangle(const Drive *env,
+                                                    int entity_idx) {
+    return env->articulated_ego_valid && entity_idx == env->trailer_idx;
+}
+
 void add_log(Drive *env) {
     for (int i = 0; i < env->active_agent_count; i++) {
         Entity *e = &env->entities[env->active_agent_indices[i]];
@@ -1052,6 +1088,8 @@ int collision_check(Drive *env, int agent_idx) {
             continue;
         if (index == agent_idx)
             continue;
+        if (entities_are_same_articulated_rig(env, agent_idx, index))
+            continue;
         Entity *entity = &env->entities[index];
         if (entity->respawn_timestep != -1)
             continue; // Skip respawning entities
@@ -1149,7 +1187,7 @@ float point_to_segment_distance_2d(float px, float py, float x1, float y1, float
     return sqrtf((px - closestX) * (px - closestX) + (py - closestY) * (py - closestY));
 }
 
-void compute_agent_metrics(Drive *env, int agent_idx) {
+static void compute_entity_metrics(Drive *env, int agent_idx) {
     Entity *agent = &env->entities[agent_idx];
 
     reset_agent_metrics(env, agent_idx);
@@ -1276,6 +1314,58 @@ void compute_agent_metrics(Drive *env, int agent_idx) {
     }
 
     return;
+}
+
+static inline void synchronize_articulated_rig_behavior(Drive *env) {
+    Entity *tractor = &env->entities[env->tractor_idx];
+    Entity *trailer = &env->entities[env->trailer_idx];
+    int rig_collision = NO_COLLISION;
+    if (tractor->collision_state == VEHICLE_COLLISION ||
+        trailer->collision_state == VEHICLE_COLLISION) {
+        rig_collision = VEHICLE_COLLISION;
+    } else if (tractor->collision_state == OFFROAD ||
+               trailer->collision_state == OFFROAD) {
+        rig_collision = OFFROAD;
+    }
+
+    tractor->collision_state = rig_collision;
+    trailer->collision_state = rig_collision;
+    tractor->metrics_array[OFFROAD_IDX] = rig_collision == OFFROAD ? 1.0f : 0.0f;
+    trailer->metrics_array[OFFROAD_IDX] = rig_collision == OFFROAD ? 1.0f : 0.0f;
+
+    int should_stop =
+        (rig_collision == VEHICLE_COLLISION && env->collision_behavior == STOP_AGENT) ||
+        (rig_collision == OFFROAD && env->offroad_behavior == STOP_AGENT) ||
+        tractor->stopped || trailer->stopped;
+    int should_remove =
+        (rig_collision == VEHICLE_COLLISION && env->collision_behavior == REMOVE_AGENT) ||
+        (rig_collision == OFFROAD && env->offroad_behavior == REMOVE_AGENT) ||
+        tractor->removed || trailer->removed;
+
+    if (should_stop || should_remove) {
+        tractor->vx = tractor->vy = 0.0f;
+        trailer->vx = trailer->vy = 0.0f;
+        env->articulated_state.speed = 0.0f;
+    }
+    if (should_stop) {
+        tractor->stopped = 1;
+        trailer->stopped = 1;
+    }
+    if (should_remove) {
+        tractor->removed = 1;
+        trailer->removed = 1;
+        tractor->x = tractor->y = INVALID_POSITION;
+        trailer->x = trailer->y = INVALID_POSITION;
+    }
+}
+
+void compute_agent_metrics(Drive *env, int agent_idx) {
+    compute_entity_metrics(env, agent_idx);
+    if (!env->articulated_ego_valid || agent_idx != env->tractor_idx)
+        return;
+
+    compute_entity_metrics(env, env->trailer_idx);
+    synchronize_articulated_rig_behavior(env);
 }
 
 bool should_control_agent(Drive *env, int agent_idx, int control_limit) {
@@ -1971,6 +2061,9 @@ void compute_observations(Drive *env) {
                 break;
             if (index == env->active_agent_indices[i])
                 continue; // Skip self, but don't increment obs_idx
+            if (articulated_owner_hides_partner(
+                    env, env->active_agent_indices[i], index))
+                continue;
             Entity *other_entity = &env->entities[index];
             if (ego_entity->respawn_timestep != -1)
                 continue;
@@ -2867,6 +2960,12 @@ void draw_scene(Drive *env, Client *client, int mode, int obs_only, int lasers, 
                 }
             }
 
+            int render_agent_index = render_active_agent_slot(env, i);
+            bool uses_active_style = render_agent_index >= 0;
+            int displayed_collision_state = render_collision_state(env, i);
+            bool is_articulated_trailer =
+                renders_as_articulated_rectangle(env, i);
+
             if ((!is_active_agent && !is_static_agent) || env->entities[i].respawn_timestep != -1) {
                 continue;
             }
@@ -2907,7 +3006,8 @@ void draw_scene(Drive *env, Client *client, int mode, int obs_only, int lasers, 
                     draw_agent_obs(env, agent_index, mode, obs_only, lasers);
                 }
 
-                if ((obs_only || IsKeyDown(KEY_LEFT_CONTROL)) && agent_index != env->human_agent_idx) {
+                if ((obs_only || IsKeyDown(KEY_LEFT_CONTROL)) &&
+                    render_agent_index != env->human_agent_idx) {
                     continue;
                 }
 
@@ -2919,7 +3019,7 @@ void draw_scene(Drive *env, Client *client, int mode, int obs_only, int lasers, 
                     else
                         agent_color = EXPERT_REPLAY;
                 }
-                if (is_active_agent) {
+                if (uses_active_style) {
                     if (env->entities[i].type == PEDESTRIAN)
                         agent_color = LIGHT_ORANGE;
                     else if (env->entities[i].type == CYCLIST)
@@ -2927,7 +3027,7 @@ void draw_scene(Drive *env, Client *client, int mode, int obs_only, int lasers, 
                     else
                         agent_color = BLUE;
                 }
-                if (is_active_agent && env->entities[i].collision_state > 0)
+                if (uses_active_style && displayed_collision_state > 0)
                     agent_color = RED;
 
                 rlPushMatrix();
@@ -2986,7 +3086,15 @@ void draw_scene(Drive *env, Client *client, int mode, int obs_only, int lasers, 
                     scale = (Vector3){2, 2, 2};
                     car_model = client->pedestrian;
                 }
-                DrawModelEx(car_model, (Vector3){0, 0, 0}, (Vector3){1, 0, 0}, 90.0f, scale, WHITE);
+                if (is_articulated_trailer) {
+                    Color trailer_color = displayed_collision_state > 0
+                                              ? RED
+                                              : (uses_active_style ? BLUE : GRAY);
+                    DrawCube((Vector3){0, 0, 0}, size.x, size.y, 1.0f,
+                             Fade(trailer_color, 0.5f));
+                } else {
+                    DrawModelEx(car_model, (Vector3){0, 0, 0}, (Vector3){1, 0, 0}, 90.0f, scale, WHITE);
+                }
                 {
                     float half_len = env->entities[i].length * 0.5f;
                     float half_width = env->entities[i].width * 0.5f;
@@ -2999,9 +3107,9 @@ void draw_scene(Drive *env, Client *client, int mode, int obs_only, int lasers, 
                     Color wire_color = GRAY;
                     if (!is_active_agent && env->entities[i].mark_as_expert == 1)
                         wire_color = EXPERT_REPLAY;
-                    if (is_active_agent)
+                    if (uses_active_style)
                         wire_color = BLUE; // Policy-controlled
-                    if (is_active_agent && env->entities[i].collision_state > 0)
+                    if (uses_active_style && displayed_collision_state > 0)
                         wire_color = RED;
                     rlSetLineWidth(2.0f);
                     for (int j = 0; j < 4; j++) {
