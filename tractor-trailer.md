@@ -4,6 +4,8 @@ PufferDrive can represent the scenario self-driving car (SDC) as a tractor–tra
 
 ## Build and Run
 
+### Environment Setup
+
 The examples below use the project environment used during implementation:
 
 ```bash
@@ -14,6 +16,25 @@ python setup.py build_ext --inplace --force
 ```
 
 The Drive map directory must contain `map_000.bin` and any other requested maps.
+
+### Generate .mp4
+
+Make sure to have your trailer-configured `pufferlib/config/ocean/drive.ini` file in place.
+
+````
+mkdir -p tractor_trailer_rollouts
+
+for run in $(seq 1 5); do
+    marker=$(mktemp)
+    puffer eval puffer_drive \
+        --load-model-path pufferlib/resources/drive/pufferdrive_weights.pt \
+        --train.seed "$run"
+
+    video=$(find . -maxdepth 1 -name '*.mp4' -newer "$marker" -print -quit)
+    mv "$video" "tractor_trailer_rollouts/rollout_${run}.mp4"
+    rm -f "$marker"
+done
+```
 
 ## Configuring the Simulation
 
