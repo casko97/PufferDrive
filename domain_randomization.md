@@ -96,7 +96,41 @@ Classic dynamics derives longitudinal/lateral acceleration and jerk for the comf
 
 ## Embodiment
 
-Todo
+When `embodiment_randomization=True`, every active vehicle samples one fixed
+representative exterior configuration at episode reset. Pedestrians and
+cyclists retain their map-provided geometry.
 
-*"Embodiment is randomized separately per agent: length U(0.8, 7)m, width U(0.8, 3)m (capped at length), and wheelbase is 60% of length. That spans something pedestrian-like through large vehicles. Vehicles are placed at random valid map locations/orientations and then filtered to form a collision-free initial scene; each receives a randomly sampled route and 0–3 intermediate waypoints"*
+| Class | L × W × H (m) | Wheelbase (m) | Rear overhang (m) |
+| --- | --- | --- | --- |
+| Small car | 3.85 × 1.70 × 1.50 | 2.50 | 0.70 |
+| Large car | 4.95 × 1.90 × 1.50 | 2.90 | 0.95 |
+| Van | 5.50 × 2.00 × 2.40 | 3.45 | 1.00 |
+| Truck | 9.00 × 2.50 × 3.25 | 5.20 | 1.45 |
+| Bus | 11.50 × 2.55 × 3.25 | 6.00 | 2.30 |
+
+For randomized vehicles under the JERK dynamics model, the public pose remains
+the footprint centre for collision, rendering, and observations. The motion
+integrator derives the rear-axle pose, advances it with the kinematic bicycle
+equations, then transforms back to the footprint centre. This produces a
+rigid-body swept path consistent with the configured axle placement.
+
+Classic dynamics retain their existing centre-reference behavior.
+
+`env.get_embodiment_conditions()` returns the active agents' embodiment
+conditions in the order: class id, length, width, height, and wheelbase.
+
+### Rollout visualizations
+
+Regenerate the fixed-action motion-quality overview and one GIF per scenario
+with:
+
+```bash
+python tests/drive/plot_embodiment_motion_rollouts.py
+```
+
+Outputs are written to `artifacts/embodiment_motion_rollouts/`. Footprints in
+the visualizations are drawn at their geometric centres, while the coloured
+trails show the rear-axle bicycle reference point. The latter is the point
+advanced by the JERK bicycle model; it is not the literal instantaneous centre
+of rotation, which lies off to the vehicle's side and varies with steering.
 

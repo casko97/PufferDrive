@@ -11,6 +11,7 @@ typedef struct {
     int action_type;
     int dynamics_model;
     int dynamics_randomization;
+    int embodiment_randomization;
     int reward_model;
     int reward_randomization;
     float reward_vehicle_collision;
@@ -71,6 +72,9 @@ static int handler(void *config, const char *section, const char *name, const ch
         }
     } else if (MATCH("env", "reward_randomization")) {
         env_config->reward_randomization =
+            strcmp(value, "1") == 0 || strcmp(value, "true") == 0 || strcmp(value, "True") == 0;
+    } else if (MATCH("env", "embodiment_randomization")) {
+        env_config->embodiment_randomization =
             strcmp(value, "1") == 0 || strcmp(value, "true") == 0 || strcmp(value, "True") == 0;
     } else if (MATCH("env", "goal_behavior")) {
         env_config->goal_behavior = atoi(value);

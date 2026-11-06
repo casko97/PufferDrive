@@ -231,6 +231,7 @@ int eval_gif(const char *map_name, const char *policy_name, int show_grid, int o
         .action_type = conf.action_type,
         .dynamics_model = conf.dynamics_model,
         .dynamics_randomization = conf.dynamics_randomization,
+        .embodiment_randomization = conf.embodiment_randomization,
         .reward_model = conf.reward_model,
         .reward_randomization = conf.reward_randomization,
         .reward_vehicle_collision = conf.reward_vehicle_collision,

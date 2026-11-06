@@ -178,8 +178,28 @@ static PyObject *test_lane_frenet_from_map(PyObject *self, PyObject *args) {
 
 static PyObject *my_get(PyObject *dict, Env *env) {
     PyObject *conditions = PyList_New(env->active_agent_count);
+    PyObject *embodiment_conditions = PyList_New(env->active_agent_count);
     if (conditions == NULL)
         return NULL;
+    if (embodiment_conditions == NULL) {
+        Py_DECREF(conditions);
+        return NULL;
+    }
+    for (int i = 0; i < env->active_agent_count; i++) {
+        Entity *agent = &env->entities[env->active_agent_indices[i]];
+        PyObject *condition = Py_BuildValue("(iffff)", agent->embodiment_type, agent->length, agent->width,
+                                            agent->height, agent->wheelbase);
+        if (condition == NULL) {
+            Py_DECREF(embodiment_conditions);
+            return NULL;
+        }
+        PyList_SET_ITEM(embodiment_conditions, i, condition);
+    }
+    if (PyDict_SetItemString(dict, "embodiment_conditions", embodiment_conditions) < 0) {
+        Py_DECREF(embodiment_conditions);
+        return NULL;
+    }
+    Py_DECREF(embodiment_conditions);
 
     for (int i = 0; i < env->active_agent_count; i++) {
         Entity *agent = &env->entities[env->active_agent_indices[i]];
@@ -408,6 +428,7 @@ static int my_init(Env *env, PyObject *args, PyObject *kwargs) {
     env->dynamics_model = (int)unpack(kwargs, "dynamics_model");
     env->dynamics_randomization = (int)unpack(kwargs, "dynamics_randomization");
     env->reward_model = (int)unpack(kwargs, "reward_model");
+    env->embodiment_randomization = (int)unpack(kwargs, "embodiment_randomization");
     env->reward_randomization = (int)unpack(kwargs, "reward_randomization");
     env->reward_vehicle_collision = conf.reward_vehicle_collision;
     env->reward_offroad_collision = conf.reward_offroad_collision;

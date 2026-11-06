@@ -36,6 +36,7 @@ class Drive(pufferlib.PufferEnv):
         action_type="discrete",
         dynamics_model="classic",
         dynamics_randomization=False,
+        embodiment_randomization=False,
         reward_model="pufferdrive",
         reward_randomization=False,
         max_controlled_agents=-1,
@@ -68,6 +69,7 @@ class Drive(pufferlib.PufferEnv):
         self.resample_frequency = resample_frequency
         self.dynamics_model = dynamics_model
         self.dynamics_randomization = dynamics_randomization
+        self.embodiment_randomization = embodiment_randomization
         self.reward_model = reward_model
         self.reward_randomization = reward_randomization
 
@@ -196,6 +198,7 @@ class Drive(pufferlib.PufferEnv):
                 action_type=self._action_type_flag,
                 dynamics_model=self._dynamics_model_flag,
                 dynamics_randomization=self.dynamics_randomization,
+                embodiment_randomization=self.embodiment_randomization,
                 human_agent_idx=human_agent_idx,
                 reward_vehicle_collision=reward_vehicle_collision,
                 reward_offroad_collision=reward_offroad_collision,
@@ -276,6 +279,7 @@ class Drive(pufferlib.PufferEnv):
                     action_type=self._action_type_flag,
                     dynamics_model=self._dynamics_model_flag,
                     dynamics_randomization=self.dynamics_randomization,
+                    embodiment_randomization=self.embodiment_randomization,
                     human_agent_idx=self.human_agent_idx,
                     reward_vehicle_collision=self.reward_vehicle_collision,
                     reward_offroad_collision=self.reward_offroad_collision,
@@ -313,6 +317,17 @@ class Drive(pufferlib.PufferEnv):
         conditions = [binding.env_get(env_id)["dynamics_conditions"] for env_id in self.c_env_ids]
         if not conditions:
             return np.empty((0, 4), dtype=np.float32)
+        return np.concatenate([np.asarray(values, dtype=np.float32) for values in conditions], axis=0)
+
+    def get_embodiment_conditions(self):
+        """Return per-agent [class_id, length, width, height, wheelbase].
+
+        Class IDs are 0=map geometry, 1=small car, 2=large car, 3=van,
+        4=truck, and 5=bus.
+        """
+        conditions = [binding.env_get(env_id)["embodiment_conditions"] for env_id in self.c_env_ids]
+        if not conditions:
+            return np.empty((0, 5), dtype=np.float32)
         return np.concatenate([np.asarray(values, dtype=np.float32) for values in conditions], axis=0)
 
     def get_reward_conditions(self):

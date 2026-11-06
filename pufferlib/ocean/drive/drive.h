@@ -30,6 +30,15 @@
 // Trajectory Length
 #define TRAJECTORY_LENGTH 91
 
+
+// Sampled vehicle embodiments. ORIGINAL denotes map-provided geometry.
+#define EMBODIMENT_ORIGINAL 0
+#define EMBODIMENT_SMALL_CAR 1
+#define EMBODIMENT_LARGE_CAR 2
+#define EMBODIMENT_VAN 3
+#define EMBODIMENT_TRUCK 4
+#define EMBODIMENT_BUS 5
+#define NUM_VEHICLE_EMBODIMENTS 5
 // Initialization modes
 #define INIT_ALL_VALID 0
 #define INIT_ONLY_CONTROLLABLE_AGENTS 1
@@ -187,6 +196,7 @@ struct Entity {
     float width;
     float length;
     float height;
+    int embodiment_type;
     float goal_position_x;
     float goal_position_y;
     float goal_position_z;
@@ -214,6 +224,7 @@ struct Entity {
     float goals_sampled_this_episode;
     int current_goal_reached;
     int active_agent;
+    float rear_axle_to_center;
     int stopped;
     int removed;
 
@@ -348,6 +359,7 @@ struct Drive {
     int init_steps;
     int dynamics_model;
     int dynamics_randomization;
+    int embodiment_randomization;
     GridMap *grid_map;
     int *neighbor_offsets;
     int reward_model;
@@ -588,6 +600,47 @@ void sample_dynamics_conditions(Drive *env) {
     }
 }
 
+
+typedef struct {
+    int type;
+    float length;
+    float width;
+    float height;
+    float wheelbase;
+    float rear_overhang;
+} VehicleEmbodiment;
+
+// Representative exterior dimensions in metres, chosen from the midpoint of
+// the small/large car, van, truck, and bus ranges documented for Drive.
+static const VehicleEmbodiment VEHICLE_EMBODIMENTS[NUM_VEHICLE_EMBODIMENTS] = {
+    {EMBODIMENT_SMALL_CAR, 3.85f, 1.70f, 1.50f, 2.50f, 0.70f},
+    {EMBODIMENT_LARGE_CAR, 4.95f, 1.90f, 1.50f, 2.90f, 0.95f},
+    {EMBODIMENT_VAN, 5.50f, 2.00f, 2.40f, 3.45f, 1.00f},
+    {EMBODIMENT_TRUCK, 9.00f, 2.50f, 3.25f, 5.20f, 1.45f},
+    {EMBODIMENT_BUS, 11.50f, 2.55f, 3.25f, 6.00f, 2.30f},
+};
+
+void sample_embodiment_conditions(Drive *env) {
+    for (int i = 0; i < env->active_agent_count; i++) {
+        Entity *agent = &env->entities[env->active_agent_indices[i]];
+        agent->embodiment_type = EMBODIMENT_ORIGINAL;
+
+        agent->rear_axle_to_center = 0.0f;
+        // Pedestrians and cyclists retain their map geometry even when all
+        // agent types are controllable.
+        if (!env->embodiment_randomization || agent->type != VEHICLE)
+            continue;
+
+        int embodiment_idx = (int)(random_unit_interval() * NUM_VEHICLE_EMBODIMENTS);
+        const VehicleEmbodiment *embodiment = &VEHICLE_EMBODIMENTS[embodiment_idx];
+        agent->embodiment_type = embodiment->type;
+        agent->length = embodiment->length;
+        agent->width = embodiment->width;
+        agent->height = embodiment->height;
+        agent->wheelbase = embodiment->wheelbase;
+        agent->rear_axle_to_center = 0.5f * agent->length - embodiment->rear_overhang;
+    }
+}
 void sample_reward_conditions(Drive *env) {
     for (int i = 0; i < env->active_agent_count; i++) {
         Entity *agent = &env->entities[env->active_agent_indices[i]];
@@ -1858,16 +1911,24 @@ void move_dynamics(Drive *env, int action_idx, int agent_idx) {
         float dx = dx_local * agent->heading_x - dy_local * agent->heading_y;
         float dy = dx_local * agent->heading_y + dy_local * agent->heading_x;
 
-        // Update everything
-        agent->x += dx;
-        agent->y += dy;
+        // The public pose remains the footprint centre. Integrate the kinematic
+        // bicycle at the rear axle, then transform its new pose back to centre.
+        float rear_x = agent->x - agent->rear_axle_to_center * agent->heading_x;
+        float rear_y = agent->y - agent->rear_axle_to_center * agent->heading_y;
+        float new_heading = normalize_heading(agent->heading + theta);
+        float new_heading_x = cosf(new_heading);
+        float new_heading_y = sinf(new_heading);
+        rear_x += dx;
+        rear_y += dy;
+        agent->x = rear_x + agent->rear_axle_to_center * new_heading_x;
+        agent->y = rear_y + agent->rear_axle_to_center * new_heading_y;
         agent->jerk_long = (a_long_new - agent->a_long) / env->dt;
         agent->jerk_lat = (a_lat_new - agent->a_lat) / env->dt;
         agent->a_long = a_long_new;
         agent->a_lat = a_lat_new;
-        agent->heading = normalize_heading(agent->heading + theta);
-        agent->heading_x = cosf(agent->heading);
-        agent->heading_y = sinf(agent->heading);
+        agent->heading = new_heading;
+        agent->heading_x = new_heading_x;
+        agent->heading_y = new_heading_y;
         agent->vx = v_new * agent->heading_x;
         agent->vy = v_new * agent->heading_y;
         agent->steering_angle = new_steering_angle;
@@ -2193,6 +2254,7 @@ void sample_new_goal(Drive *env, int agent_idx) {
 void c_reset(Drive *env) {
     env->timestep = env->init_steps;
     set_start_position(env);
+    sample_embodiment_conditions(env);
     sample_dynamics_conditions(env);
     sample_reward_conditions(env);
     for (int x = 0; x < env->active_agent_count; x++) {

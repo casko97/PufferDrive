@@ -214,3 +214,65 @@ def test_reward_ranges_resampling_and_seed_reproducibility():
         np.testing.assert_array_equal(first, env.get_reward_conditions())
     finally:
         env.close()
+
+
+EMBODIMENT_PRESETS = {
+    1: (3.85, 1.70, 1.50, 2.50),  # small car
+    2: (4.95, 1.90, 1.50, 2.90),  # large car
+    3: (5.50, 2.00, 2.40, 3.45),  # van
+    4: (9.00, 2.50, 3.25, 5.20),  # truck
+    5: (11.50, 2.55, 3.25, 6.00),  # bus
+}
+
+
+def make_embodiment_env(*, enabled=True):
+    return Drive(
+        num_agents=1,
+        num_maps=1,
+        map_dir=MAP_DIR,
+        sequential_map_sampling=True,
+        init_mode="create_only_controlled",
+        control_mode="control_sdc_only",
+        embodiment_randomization=enabled,
+        episode_length=80,
+        resample_frequency=0,
+    )
+
+
+def test_embodiment_randomization_is_opt_in():
+    env = make_embodiment_env(enabled=False)
+    try:
+        env.reset(seed=7)
+        conditions = env.get_embodiment_conditions()
+        assert conditions.shape == (1, 5)
+        assert conditions[0, 0] == 0
+    finally:
+        env.close()
+
+
+def test_embodiment_randomization_samples_fixed_vehicle_presets():
+    env = make_embodiment_env()
+    try:
+        sampled_types = set()
+        for seed in range(128):
+            env.reset(seed=seed)
+            embodiment_type, length, width, height, wheelbase = env.get_embodiment_conditions()[0]
+            embodiment_type = int(embodiment_type)
+            sampled_types.add(embodiment_type)
+            assert embodiment_type in EMBODIMENT_PRESETS
+            np.testing.assert_allclose((length, width, height, wheelbase), EMBODIMENT_PRESETS[embodiment_type],
+                                       atol=1e-6)
+        assert sampled_types == set(EMBODIMENT_PRESETS)
+    finally:
+        env.close()
+
+
+def test_embodiment_sampling_is_seed_reproducible():
+    env = make_embodiment_env()
+    try:
+        env.reset(seed=1234)
+        first = env.get_embodiment_conditions().copy()
+        env.reset(seed=1234)
+        np.testing.assert_array_equal(first, env.get_embodiment_conditions())
+    finally:
+        env.close()
