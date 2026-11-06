@@ -58,6 +58,7 @@ int demo(const char *map_name, const char *policy_name, int show_grid, int obs_o
     Drive env = {
         .action_type = conf.action_type,
         .dynamics_model = conf.dynamics_model,
+        .dynamics_randomization = conf.dynamics_randomization,
         .reward_vehicle_collision = conf.reward_vehicle_collision,
         .reward_offroad_collision = conf.reward_offroad_collision,
         .reward_goal = conf.reward_goal,

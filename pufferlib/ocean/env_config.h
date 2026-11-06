@@ -10,6 +10,7 @@
 typedef struct {
     int action_type;
     int dynamics_model;
+    int dynamics_randomization;
     float reward_vehicle_collision;
     float reward_offroad_collision;
     float reward_goal;
@@ -54,6 +55,9 @@ static int handler(void *config, const char *section, const char *name, const ch
             printf("Warning: Unknown dynamics_model value '%s', defaulting to JERK\n", value);
             env_config->dynamics_model = 1; // Default to JERK
         }
+    } else if (MATCH("env", "dynamics_randomization")) {
+        env_config->dynamics_randomization =
+            strcmp(value, "1") == 0 || strcmp(value, "true") == 0 || strcmp(value, "True") == 0;
     } else if (MATCH("env", "goal_behavior")) {
         env_config->goal_behavior = atoi(value);
     } else if (MATCH("env", "goal_target_distance")) {

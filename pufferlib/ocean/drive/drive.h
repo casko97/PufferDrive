@@ -218,6 +218,12 @@ struct Entity {
     float jerk_lat;
     float steering_angle;
     float wheelbase;
+
+    // Per-episode Gigaflow dynamics condition
+    float dynamics_throttle;
+    float dynamics_steer;
+    float dynamics_acc;
+    float dynamics_vel;
 };
 
 void free_entity(Entity *entity) {
@@ -251,6 +257,20 @@ float clip(float value, float min, float max) {
     if (value > max)
         return max;
     return value;
+}
+
+float random_unit_interval(void) { return (float)rand() / ((float)RAND_MAX + 1.0f); }
+
+// X(a) = 0.5 U(a^-1, 1) + 0.5 U(1, a), with equal probability
+// mass below and above one, as defined by Gigaflow.
+float sample_mixed_uniform(float a) {
+    assert(a > 1.0f);
+    float sample = random_unit_interval();
+    if (random_unit_interval() < 0.5f) {
+        float lower = 1.0f / a;
+        return lower + sample * (1.0f - lower);
+    }
+    return 1.0f + sample * (a - 1.0f);
 }
 
 typedef struct GridMapEntity GridMapEntity;
@@ -302,6 +322,7 @@ struct Drive {
     int timestep;
     int init_steps;
     int dynamics_model;
+    int dynamics_randomization;
     GridMap *grid_map;
     int *neighbor_offsets;
     int episode_length;
@@ -513,6 +534,28 @@ void set_start_position(Drive *env) {
         e->jerk_lat = 0.0f;
         e->steering_angle = 0.0f;
         e->wheelbase = 0.6f * e->length;
+        e->dynamics_throttle = 1.0f;
+        e->dynamics_steer = 1.0f;
+        e->dynamics_acc = 1.0f;
+        e->dynamics_vel = 1.0f;
+    }
+}
+
+void sample_dynamics_conditions(Drive *env) {
+    for (int i = 0; i < env->active_agent_count; i++) {
+        Entity *agent = &env->entities[env->active_agent_indices[i]];
+        if (!env->dynamics_randomization) {
+            agent->dynamics_throttle = 1.0f;
+            agent->dynamics_steer = 1.0f;
+            agent->dynamics_acc = 1.0f;
+            agent->dynamics_vel = 1.0f;
+            continue;
+        }
+
+        agent->dynamics_throttle = sample_mixed_uniform(1.25f);
+        agent->dynamics_steer = sample_mixed_uniform(1.25f);
+        agent->dynamics_acc = sample_mixed_uniform(1.5f);
+        agent->dynamics_vel = sample_mixed_uniform(1.5f);
     }
 }
 
@@ -1419,6 +1462,7 @@ void init(Drive *env) {
     env->logs_capacity = env->active_agent_count;
     remove_bad_trajectories(env);
     set_start_position(env);
+    sample_dynamics_conditions(env);
     init_goal_positions(env);
     env->logs = (Log *)calloc(env->active_agent_count, sizeof(Log));
 }
@@ -1588,6 +1632,11 @@ void move_dynamics(Drive *env, int action_idx, int agent_idx) {
             a_lat = JERK_LAT[a_lat_idx];
         }
 
+        // Randomize response after decoding so discrete and continuous action
+        // spaces retain their existing semantics and bounds.
+        a_long *= agent->dynamics_throttle;
+        a_lat *= agent->dynamics_steer;
+
         // Calculate new acceleration
         float a_long_new = agent->a_long + a_long * env->dt;
         float a_lat_new = agent->a_lat + a_lat * env->dt;
@@ -1596,7 +1645,7 @@ void move_dynamics(Drive *env, int action_idx, int agent_idx) {
         if (agent->a_long * a_long_new < 0) {
             a_long_new = 0.0f;
         } else {
-            a_long_new = clip(a_long_new, -5.0f, 2.5f);
+            a_long_new = clip(a_long_new, -5.0f, 2.5f * agent->dynamics_acc);
         }
 
         if (agent->a_lat * a_lat_new < 0) {
@@ -1614,7 +1663,7 @@ void move_dynamics(Drive *env, int action_idx, int agent_idx) {
         if (signed_v * v_new < 0) {
             v_new = 0.0f;
         } else {
-            v_new = clip(v_new, -2.0f, 20.0f);
+            v_new = clip(v_new, -2.0f, 20.0f * agent->dynamics_vel);
         }
 
         // Calculate new steering angle
@@ -1963,6 +2012,7 @@ void sample_new_goal(Drive *env, int agent_idx) {
 void c_reset(Drive *env) {
     env->timestep = env->init_steps;
     set_start_position(env);
+    sample_dynamics_conditions(env);
     for (int x = 0; x < env->active_agent_count; x++) {
         env->logs[x] = (Log){0};
         int agent_idx = env->active_agent_indices[x];

@@ -1,8 +1,33 @@
 #include "drive.h"
 #define Env Drive
 #define MY_SHARED
+#define MY_GET
 #define MY_PUT
 #include "../env_binding.h"
+
+static PyObject *my_get(PyObject *dict, Env *env) {
+    PyObject *conditions = PyList_New(env->active_agent_count);
+    if (conditions == NULL)
+        return NULL;
+
+    for (int i = 0; i < env->active_agent_count; i++) {
+        Entity *agent = &env->entities[env->active_agent_indices[i]];
+        PyObject *condition = Py_BuildValue("(ffff)", agent->dynamics_throttle, agent->dynamics_steer,
+                                            agent->dynamics_acc, agent->dynamics_vel);
+        if (condition == NULL) {
+            Py_DECREF(conditions);
+            return NULL;
+        }
+        PyList_SET_ITEM(conditions, i, condition);
+    }
+
+    if (PyDict_SetItemString(dict, "dynamics_conditions", conditions) < 0) {
+        Py_DECREF(conditions);
+        return NULL;
+    }
+    Py_DECREF(conditions);
+    return dict;
+}
 
 static int my_put(Env *env, PyObject *args, PyObject *kwargs) {
     PyObject *obs = PyDict_GetItemString(kwargs, "observations");
@@ -185,8 +210,9 @@ static int my_init(Env *env, PyObject *args, PyObject *kwargs) {
         PyErr_SetString(PyExc_ValueError, "episode_length must be > 0 (set in INI or kwargs)");
         return -1;
     }
-    env->action_type = conf.action_type;
-    env->dynamics_model = conf.dynamics_model;
+    env->action_type = (int)unpack(kwargs, "action_type");
+    env->dynamics_model = (int)unpack(kwargs, "dynamics_model");
+    env->dynamics_randomization = (int)unpack(kwargs, "dynamics_randomization");
     env->reward_vehicle_collision = conf.reward_vehicle_collision;
     env->reward_offroad_collision = conf.reward_offroad_collision;
     env->reward_goal = conf.reward_goal;

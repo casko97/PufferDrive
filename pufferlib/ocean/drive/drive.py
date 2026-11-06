@@ -35,6 +35,7 @@ class Drive(pufferlib.PufferEnv):
         num_agents=512,
         action_type="discrete",
         dynamics_model="classic",
+        dynamics_randomization=False,
         max_controlled_agents=-1,
         buf=None,
         seed=1,
@@ -64,6 +65,10 @@ class Drive(pufferlib.PufferEnv):
         self.termination_mode = termination_mode
         self.resample_frequency = resample_frequency
         self.dynamics_model = dynamics_model
+        self.dynamics_randomization = dynamics_randomization
+
+        if dynamics_randomization and dynamics_model != "jerk":
+            raise ValueError("dynamics_randomization requires dynamics_model='jerk'")
 
         # Observation space calculation
         self.ego_features = {"classic": binding.EGO_FEATURES_CLASSIC, "jerk": binding.EGO_FEATURES_JERK}.get(
@@ -127,6 +132,7 @@ class Drive(pufferlib.PufferEnv):
             raise ValueError(f"action_space must be 'discrete' or 'continuous'. Got: {action_type}")
 
         self._action_type_flag = 0 if action_type == "discrete" else 1
+        self._dynamics_model_flag = 0 if dynamics_model == "classic" else 1
 
         # Check if resources directory exists
         binary_path = f"{map_dir}/map_000.bin"
@@ -175,6 +181,8 @@ class Drive(pufferlib.PufferEnv):
                 self.truncations[cur:nxt],
                 seed,
                 action_type=self._action_type_flag,
+                dynamics_model=self._dynamics_model_flag,
+                dynamics_randomization=self.dynamics_randomization,
                 human_agent_idx=human_agent_idx,
                 reward_vehicle_collision=reward_vehicle_collision,
                 reward_offroad_collision=reward_offroad_collision,
@@ -200,6 +208,7 @@ class Drive(pufferlib.PufferEnv):
             )
             env_ids.append(env_id)
 
+        self.c_env_ids = env_ids
         self.c_envs = binding.vectorize(*env_ids)
 
     def reset(self, seed=0):
@@ -250,6 +259,8 @@ class Drive(pufferlib.PufferEnv):
                     self.truncations[cur:nxt],
                     seed,
                     action_type=self._action_type_flag,
+                    dynamics_model=self._dynamics_model_flag,
+                    dynamics_randomization=self.dynamics_randomization,
                     human_agent_idx=self.human_agent_idx,
                     reward_vehicle_collision=self.reward_vehicle_collision,
                     reward_offroad_collision=self.reward_offroad_collision,
@@ -273,11 +284,19 @@ class Drive(pufferlib.PufferEnv):
                     map_dir=self.map_dir,
                 )
                 env_ids.append(env_id)
+            self.c_env_ids = env_ids
             self.c_envs = binding.vectorize(*env_ids)
 
             binding.vec_reset(self.c_envs, seed)
             self.terminals[:] = 1
         return (self.observations, self.rewards, self.terminals, self.truncations, info)
+
+    def get_dynamics_conditions(self):
+        """Return per-agent [throttle, steer, acceleration, velocity] coefficients."""
+        conditions = [binding.env_get(env_id)["dynamics_conditions"] for env_id in self.c_env_ids]
+        if not conditions:
+            return np.empty((0, 4), dtype=np.float32)
+        return np.concatenate([np.asarray(values, dtype=np.float32) for values in conditions], axis=0)
 
     def get_global_agent_state(self):
         """Get current global state of all active agents.
