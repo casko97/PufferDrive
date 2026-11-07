@@ -37,6 +37,7 @@ class Drive(pufferlib.PufferEnv):
         dynamics_model="classic",
         dynamics_randomization=False,
         embodiment_randomization=False,
+        embodiment_clearance=0.20,
         reward_model="pufferdrive",
         reward_randomization=False,
         max_controlled_agents=-1,
@@ -70,6 +71,9 @@ class Drive(pufferlib.PufferEnv):
         self.dynamics_model = dynamics_model
         self.dynamics_randomization = dynamics_randomization
         self.embodiment_randomization = embodiment_randomization
+        self.embodiment_clearance = float(embodiment_clearance)
+        if self.embodiment_clearance < 0:
+            raise ValueError("embodiment_clearance must be >= 0")
         self.reward_model = reward_model
         self.reward_randomization = reward_randomization
 
@@ -199,6 +203,7 @@ class Drive(pufferlib.PufferEnv):
                 dynamics_model=self._dynamics_model_flag,
                 dynamics_randomization=self.dynamics_randomization,
                 embodiment_randomization=self.embodiment_randomization,
+                embodiment_clearance=self.embodiment_clearance,
                 human_agent_idx=human_agent_idx,
                 reward_vehicle_collision=reward_vehicle_collision,
                 reward_offroad_collision=reward_offroad_collision,
@@ -329,6 +334,17 @@ class Drive(pufferlib.PufferEnv):
         if not conditions:
             return np.empty((0, 5), dtype=np.float32)
         return np.concatenate([np.asarray(values, dtype=np.float32) for values in conditions], axis=0)
+
+    def get_embodiment_resolution(self):
+        """Return per-agent reset histories and original map geometry.
+
+        Each row is ``[state_0, ..., state_5, history_length, original_length,
+        original_width, original_height, original_wheelbase]``. State IDs use
+        the same convention as :meth:`get_embodiment_conditions`; zero is the
+        map-provided fallback.
+        """
+        rows = [binding.env_get(env_id)["embodiment_resolution"] for env_id in self.c_env_ids]
+        return [row for env_rows in rows for row in env_rows]
 
     def get_reward_conditions(self):
         """Return the 11 supported per-agent Gigaflow reward parameters in Table A2 order."""

@@ -119,6 +119,34 @@ Classic dynamics retain their existing centre-reference behavior.
 `env.get_embodiment_conditions()` returns the active agents' embodiment
 conditions in the order: class id, length, width, height, and wheelbase.
 
+### Launch conflict resolution
+
+At reset, the simulator first samples every controlled vehicle independently,
+then validates its footprint against road edges, static/replay actors, and the
+other controlled vehicles. `embodiment_clearance` is a Drive constructor
+parameter (default `0.20` m) that expands the candidate footprint for these
+reset-only road-edge and collision checks. An invalid sampled embodiment can only move down
+the ordered chain `bus → truck → van → large car → small car → original map
+geometry`; it never retries an equal or larger vehicle. Road/static conflicts
+are resolved before controlled-controlled conflicts. The latter use a seeded
+per-agent priority and simultaneous downgrade rounds, so entity-array order
+does not grant a persistent advantage. If the priority-selected vehicle has
+already reached its original geometry, the downgrade is handed to the other
+vehicle; only a pair that is already at both original geometries remains
+unresolved. The procedure is bounded to seven recorded states per agent, uses
+the existing local grid queries for road-edge checks, and never performs
+placement search.
+
+`env.get_embodiment_resolution()` exposes each active agent's recorded state
+history together with its original map geometry. Render the fixed real-map
+conflict regression (`map_000.bin`, timestep 70, seed 3) with:
+
+```bash
+./pufferdrive-november/bin/python scripts/plot_drive_embodiment_resolution.py
+```
+
+The output is `artifacts/embodiment_resolution_map_000.svg`.
+
 ### Rollout visualizations
 
 Regenerate the fixed-action motion-quality overview and one GIF per scenario

@@ -39,6 +39,7 @@
 #define EMBODIMENT_TRUCK 4
 #define EMBODIMENT_BUS 5
 #define NUM_VEHICLE_EMBODIMENTS 5
+#define MAX_EMBODIMENT_RESOLUTION_STATES (NUM_VEHICLE_EMBODIMENTS + 2)
 // Initialization modes
 #define INIT_ALL_VALID 0
 #define INIT_ONLY_CONTROLLABLE_AGENTS 1
@@ -196,7 +197,17 @@ struct Entity {
     float width;
     float length;
     float height;
+    // Immutable map-provided dimensions for deterministic fallback.
+    float original_width;
+    float original_length;
+    float original_height;
+    float original_wheelbase;
     int embodiment_type;
+    int embodiment_initial_type;
+    int embodiment_downgrade_count;
+    unsigned int embodiment_priority;
+    int embodiment_history[MAX_EMBODIMENT_RESOLUTION_STATES];
+    int embodiment_history_count;
     float goal_position_x;
     float goal_position_y;
     float goal_position_z;
@@ -360,6 +371,7 @@ struct Drive {
     int dynamics_model;
     int dynamics_randomization;
     int embodiment_randomization;
+    float embodiment_clearance;
     GridMap *grid_map;
     int *neighbor_offsets;
     int reward_model;
@@ -508,6 +520,10 @@ Entity *load_map_binary(const char *filename, Drive *env) {
         fread(&entities[i].width, sizeof(float), 1, file);
         fread(&entities[i].length, sizeof(float), 1, file);
         fread(&entities[i].height, sizeof(float), 1, file);
+        entities[i].original_width = entities[i].width;
+        entities[i].original_length = entities[i].length;
+        entities[i].original_height = entities[i].height;
+        entities[i].original_wheelbase = 0.6f * entities[i].length;
         fread(&entities[i].goal_position_x, sizeof(float), 1, file);
         fread(&entities[i].goal_position_y, sizeof(float), 1, file);
         fread(&entities[i].goal_position_z, sizeof(float), 1, file);
@@ -528,6 +544,15 @@ void set_start_position(Drive *env) {
             }
         }
         Entity *e = &env->entities[i];
+
+        if (is_active && e->type == VEHICLE) {
+            e->width = e->original_width;
+            e->length = e->original_length;
+            e->height = e->original_height;
+            e->wheelbase = e->original_wheelbase;
+            e->rear_axle_to_center = 0.0f;
+            e->embodiment_type = EMBODIMENT_ORIGINAL;
+        }
 
         // Clamp init_steps to ensure we don't go out of bounds
         int step = env->init_steps;
@@ -620,27 +645,160 @@ static const VehicleEmbodiment VEHICLE_EMBODIMENTS[NUM_VEHICLE_EMBODIMENTS] = {
     {EMBODIMENT_BUS, 11.50f, 2.55f, 3.25f, 6.00f, 2.30f},
 };
 
+bool check_line_intersection(float p1[2], float p2[2], float q1[2], float q2[2]);
+int checkNeighbors(Drive *env, float x, float y, GridMapEntity *entity_list, int max_size,
+                   const int (*local_offsets)[2], int offset_size);
+int check_aabb_collision(Entity *car1, Entity *car2);
+bool check_aabb_collision_with_margin(Entity *car1, Entity *car2, float margin);
+
+void apply_embodiment(Entity *agent, int embodiment_type) {
+    agent->embodiment_type = embodiment_type;
+    if (embodiment_type == EMBODIMENT_ORIGINAL) {
+        agent->length = agent->original_length;
+        agent->width = agent->original_width;
+        agent->height = agent->original_height;
+        agent->wheelbase = agent->original_wheelbase;
+        agent->rear_axle_to_center = 0.0f;
+        return;
+    }
+    const VehicleEmbodiment *embodiment = &VEHICLE_EMBODIMENTS[embodiment_type - 1];
+    agent->length = embodiment->length;
+    agent->width = embodiment->width;
+    agent->height = embodiment->height;
+    agent->wheelbase = embodiment->wheelbase;
+    agent->rear_axle_to_center = 0.5f * agent->length - embodiment->rear_overhang;
+}
+
+void record_embodiment_state(Entity *agent) {
+    if (agent->embodiment_history_count < MAX_EMBODIMENT_RESOLUTION_STATES)
+        agent->embodiment_history[agent->embodiment_history_count++] = agent->embodiment_type;
+}
+
+bool embodiment_intersects_road_edge(Drive *env, Entity *agent) {
+    float half_length = agent->length * 0.5f + env->embodiment_clearance;
+    float half_width = agent->width * 0.5f + env->embodiment_clearance;
+    float corners[4][2];
+    for (int i = 0; i < 4; i++) {
+        corners[i][0] = agent->x + (offsets[i][0] * half_length * agent->heading_x -
+                                    offsets[i][1] * half_width * agent->heading_y);
+        corners[i][1] = agent->y + (offsets[i][0] * half_length * agent->heading_y +
+                                    offsets[i][1] * half_width * agent->heading_x);
+    }
+    GridMapEntity nearby[MAX_ENTITIES_PER_CELL * 25];
+    int nearby_count = checkNeighbors(env, agent->x, agent->y, nearby, MAX_ENTITIES_PER_CELL * 25,
+                                      collision_offsets, 25);
+    for (int i = 0; i < nearby_count; i++) {
+        Entity *entity = &env->entities[nearby[i].entity_idx];
+        if (entity->type != ROAD_EDGE)
+            continue;
+        int geometry_idx = nearby[i].geometry_idx;
+        float start[2] = {entity->traj_x[geometry_idx], entity->traj_y[geometry_idx]};
+        float end[2] = {entity->traj_x[geometry_idx + 1], entity->traj_y[geometry_idx + 1]};
+        for (int corner = 0; corner < 4; corner++) {
+            if (check_line_intersection(corners[corner], corners[(corner + 1) % 4], start, end))
+                return true;
+        }
+    }
+    return false;
+}
+
+bool embodiment_intersects_static_actor(Drive *env, Entity *agent) {
+    for (int i = 0; i < env->static_agent_count; i++) {
+        Entity *other = &env->entities[env->static_agent_indices[i]];
+        if (other->x != INVALID_POSITION &&
+            check_aabb_collision_with_margin(agent, other, env->embodiment_clearance))
+            return true;
+    }
+    return false;
+}
+
+bool downgrade_embodiment(Entity *agent) {
+    if (agent->embodiment_type == EMBODIMENT_ORIGINAL)
+        return false;
+    apply_embodiment(agent, agent->embodiment_type - 1);
+    agent->embodiment_downgrade_count++;
+    return true;
+}
+
 void sample_embodiment_conditions(Drive *env) {
+    // Sample independently before resolving conflicts, avoiding first-agent priority.
     for (int i = 0; i < env->active_agent_count; i++) {
         Entity *agent = &env->entities[env->active_agent_indices[i]];
-        agent->embodiment_type = EMBODIMENT_ORIGINAL;
-
-        agent->rear_axle_to_center = 0.0f;
-        // Pedestrians and cyclists retain their map geometry even when all
-        // agent types are controllable.
-        if (!env->embodiment_randomization || agent->type != VEHICLE)
+        agent->embodiment_history_count = 0;
+        memset(agent->embodiment_history, 0, sizeof(agent->embodiment_history));
+        agent->embodiment_downgrade_count = 0;
+        agent->embodiment_priority = ((unsigned int)rand() << 1) ^ (unsigned int)rand();
+        apply_embodiment(agent, EMBODIMENT_ORIGINAL);
+        if (!env->embodiment_randomization || agent->type != VEHICLE) {
+            agent->embodiment_initial_type = EMBODIMENT_ORIGINAL;
+            record_embodiment_state(agent);
             continue;
-
+        }
         int embodiment_idx = (int)(random_unit_interval() * NUM_VEHICLE_EMBODIMENTS);
-        const VehicleEmbodiment *embodiment = &VEHICLE_EMBODIMENTS[embodiment_idx];
-        agent->embodiment_type = embodiment->type;
-        agent->length = embodiment->length;
-        agent->width = embodiment->width;
-        agent->height = embodiment->height;
-        agent->wheelbase = embodiment->wheelbase;
-        agent->rear_axle_to_center = 0.5f * agent->length - embodiment->rear_overhang;
+        apply_embodiment(agent, VEHICLE_EMBODIMENTS[embodiment_idx].type);
+        agent->embodiment_initial_type = agent->embodiment_type;
+        record_embodiment_state(agent);
+    }
+
+    // Immutable road/static conflicts are resolved before mutable vehicle pairs.
+    for (int round = 0; round < NUM_VEHICLE_EMBODIMENTS; round++) {
+        bool changed = false;
+        for (int i = 0; i < env->active_agent_count; i++) {
+            Entity *agent = &env->entities[env->active_agent_indices[i]];
+            if (agent->type != VEHICLE || agent->embodiment_type == EMBODIMENT_ORIGINAL)
+                continue;
+            if (embodiment_intersects_road_edge(env, agent) || embodiment_intersects_static_actor(env, agent))
+                changed |= downgrade_embodiment(agent);
+        }
+        if (!changed)
+            break;
+        for (int i = 0; i < env->active_agent_count; i++)
+            record_embodiment_state(&env->entities[env->active_agent_indices[i]]);
+    }
+
+    // Resolve controlled overlaps in simultaneous rounds. The seeded priority
+    // selects exactly one downgrade target without array-order priority.
+    bool downgrade[MAX_AGENTS];
+    for (int round = 0; round < NUM_VEHICLE_EMBODIMENTS; round++) {
+        memset(downgrade, 0, sizeof(downgrade));
+        bool any_overlap = false;
+        for (int left = 0; left < env->active_agent_count; left++) {
+            Entity *a = &env->entities[env->active_agent_indices[left]];
+            if (a->type != VEHICLE)
+                continue;
+            for (int right = left + 1; right < env->active_agent_count; right++) {
+                Entity *b = &env->entities[env->active_agent_indices[right]];
+                if (b->type != VEHICLE || !check_aabb_collision_with_margin(a, b, env->embodiment_clearance))
+                    continue;
+                any_overlap = true;
+                // Prefer the seeded loser, but hand the downgrade to its peer
+                // once it has reached the immutable original-geometry fallback.
+                // This prevents an unresolved pair from stalling merely because
+                // one agent has exhausted its smaller embodiments.
+                int preferred = a->embodiment_priority < b->embodiment_priority ? right : left;
+                int alternate = preferred == left ? right : left;
+                Entity *preferred_agent = &env->entities[env->active_agent_indices[preferred]];
+                Entity *alternate_agent = &env->entities[env->active_agent_indices[alternate]];
+                if (preferred_agent->embodiment_type != EMBODIMENT_ORIGINAL)
+                    downgrade[preferred] = true;
+                else if (alternate_agent->embodiment_type != EMBODIMENT_ORIGINAL)
+                    downgrade[alternate] = true;
+            }
+        }
+        if (!any_overlap)
+            break;
+        bool changed = false;
+        for (int i = 0; i < env->active_agent_count; i++) {
+            if (downgrade[i])
+                changed |= downgrade_embodiment(&env->entities[env->active_agent_indices[i]]);
+        }
+        if (!changed)
+            break;
+        for (int i = 0; i < env->active_agent_count; i++)
+            record_embodiment_state(&env->entities[env->active_agent_indices[i]]);
     }
 }
+
 void sample_reward_conditions(Drive *env) {
     for (int i = 0; i < env->active_agent_count; i++) {
         Entity *agent = &env->entities[env->active_agent_indices[i]];
@@ -1190,6 +1348,13 @@ int check_aabb_collision(Entity *car1, Entity *car2) {
 
     // If we get here, there's no separating axis, so the boxes intersect
     return 1; // Collision
+}
+
+bool check_aabb_collision_with_margin(Entity *car1, Entity *car2, float margin) {
+    Entity expanded = *car1;
+    expanded.length += 2.0f * margin;
+    expanded.width += 2.0f * margin;
+    return check_aabb_collision(&expanded, car2);
 }
 
 int collision_check(Drive *env, int agent_idx) {

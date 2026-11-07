@@ -201,6 +201,29 @@ static PyObject *my_get(PyObject *dict, Env *env) {
     }
     Py_DECREF(embodiment_conditions);
 
+    PyObject *embodiment_resolution = PyList_New(env->active_agent_count);
+    if (embodiment_resolution == NULL)
+        return NULL;
+    for (int i = 0; i < env->active_agent_count; i++) {
+        Entity *agent = &env->entities[env->active_agent_indices[i]];
+        PyObject *resolution = Py_BuildValue(
+            "(iiiiiiiiffff)", agent->embodiment_history[0], agent->embodiment_history[1],
+            agent->embodiment_history[2], agent->embodiment_history[3], agent->embodiment_history[4],
+            agent->embodiment_history[5], agent->embodiment_history[6], agent->embodiment_history_count,
+            agent->original_length,
+            agent->original_width, agent->original_height, agent->original_wheelbase);
+        if (resolution == NULL) {
+            Py_DECREF(embodiment_resolution);
+            return NULL;
+        }
+        PyList_SET_ITEM(embodiment_resolution, i, resolution);
+    }
+    if (PyDict_SetItemString(dict, "embodiment_resolution", embodiment_resolution) < 0) {
+        Py_DECREF(embodiment_resolution);
+        return NULL;
+    }
+    Py_DECREF(embodiment_resolution);
+
     for (int i = 0; i < env->active_agent_count; i++) {
         Entity *agent = &env->entities[env->active_agent_indices[i]];
         PyObject *condition = Py_BuildValue("(ffff)", agent->dynamics_throttle, agent->dynamics_steer,
@@ -429,6 +452,7 @@ static int my_init(Env *env, PyObject *args, PyObject *kwargs) {
     env->dynamics_randomization = (int)unpack(kwargs, "dynamics_randomization");
     env->reward_model = (int)unpack(kwargs, "reward_model");
     env->embodiment_randomization = (int)unpack(kwargs, "embodiment_randomization");
+    env->embodiment_clearance = (float)unpack(kwargs, "embodiment_clearance");
     env->reward_randomization = (int)unpack(kwargs, "reward_randomization");
     env->reward_vehicle_collision = conf.reward_vehicle_collision;
     env->reward_offroad_collision = conf.reward_offroad_collision;
