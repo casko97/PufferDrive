@@ -285,6 +285,7 @@ class Drive(pufferlib.PufferEnv):
                     dynamics_model=self._dynamics_model_flag,
                     dynamics_randomization=self.dynamics_randomization,
                     embodiment_randomization=self.embodiment_randomization,
+                    embodiment_clearance=self.embodiment_clearance,
                     human_agent_idx=self.human_agent_idx,
                     reward_vehicle_collision=self.reward_vehicle_collision,
                     reward_offroad_collision=self.reward_offroad_collision,
