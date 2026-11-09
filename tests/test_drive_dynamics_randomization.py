@@ -276,3 +276,38 @@ def test_embodiment_sampling_is_seed_reproducible():
         np.testing.assert_array_equal(first, env.get_embodiment_conditions())
     finally:
         env.close()
+
+
+def test_periodic_resampling_preserves_all_randomization_options():
+    env = Drive(
+        num_agents=1,
+        num_maps=1,
+        map_dir=MAP_DIR,
+        sequential_map_sampling=True,
+        init_mode="create_only_controlled",
+        control_mode="control_sdc_only",
+        dynamics_model="jerk",
+        dynamics_randomization=True,
+        embodiment_randomization=True,
+        embodiment_clearance=0.2,
+        reward_model="gigaflow",
+        reward_randomization=True,
+        action_type="continuous",
+        episode_length=20,
+        goal_behavior=1,
+        collision_behavior=0,
+        offroad_behavior=0,
+        resample_frequency=1,
+    )
+    try:
+        env.reset(seed=123)
+        observations, rewards, _, _, _ = env.step(np.asarray([[0.2, -0.1]], dtype=np.float32))
+
+        assert observations.shape == (1, env.num_obs)
+        assert np.all(np.isfinite(observations))
+        assert np.all(np.isfinite(rewards))
+        assert np.all(np.isfinite(env.get_dynamics_conditions()))
+        assert np.all(np.isfinite(env.get_reward_conditions()))
+        assert 1 <= env.get_embodiment_conditions()[0, 0] <= 5
+    finally:
+        env.close()
