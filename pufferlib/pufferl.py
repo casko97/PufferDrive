@@ -560,9 +560,6 @@ class PuffeRL:
 
         if torch.distributed.is_initialized():
             if torch.distributed.get_rank() != 0:
-                self.logger.log(logs, agent_steps)
-                return logs
-            else:
                 return None
 
         self.logger.log(logs, agent_steps)
@@ -571,6 +568,9 @@ class PuffeRL:
     def close(self):
         self.vecenv.close()
         self.utilization.stop()
+        if torch.distributed.is_initialized() and torch.distributed.get_rank() != 0:
+            return None
+
         model_path = self.save_checkpoint()
         run_id = self.logger.run_id
         path = os.path.join(self.config["data_dir"], f"{self.config['env']}_{run_id}.pt")
@@ -992,10 +992,15 @@ def train(env_name, args=None, vecenv=None, policy=None, logger=None):
         model.forward_eval = policy.forward_eval
         policy = model.to(local_rank)
 
-    if args["neptune"]:
+    # External loggers and checkpoints are owned by rank zero. Other ranks
+    # still participate in collective metric reductions but use a no-op logger.
+    is_primary_rank = not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0
+    if is_primary_rank and args["neptune"]:
         logger = NeptuneLogger(args)
-    elif args["wandb"]:
+    elif is_primary_rank and args["wandb"]:
         logger = WandbLogger(args)
+    elif not is_primary_rank:
+        logger = NoLogger(args)
 
     train_config = dict(**args["train"], env=env_name, eval=args.get("eval", {}))
     pufferl = PuffeRL(train_config, vecenv, policy, logger)
@@ -1521,6 +1526,7 @@ def load_config(env_name, config_dir=None):
     parser.add_argument("--wandb", action="store_true", help="Use wandb for logging")
     parser.add_argument("--wandb-project", type=str, default="pufferlib")
     parser.add_argument("--wandb-group", type=str, default="debug")
+    parser.add_argument("--wandb-name", type=str, default=None)
     parser.add_argument("--neptune", action="store_true", help="Use neptune for logging")
     parser.add_argument("--neptune-name", type=str, default="pufferai")
     parser.add_argument("--neptune-project", type=str, default="ablations")
