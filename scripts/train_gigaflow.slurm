@@ -24,13 +24,15 @@
 #SBATCH --output=logs/slurm-%x-%j.out
 #SBATCH --error=logs/slurm-%x-%j.err
 
-set -euo pipefail
+# The NSC Mamba wrapper reads CONDA_DEFAULT_ENV before it exists. Enable
+# nounset only after activating the environment.
+set -eo pipefail
 
 module load Miniforge3/24.7.1-2-hpc1-bdist
 module load buildenv-gcccuda/12.1.1-gcc12.3.0
 
-source "$(conda info --base)/etc/profile.d/conda.sh"
-conda activate puffer-nov.venv
+mamba activate puffer-nov-cu121.venv
+set -u
 
 cd "${SLURM_SUBMIT_DIR:?Submit this job from the PufferDrive repository root}"
 mkdir -p experiments logs
