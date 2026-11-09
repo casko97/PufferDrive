@@ -59,6 +59,31 @@ signal.signal(signal.SIGINT, lambda sig, frame: os._exit(0))
 ADVANTAGE_CUDA = shutil.which("nvcc") is not None
 
 
+def advantage_filter_mask(advantages, running_max=None, threshold_scale=0.01, ema_decay=0.25):
+    """Return the GIGAFLOW advantage-filter mask and updated running maximum."""
+    if threshold_scale < 0:
+        raise ValueError("advantage_filter_threshold_scale must be non-negative")
+    if not 0 <= ema_decay <= 1:
+        raise ValueError("advantage_filter_ema_decay must be in [0, 1]")
+
+    current_max = advantages.detach().abs().amax().item()
+    if running_max is None:
+        running_max = current_max
+    else:
+        running_max = ema_decay * current_max + (1 - ema_decay) * running_max
+
+    threshold = threshold_scale * running_max
+    return advantages.detach().abs() >= threshold, running_max, threshold
+
+
+def masked_mean(values, mask):
+    """Mean over selected transitions, with a well-defined all-masked case."""
+    selected = mask.sum()
+    if selected.item() == 0:
+        return values.new_zeros(())
+    return torch.where(mask, values, 0).sum() / selected
+
+
 class PuffeRL:
     def __init__(self, config, vecenv, policy, logger=None):
         # Backend perf optimization
@@ -220,6 +245,7 @@ class PuffeRL:
         self.stats = defaultdict(list)
         self.last_stats = defaultdict(list)
         self.losses = {}
+        self.advantage_filter_running_max = None
 
         # Dashboard
         self.model_size = sum(p.numel() for p in policy.parameters() if p.requires_grad)
@@ -354,6 +380,30 @@ class PuffeRL:
         anneal_beta = b0 + (1 - b0) * a * self.epoch / self.total_epochs
         self.ratio[:] = 1
 
+        # GIGAFLOW filters once per rollout, before PPO updates the critic.
+        advantage_filter_mask_tensor = None
+        if config["advantage_filtering"]:
+            rollout_advantages = torch.zeros_like(self.values)
+            rollout_advantages = compute_puff_advantage(
+                self.values,
+                self.rewards,
+                self.terminals,
+                self.ratio,
+                rollout_advantages,
+                config["gamma"],
+                config["gae_lambda"],
+                config["vtrace_rho_clip"],
+                config["vtrace_c_clip"],
+            )
+            advantage_filter_mask_tensor, self.advantage_filter_running_max, threshold = advantage_filter_mask(
+                rollout_advantages,
+                self.advantage_filter_running_max,
+                config["advantage_filter_threshold_scale"],
+                config["advantage_filter_ema_decay"],
+            )
+            losses["advantage_filter_threshold"] = threshold
+            losses["advantage_filter_keep_fraction"] = advantage_filter_mask_tensor.float().mean().item()
+
         for mb in range(self.total_minibatches):
             profile("train_misc", epoch, nest=True)
             self.amp_context.__enter__()
@@ -373,9 +423,21 @@ class PuffeRL:
             )
 
             profile("train_copy", epoch)
-            adv = advantages.abs().sum(axis=1)
+            priority_advantages = advantages
+            if advantage_filter_mask_tensor is not None:
+                priority_advantages = torch.where(advantage_filter_mask_tensor, priority_advantages, 0)
+            adv = priority_advantages.abs().sum(axis=1)
             prio_weights = torch.nan_to_num(adv**a, 0, 0, 0)
-            prio_probs = (prio_weights + 1e-6) / (prio_weights.sum() + 1e-6)
+            if advantage_filter_mask_tensor is None:
+                prio_probs = (prio_weights + 1e-6) / (prio_weights.sum() + 1e-6)
+            else:
+                eligible_segments = advantage_filter_mask_tensor.any(dim=1)
+                prio_weights = torch.where(eligible_segments, prio_weights, 0)
+                priority_total = prio_weights.sum()
+                if priority_total > 0:
+                    prio_probs = prio_weights / priority_total
+                else:
+                    prio_probs = eligible_segments.float() / eligible_segments.sum()
             idx = torch.multinomial(prio_probs, self.minibatch_segments)
             mb_prio = (self.segments * prio_probs[idx, None]) ** -anneal_beta
             mb_obs = self.observations[idx]
@@ -388,6 +450,7 @@ class PuffeRL:
             mb_values = self.values[idx]
             mb_returns = advantages[idx] + mb_values
             mb_advantages = advantages[idx]
+            mb_filter = advantage_filter_mask_tensor[idx] if advantage_filter_mask_tensor is not None else None
 
             profile("train_forward", epoch)
             if not config["use_rnn"]:
@@ -426,20 +489,30 @@ class PuffeRL:
                 config["vtrace_c_clip"],
             )
             adv = mb_advantages
-            adv = mb_prio * (adv - adv.mean()) / (adv.std() + 1e-8)
+            if mb_filter is None:
+                adv = mb_prio * (adv - adv.mean()) / (adv.std() + 1e-8)
+            else:
+                selected_advantages = adv[mb_filter]
+                advantage_mean = selected_advantages.mean()
+                advantage_std = selected_advantages.std(unbiased=False)
+                adv = mb_prio * (adv - advantage_mean) / (advantage_std + 1e-8)
+                adv = torch.where(mb_filter, adv, 0)
 
             # Losses
             pg_loss1 = -adv * ratio
             pg_loss2 = -adv * torch.clamp(ratio, 1 - clip_coef, 1 + clip_coef)
-            pg_loss = torch.max(pg_loss1, pg_loss2).mean()
+            pg_loss_values = torch.max(pg_loss1, pg_loss2)
+            pg_loss = pg_loss_values.mean() if mb_filter is None else masked_mean(pg_loss_values, mb_filter)
 
             newvalue = newvalue.view(mb_returns.shape)
             v_clipped = mb_values + torch.clamp(newvalue - mb_values, -vf_clip, vf_clip)
             v_loss_unclipped = (newvalue - mb_returns) ** 2
             v_loss_clipped = (v_clipped - mb_returns) ** 2
-            v_loss = 0.5 * torch.max(v_loss_unclipped, v_loss_clipped).mean()
+            v_loss_values = 0.5 * torch.max(v_loss_unclipped, v_loss_clipped)
+            v_loss = v_loss_values.mean() if mb_filter is None else masked_mean(v_loss_values, mb_filter)
 
-            entropy_loss = entropy.mean()
+            entropy_values = entropy.reshape(mb_advantages.shape)
+            entropy_loss = entropy_values.mean() if mb_filter is None else masked_mean(entropy_values, mb_filter)
 
             loss = pg_loss + config["vf_coef"] * v_loss - config["ent_coef"] * entropy_loss
             self.amp_context.__enter__()  # TODO: AMP needs some debugging
