@@ -36,7 +36,7 @@ if [[ -z "${WANDB_API_KEY:-}" ]]; then
   exit 1
 fi
 
-test -f resources/drive/binaries/training/map_000.bin
+test -f resources/drive/binaries/map_000.bin
 
 export PYTHONUNBUFFERED=1
 export OMP_NUM_THREADS=8

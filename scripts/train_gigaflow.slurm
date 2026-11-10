@@ -43,7 +43,7 @@ if [[ -z "${WANDB_API_KEY:-}" ]]; then
 fi
 
 # Fail early if the configured training maps are unavailable.
-test -f resources/drive/binaries/training/map_000.bin
+test -f resources/drive/binaries/map_000.bin
 
 export PYTHONUNBUFFERED=1
 # Eight ranks share the CPU allocation, so give each rank eight CPU threads.
