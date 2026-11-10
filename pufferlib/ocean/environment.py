@@ -192,6 +192,12 @@ def env_creator(name="squared", *args, **kwargs):
 
     # TODO: Robust sanity / ocean imports
     name = name.replace("puffer_", "")
+    # Allow separately named Drive configurations to share the Drive factory.
+    # This keeps experiments such as ``puffer_drive_gigaflow`` isolated from
+    # the default ``puffer_drive`` configuration without duplicating the
+    # simulator module.
+    if name.startswith("drive_"):
+        name = "drive"
     try:
         module = importlib.import_module(f"pufferlib.ocean.{name}.{name}")
         return getattr(module, MAKE_FUNCTIONS[name])

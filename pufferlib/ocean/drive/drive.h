@@ -453,12 +453,74 @@ void add_log(Drive *env) {
     }
 }
 
+
+// Older map converters wrote a fixed-width scenario ID before the header.
+// Keep accepting those files while preferring the current, unprefixed layout.
+#define LEGACY_SCENARIO_ID_SIZE 16
+#define MIN_SERIALIZED_ENTITY_SIZE 44
+
+bool map_binary_header_is_plausible(FILE *file, long file_size, long header_offset) {
+    if (header_offset < 0 || file_size - header_offset < 4 * (long)sizeof(int))
+        return false;
+
+    int sdc_track_index;
+    int num_tracks_to_predict;
+    int num_objects;
+    int num_roads;
+    if (fseek(file, header_offset, SEEK_SET) != 0 ||
+        fread(&sdc_track_index, sizeof(int), 1, file) != 1 ||
+        fread(&num_tracks_to_predict, sizeof(int), 1, file) != 1)
+        return false;
+
+    long bytes_after_track_count = file_size - header_offset - 2 * (long)sizeof(int);
+    if (num_tracks_to_predict < 0 ||
+        num_tracks_to_predict > (bytes_after_track_count - 2 * (long)sizeof(int)) / (long)sizeof(int))
+        return false;
+
+    long counts_offset = header_offset + 2 * (long)sizeof(int) +
+                         (long)num_tracks_to_predict * (long)sizeof(int);
+    if (fseek(file, counts_offset, SEEK_SET) != 0 ||
+        fread(&num_objects, sizeof(int), 1, file) != 1 ||
+        fread(&num_roads, sizeof(int), 1, file) != 1)
+        return false;
+
+    if (num_objects < 0 || num_roads < 0 || num_tracks_to_predict > num_objects ||
+        sdc_track_index < -1 || sdc_track_index >= num_objects)
+        return false;
+
+    long payload_offset = counts_offset + 2 * (long)sizeof(int);
+    long entity_count = (long)num_objects + (long)num_roads;
+    return entity_count <= (file_size - payload_offset) / MIN_SERIALIZED_ENTITY_SIZE;
+}
+
 Entity *load_map_binary(const char *filename, Drive *env) {
     FILE *file = fopen(filename, "rb");
     if (!file)
         return NULL;
 
-    // Read sdc_track_index
+    if (fseek(file, 0, SEEK_END) != 0) {
+        fclose(file);
+        return NULL;
+    }
+    long file_size = ftell(file);
+    if (file_size < 0) {
+        fclose(file);
+        return NULL;
+    }
+
+    long header_offset = 0;
+    if (!map_binary_header_is_plausible(file, file_size, header_offset)) {
+        header_offset = LEGACY_SCENARIO_ID_SIZE;
+        if (!map_binary_header_is_plausible(file, file_size, header_offset)) {
+            fclose(file);
+            return NULL;
+        }
+    }
+    if (fseek(file, header_offset, SEEK_SET) != 0) {
+        fclose(file);
+        return NULL;
+    }
+
     fread(&env->sdc_track_index, sizeof(int), 1, file);
 
     // Read tracks_to_predict

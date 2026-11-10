@@ -47,6 +47,7 @@ class Drive(pufferlib.PufferEnv):
         init_mode="create_all_valid",
         control_mode="control_vehicles",
         map_dir="resources/drive/binaries/training",
+        ini_file="pufferlib/config/ocean/drive.ini",
         sequential_map_sampling=False,
     ):
         # env
@@ -111,6 +112,7 @@ class Drive(pufferlib.PufferEnv):
         self.init_mode_str = init_mode
         self.control_mode_str = control_mode
         self.map_dir = map_dir
+        self.ini_file = ini_file
 
         if self.control_mode_str == "control_vehicles":
             self.control_mode = 0
@@ -223,7 +225,7 @@ class Drive(pufferlib.PufferEnv):
                 max_controlled_agents=self.max_controlled_agents,
                 map_id=map_ids[i],
                 max_agents=nxt - cur,
-                ini_file="pufferlib/config/ocean/drive.ini",
+                ini_file=self.ini_file,
                 init_steps=init_steps,
                 init_mode=self.init_mode,
                 control_mode=self.control_mode,
@@ -304,7 +306,7 @@ class Drive(pufferlib.PufferEnv):
                     max_controlled_agents=self.max_controlled_agents,
                     map_id=map_ids[i],
                     max_agents=nxt - cur,
-                    ini_file="pufferlib/config/ocean/drive.ini",
+                    ini_file=self.ini_file,
                     init_steps=self.init_steps,
                     init_mode=self.init_mode,
                     control_mode=self.control_mode,
