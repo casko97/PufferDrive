@@ -933,17 +933,22 @@ class WandbLogger:
     def __init__(self, args, load_id=None, resume="allow"):
         import wandb
 
-        wandb.init(
-            id=load_id or wandb.util.generate_id(),
+        # Let W&B allocate an ID for a new run.  ``wandb.util.generate_id``
+        # was removed in W&B 0.31, and an explicit ID is only needed when
+        # reopening an existing run.
+        init_kwargs = dict(
             project=args["wandb_project"],
             group=args["wandb_group"],
             allow_val_change=True,
             save_code=False,
-            resume=resume,
             config=args,
             name=args.get("wandb_name"),
             tags=[args["tag"]] if args["tag"] is not None else [],
         )
+        if load_id is not None:
+            init_kwargs.update(id=load_id, resume=resume)
+
+        wandb.init(**init_kwargs)
         self.wandb = wandb
         self.run_id = wandb.run.id
 
